@@ -11,6 +11,7 @@ import {
 import { PeriodsService } from './periods.service';
 import { CreatePeriodDto } from './dto/create-period.dto';
 import { UpdatePeriodDto } from './dto/update-period.dto';
+import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('periods')
 export class PeriodsController {
@@ -26,11 +27,13 @@ export class PeriodsController {
     return this.service.findOne(id);
   }
 
+  @Roles('admin_rh')
   @Post()
   create(@Body() dto: CreatePeriodDto) {
     return this.service.create(dto);
   }
 
+  @Roles('admin_rh')
   @Put(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,
@@ -39,6 +42,7 @@ export class PeriodsController {
     return this.service.update(id, dto);
   }
 
+  @Roles('admin_rh')
   @Delete(':id')
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.remove(id);

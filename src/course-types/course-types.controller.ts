@@ -11,6 +11,7 @@ import {
 import { CourseTypesService } from './course-types.service';
 import { CreateCourseTypeDto } from './dto/create-course-type.dto';
 import { UpdateCourseTypeDto } from './dto/update-course-type.dto';
+import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('course-types')
 export class CourseTypesController {
@@ -26,11 +27,13 @@ export class CourseTypesController {
     return this.service.findOne(id);
   }
 
+  @Roles('admin_rh')
   @Post()
   create(@Body() dto: CreateCourseTypeDto) {
     return this.service.create(dto);
   }
 
+  @Roles('admin_rh')
   @Put(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,
@@ -39,6 +42,7 @@ export class CourseTypesController {
     return this.service.update(id, dto);
   }
 
+  @Roles('admin_rh')
   @Delete(':id')
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.remove(id);

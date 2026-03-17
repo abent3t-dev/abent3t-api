@@ -11,6 +11,7 @@ import {
 import { InstitutionsService } from './institutions.service';
 import { CreateInstitutionDto } from './dto/create-institution.dto';
 import { UpdateInstitutionDto } from './dto/update-institution.dto';
+import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('institutions')
 export class InstitutionsController {
@@ -26,11 +27,13 @@ export class InstitutionsController {
     return this.service.findOne(id);
   }
 
+  @Roles('admin_rh')
   @Post()
   create(@Body() dto: CreateInstitutionDto) {
     return this.service.create(dto);
   }
 
+  @Roles('admin_rh')
   @Put(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,
@@ -39,6 +42,7 @@ export class InstitutionsController {
     return this.service.update(id, dto);
   }
 
+  @Roles('admin_rh')
   @Delete(':id')
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.remove(id);
