@@ -1,0 +1,38 @@
+import {
+  IsString,
+  IsOptional,
+  IsBoolean,
+  IsDateString,
+  IsInt,
+  MaxLength,
+  Min,
+} from 'class-validator';
+
+export class UpdateCourseEditionDto {
+  @IsDateString()
+  @IsOptional()
+  start_date?: string;
+
+  @IsDateString()
+  @IsOptional()
+  end_date?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(255)
+  location?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(255)
+  instructor?: string;
+
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  max_participants?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  is_active?: boolean;
+}

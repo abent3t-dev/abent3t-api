@@ -10,6 +10,7 @@ import { InstitutionsModule } from './institutions/institutions.module';
 import { CourseTypesModule } from './course-types/course-types.module';
 import { ModalitiesModule } from './modalities/modalities.module';
 import { PeriodsModule } from './periods/periods.module';
+import { CoursesModule } from './courses/courses.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -23,6 +24,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     CourseTypesModule,
     ModalitiesModule,
     PeriodsModule,
+    CoursesModule,
   ],
   controllers: [AppController],
   providers: [
