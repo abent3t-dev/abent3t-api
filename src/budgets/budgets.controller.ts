@@ -8,15 +8,15 @@ import {
   Body,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { InstitutionsService } from './institutions.service';
-import { CreateInstitutionDto } from './dto/create-institution.dto';
-import { UpdateInstitutionDto } from './dto/update-institution.dto';
+import { BudgetsService } from './budgets.service';
+import { CreateBudgetDto } from './dto/create-budget.dto';
+import { UpdateBudgetDto } from './dto/update-budget.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { Public } from '../common/decorators/public.decorator';
 
-@Controller('institutions')
-export class InstitutionsController {
-  constructor(private readonly service: InstitutionsService) {}
+@Controller('budgets')
+export class BudgetsController {
+  constructor(private readonly service: BudgetsService) {}
 
   @Public()
   @Get()
@@ -30,9 +30,21 @@ export class InstitutionsController {
     return this.service.findOne(id);
   }
 
+  @Public()
+  @Get('department/:departmentId')
+  findByDepartment(@Param('departmentId', ParseUUIDPipe) departmentId: string) {
+    return this.service.findByDepartment(departmentId);
+  }
+
+  @Public()
+  @Get('period/:periodId')
+  findByPeriod(@Param('periodId', ParseUUIDPipe) periodId: string) {
+    return this.service.findByPeriod(periodId);
+  }
+
   @Roles('admin_rh')
   @Post()
-  create(@Body() dto: CreateInstitutionDto) {
+  create(@Body() dto: CreateBudgetDto) {
     return this.service.create(dto);
   }
 
@@ -40,7 +52,7 @@ export class InstitutionsController {
   @Put(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body() dto: UpdateInstitutionDto,
+    @Body() dto: UpdateBudgetDto,
   ) {
     return this.service.update(id, dto);
   }

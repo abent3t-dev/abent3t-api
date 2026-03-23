@@ -12,16 +12,19 @@ import { CourseTypesService } from './course-types.service';
 import { CreateCourseTypeDto } from './dto/create-course-type.dto';
 import { UpdateCourseTypeDto } from './dto/update-course-type.dto';
 import { Roles } from '../common/decorators/roles.decorator';
+import { Public } from '../common/decorators/public.decorator';
 
 @Controller('course-types')
 export class CourseTypesController {
   constructor(private readonly service: CourseTypesService) {}
 
+  @Public()
   @Get()
   findAll() {
     return this.service.findAll();
   }
 
+  @Public()
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);
