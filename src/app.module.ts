@@ -12,6 +12,7 @@ import { ModalitiesModule } from './modalities/modalities.module';
 import { PeriodsModule } from './periods/periods.module';
 import { CoursesModule } from './courses/courses.module';
 import { BudgetsModule } from './budgets/budgets.module';
+import { EnrollmentsModule } from './enrollments/enrollments.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -27,6 +28,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     PeriodsModule,
     CoursesModule,
     BudgetsModule,
+    EnrollmentsModule,
   ],
   controllers: [AppController],
   providers: [
