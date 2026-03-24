@@ -7,11 +7,11 @@ import {
 import { AuthUser } from '../decorators/current-user.decorator';
 
 /**
- * Department Guard — Restricts directors to their own department.
+ * Department Guard — Restricts jefe_area to their own department.
  *
  * Usage: Apply to endpoints that filter by department_id.
- * Directors can only access data where department_id matches their own.
- * admin_rh and executive roles bypass this restriction.
+ * Jefes de área can only access data where department_id matches their own.
+ * super_admin bypasses this restriction.
  *
  * The guard checks for department_id in:
  * 1. Route params (:departmentId)
@@ -26,13 +26,13 @@ export class DepartmentGuard implements CanActivate {
 
     if (!user) return false;
 
-    // admin_rh and executive can access all departments
-    if (user.role === 'admin_rh' || user.role === 'executive') {
+    // super_admin can access all departments
+    if (user.role === 'super_admin') {
       return true;
     }
 
-    // For directors: verify the requested department matches their own
-    if (user.role === 'director') {
+    // For jefe_area: verify the requested department matches their own
+    if (user.role === 'jefe_area') {
       const requestedDeptId =
         request.params?.departmentId ||
         request.query?.department_id ||
@@ -53,7 +53,7 @@ export class DepartmentGuard implements CanActivate {
       return true;
     }
 
-    // Collaborators pass through (their access is scoped by user_id, not department)
+    // Colaboradores pass through (their access is scoped by user_id, not department)
     return true;
   }
 }

@@ -24,10 +24,10 @@ export class AuthController {
     return this.service.getProfile(user.id);
   }
 
-  /** List all users (Admin RH only) */
+  /** List all users (Super Admin only) */
   @Get('users')
   @UseGuards(RolesGuard)
-  @Roles('admin_rh')
+  @Roles('super_admin')
   listUsers(
     @Query('role') role?: string,
     @Query('department_id') departmentId?: string,
@@ -40,10 +40,10 @@ export class AuthController {
     });
   }
 
-  /** Assign role to user (Admin RH only) */
+  /** Assign role to user (Super Admin only) */
   @Put('users/:id/role')
   @UseGuards(RolesGuard)
-  @Roles('admin_rh')
+  @Roles('super_admin')
   updateRole(
     @Param('id', ParseUUIDPipe) id: string,
     @Body('role') role: string,
@@ -51,10 +51,10 @@ export class AuthController {
     return this.service.updateRole(id, role);
   }
 
-  /** Assign department to user (Admin RH only) */
+  /** Assign department to user (Super Admin only) */
   @Put('users/:id/department')
   @UseGuards(RolesGuard)
-  @Roles('admin_rh')
+  @Roles('super_admin')
   assignDepartment(
     @Param('id', ParseUUIDPipe) id: string,
     @Body('department_id') departmentId: string,
@@ -62,10 +62,10 @@ export class AuthController {
     return this.service.assignDepartment(id, departmentId);
   }
 
-  /** Deactivate user - soft delete (Admin RH only) */
+  /** Deactivate user - soft delete (Super Admin only) */
   @Put('users/:id/deactivate')
   @UseGuards(RolesGuard)
-  @Roles('admin_rh')
+  @Roles('super_admin')
   deactivateUser(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.deactivateUser(id);
   }
