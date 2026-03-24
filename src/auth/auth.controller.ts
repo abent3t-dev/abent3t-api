@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Put,
   Param,
   Body,
@@ -68,5 +69,30 @@ export class AuthController {
   @Roles('super_admin')
   deactivateUser(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.deactivateUser(id);
+  }
+
+  /** Reactivate user (Super Admin only) */
+  @Put('users/:id/reactivate')
+  @UseGuards(RolesGuard)
+  @Roles('super_admin')
+  reactivateUser(@Param('id', ParseUUIDPipe) id: string) {
+    return this.service.reactivateUser(id);
+  }
+
+  /** Create new user (Super Admin only) */
+  @Post('users')
+  @UseGuards(RolesGuard)
+  @Roles('super_admin')
+  createUser(
+    @Body() body: {
+      email: string;
+      password: string;
+      full_name: string;
+      position?: string;
+      role?: string;
+      department_id?: string;
+    },
+  ) {
+    return this.service.createUser(body);
   }
 }
