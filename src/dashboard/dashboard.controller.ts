@@ -1,30 +1,30 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
-import { Public } from '../common/decorators/public.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('dashboard')
 export class DashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 
-  @Public()
+  @Roles('admin_rh', 'director', 'jefe_area', 'executive')
   @Get('summary')
   getSummary(@Query('year') year?: string) {
     return this.dashboardService.getSummary();
   }
 
-  @Public()
+  @Roles('admin_rh', 'director', 'jefe_area', 'executive')
   @Get('by-department')
   getByDepartment() {
     return this.dashboardService.getByDepartment();
   }
 
-  @Public()
+  @Roles('admin_rh', 'director', 'jefe_area', 'executive')
   @Get('by-institution')
   getByInstitution() {
     return this.dashboardService.getByInstitution();
   }
 
-  @Public()
+  @Roles('admin_rh', 'director', 'jefe_area', 'executive')
   @Get('completion-time')
   getCompletionTime() {
     return this.dashboardService.getCompletionTime();

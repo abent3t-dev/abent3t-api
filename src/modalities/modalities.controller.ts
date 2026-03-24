@@ -12,19 +12,16 @@ import { ModalitiesService } from './modalities.service';
 import { CreateModalityDto } from './dto/create-modality.dto';
 import { UpdateModalityDto } from './dto/update-modality.dto';
 import { Roles } from '../common/decorators/roles.decorator';
-import { Public } from '../common/decorators/public.decorator';
 
 @Controller('modalities')
 export class ModalitiesController {
   constructor(private readonly service: ModalitiesService) {}
 
-  @Public()
   @Get()
   findAll() {
     return this.service.findAll();
   }
 
-  @Public()
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);

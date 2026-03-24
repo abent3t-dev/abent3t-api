@@ -12,19 +12,16 @@ import { CoursesService } from './courses.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { Roles } from '../common/decorators/roles.decorator';
-import { Public } from '../common/decorators/public.decorator';
 
 @Controller('courses')
 export class CoursesController {
   constructor(private readonly service: CoursesService) {}
 
-  @Public()
   @Get()
   findAll() {
     return this.service.findAll();
   }
 
-  @Public()
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);

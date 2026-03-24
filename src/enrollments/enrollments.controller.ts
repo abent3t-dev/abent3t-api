@@ -13,31 +13,30 @@ import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 import { BulkEnrollmentDto } from './dto/bulk-enrollment.dto';
 import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
 import { Roles } from '../common/decorators/roles.decorator';
-import { Public } from '../common/decorators/public.decorator';
 
 @Controller('enrollments')
 export class EnrollmentsController {
   constructor(private readonly service: EnrollmentsService) {}
 
-  @Public()
+  @Roles('admin_rh')
   @Get()
   findAll() {
     return this.service.findAll();
   }
 
-  @Public()
   @Get('edition/:editionId')
   findByEdition(@Param('editionId', ParseUUIDPipe) editionId: string) {
     return this.service.findByEdition(editionId);
   }
 
-  @Public()
+  // TODO: agregar lógica para que el propio usuario pueda ver sus enrollments
+  @Roles('admin_rh')
   @Get('profile/:profileId')
   findByProfile(@Param('profileId', ParseUUIDPipe) profileId: string) {
     return this.service.findByProfile(profileId);
   }
 
-  @Public()
+  @Roles('admin_rh')
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);

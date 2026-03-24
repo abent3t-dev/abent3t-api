@@ -12,31 +12,30 @@ import { BudgetsService } from './budgets.service';
 import { CreateBudgetDto } from './dto/create-budget.dto';
 import { UpdateBudgetDto } from './dto/update-budget.dto';
 import { Roles } from '../common/decorators/roles.decorator';
-import { Public } from '../common/decorators/public.decorator';
 
 @Controller('budgets')
 export class BudgetsController {
   constructor(private readonly service: BudgetsService) {}
 
-  @Public()
+  @Roles('admin_rh')
   @Get()
   findAll() {
     return this.service.findAll();
   }
 
-  @Public()
+  @Roles('admin_rh')
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);
   }
 
-  @Public()
+  @Roles('admin_rh')
   @Get('department/:departmentId')
   findByDepartment(@Param('departmentId', ParseUUIDPipe) departmentId: string) {
     return this.service.findByDepartment(departmentId);
   }
 
-  @Public()
+  @Roles('admin_rh')
   @Get('period/:periodId')
   findByPeriod(@Param('periodId', ParseUUIDPipe) periodId: string) {
     return this.service.findByPeriod(periodId);

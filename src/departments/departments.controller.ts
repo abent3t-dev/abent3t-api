@@ -12,19 +12,16 @@ import { DepartmentsService } from './departments.service';
 import { CreateDepartmentDto } from './dto/create-department.dto';
 import { UpdateDepartmentDto } from './dto/update-department.dto';
 import { Roles } from '../common/decorators/roles.decorator';
-import { Public } from '../common/decorators/public.decorator';
 
 @Controller('departments')
 export class DepartmentsController {
   constructor(private readonly service: DepartmentsService) {}
 
-  @Public()
   @Get()
   findAll() {
     return this.service.findAll();
   }
 
-  @Public()
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);
