@@ -6,11 +6,13 @@ import {
   Delete,
   Param,
   Body,
+  Query,
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { ModalitiesService } from './modalities.service';
 import { CreateModalityDto } from './dto/create-modality.dto';
 import { UpdateModalityDto } from './dto/update-modality.dto';
+import { PaginationDto } from '../common/dto/pagination.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('modalities')
@@ -18,7 +20,10 @@ export class ModalitiesController {
   constructor(private readonly service: ModalitiesService) {}
 
   @Get()
-  findAll() {
+  findAll(@Query() pagination: PaginationDto) {
+    if (pagination.page || pagination.limit || pagination.search) {
+      return this.service.findAllPaginated(pagination);
+    }
     return this.service.findAll();
   }
 

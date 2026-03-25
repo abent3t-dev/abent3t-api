@@ -6,11 +6,13 @@ import {
   Delete,
   Param,
   Body,
+  Query,
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { BudgetsService } from './budgets.service';
 import { CreateBudgetDto } from './dto/create-budget.dto';
 import { UpdateBudgetDto } from './dto/update-budget.dto';
+import { PaginationDto } from '../common/dto/pagination.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('budgets')
@@ -19,7 +21,10 @@ export class BudgetsController {
 
   @Roles('admin_rh')
   @Get()
-  findAll() {
+  findAll(@Query() pagination: PaginationDto) {
+    if (pagination.page || pagination.limit || pagination.search) {
+      return this.service.findAllPaginated(pagination);
+    }
     return this.service.findAll();
   }
 

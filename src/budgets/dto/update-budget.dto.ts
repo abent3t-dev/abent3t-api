@@ -6,11 +6,6 @@ export class UpdateBudgetDto {
   @IsOptional()
   assigned_amount?: number;
 
-  @IsNumber()
-  @Min(0)
-  @IsOptional()
-  consumed_amount?: number;
-
   @IsBoolean()
   @IsOptional()
   is_active?: boolean;

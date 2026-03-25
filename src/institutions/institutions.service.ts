@@ -1,63 +1,33 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { BaseCrudService } from '../common/services/base-crud.service';
 import { CreateInstitutionDto } from './dto/create-institution.dto';
 import { UpdateInstitutionDto } from './dto/update-institution.dto';
 
 @Injectable()
-export class InstitutionsService {
-  constructor(private readonly supabase: SupabaseService) {}
+export class InstitutionsService extends BaseCrudService<CreateInstitutionDto, UpdateInstitutionDto> {
+  protected readonly tableName = 'institutions';
+  protected readonly selectFields = '*';
+  protected readonly orderField = 'name';
+  protected readonly searchFields = ['name'];
+  private readonly logger = new Logger(InstitutionsService.name);
 
-  async findAll() {
-    const { data, error } = await this.supabase.db
-      .from('institutions')
-      .select('*')
-      .order('name');
-
-    if (error) throw error;
-    return data;
-  }
-
-  async findOne(id: string) {
-    const { data, error } = await this.supabase.db
-      .from('institutions')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error || !data) throw new NotFoundException('Institución no encontrada');
-    return data;
-  }
-
-  async create(dto: CreateInstitutionDto) {
-    const { data, error } = await this.supabase.db
-      .from('institutions')
-      .insert(dto)
-      .select()
-      .single();
-
-    if (error) throw error;
-    return data;
-  }
-
-  async update(id: string, dto: UpdateInstitutionDto) {
-    const { data, error } = await this.supabase.db
-      .from('institutions')
-      .update(dto)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error || !data) throw new NotFoundException('Institución no encontrada');
-    return data;
+  constructor(supabase: SupabaseService) {
+    super(supabase);
   }
 
   async remove(id: string) {
-    const { error } = await this.supabase.db
-      .from('institutions')
-      .update({ is_active: false })
-      .eq('id', id);
+    const { count } = await this.supabase.db
+      .from('courses')
+      .select('id', { count: 'exact', head: true })
+      .eq('institution_id', id)
+      .eq('is_active', true);
 
-    if (error) throw error;
-    return { message: 'Institución desactivada' };
+    if (count && count > 0) {
+      this.logger.warn(
+        `Deactivating institution ${id} which has ${count} active courses — courses NOT cascade-deactivated`,
+      );
+    }
+    return super.remove(id);
   }
 }

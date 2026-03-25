@@ -6,11 +6,13 @@ import {
   Delete,
   Param,
   Body,
+  Query,
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { CoursesService } from './courses.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
+import { PaginationDto } from '../common/dto/pagination.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('courses')
@@ -18,7 +20,10 @@ export class CoursesController {
   constructor(private readonly service: CoursesService) {}
 
   @Get()
-  findAll() {
+  findAll(@Query() pagination: PaginationDto) {
+    if (pagination.page || pagination.limit || pagination.search) {
+      return this.service.findAllPaginated(pagination);
+    }
     return this.service.findAll();
   }
 

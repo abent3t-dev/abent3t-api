@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { BaseCrudService } from '../common/services/base-crud.service';
 import { CreateBudgetDto } from './dto/create-budget.dto';
 import { UpdateBudgetDto } from './dto/update-budget.dto';
 
@@ -17,8 +18,14 @@ interface BudgetRow {
 }
 
 @Injectable()
-export class BudgetsService {
-  constructor(private readonly supabase: SupabaseService) {}
+export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudgetDto> {
+  protected readonly tableName = 'budgets';
+  protected readonly selectFields = '*, departments(id, name), periods(id, label, year, semester)';
+  protected readonly orderField = 'created_at';
+
+  constructor(supabase: SupabaseService) {
+    super(supabase);
+  }
 
   private calculateAvailable(budget: BudgetRow) {
     return {
@@ -29,10 +36,8 @@ export class BudgetsService {
 
   async findAll() {
     const { data, error } = await this.supabase.db
-      .from('budgets')
-      .select(
-        '*, departments(id, name), periods(id, label, year, semester)',
-      )
+      .from(this.tableName)
+      .select(this.selectFields)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -41,25 +46,19 @@ export class BudgetsService {
 
   async findOne(id: string) {
     const { data, error } = await this.supabase.db
-      .from('budgets')
-      .select(
-        '*, departments(id, name), periods(id, label, year, semester)',
-      )
+      .from(this.tableName)
+      .select(this.selectFields)
       .eq('id', id)
       .single();
 
-    if (error || !data) {
-      throw new NotFoundException('Presupuesto no encontrado');
-    }
+    if (error || !data) throw new NotFoundException('Presupuesto no encontrado');
     return this.calculateAvailable(data as BudgetRow);
   }
 
   async findByDepartment(departmentId: string) {
     const { data, error } = await this.supabase.db
-      .from('budgets')
-      .select(
-        '*, departments(id, name), periods(id, label, year, semester)',
-      )
+      .from(this.tableName)
+      .select(this.selectFields)
       .eq('department_id', departmentId)
       .order('created_at', { ascending: false });
 
@@ -69,10 +68,8 @@ export class BudgetsService {
 
   async findByPeriod(periodId: string) {
     const { data, error } = await this.supabase.db
-      .from('budgets')
-      .select(
-        '*, departments(id, name), periods(id, label, year, semester)',
-      )
+      .from(this.tableName)
+      .select(this.selectFields)
       .eq('period_id', periodId)
       .order('created_at', { ascending: false });
 
@@ -81,15 +78,31 @@ export class BudgetsService {
   }
 
   async create(dto: CreateBudgetDto) {
-    const { data, error } = await this.supabase.db
+    await Promise.all([
+      this.validateFK('departments', dto.department_id, 'department_id'),
+      this.validateFK('periods', dto.period_id, 'period_id'),
+    ]);
+
+    // Check uniqueness: one active budget per department+period
+    const { data: existing } = await this.supabase.db
       .from('budgets')
-      .insert({
-        ...dto,
-        consumed_amount: 0,
-      })
-      .select(
-        '*, departments(id, name), periods(id, label, year, semester)',
-      )
+      .select('id')
+      .eq('department_id', dto.department_id)
+      .eq('period_id', dto.period_id)
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      throw new BadRequestException(
+        'Ya existe un presupuesto activo para este departamento y periodo',
+      );
+    }
+
+    const { data, error } = await this.supabase.db
+      .from(this.tableName)
+      .insert({ ...dto, consumed_amount: 0 } as any)
+      .select(this.selectFields)
       .single();
 
     if (error) throw error;
@@ -98,27 +111,13 @@ export class BudgetsService {
 
   async update(id: string, dto: UpdateBudgetDto) {
     const { data, error } = await this.supabase.db
-      .from('budgets')
-      .update(dto)
+      .from(this.tableName)
+      .update(dto as any)
       .eq('id', id)
-      .select(
-        '*, departments(id, name), periods(id, label, year, semester)',
-      )
+      .select(this.selectFields)
       .single();
 
-    if (error || !data) {
-      throw new NotFoundException('Presupuesto no encontrado');
-    }
+    if (error || !data) throw new NotFoundException('Presupuesto no encontrado');
     return this.calculateAvailable(data as BudgetRow);
-  }
-
-  async remove(id: string) {
-    const { error } = await this.supabase.db
-      .from('budgets')
-      .update({ is_active: false })
-      .eq('id', id);
-
-    if (error) throw error;
-    return { message: 'Presupuesto desactivado' };
   }
 }

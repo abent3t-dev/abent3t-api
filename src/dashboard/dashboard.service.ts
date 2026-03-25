@@ -1,171 +1,309 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+
+export interface KpiValue {
+  value: number;
+  formatted: string;
+  subtitle: string;
+}
+
+interface Period {
+  id: string;
+  label: string;
+  year: number;
+  semester: number | null;
+  start_date: string;
+  end_date: string;
+}
 
 @Injectable()
 export class DashboardService {
+  private readonly logger = new Logger(DashboardService.name);
+
   constructor(private readonly supabase: SupabaseService) {}
 
-  async getSummary() {
-    // Get all enrollments with course data
-    const { data: enrollments } = await this.supabase.db
+  // ── helpers ──────────────────────────────────────────────
+
+  private formatCurrency(n: number): string {
+    return `$${n.toLocaleString('es-MX', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+  }
+
+  private pct(numerator: number, denominator: number): number {
+    return denominator > 0
+      ? Math.round((numerator / denominator) * 1000) / 10
+      : 0;
+  }
+
+  private async getCurrentPeriod(): Promise<Period | null> {
+    const today = new Date().toISOString().split('T')[0];
+    const { data } = await this.supabase.db
+      .from('periods')
+      .select('id, label, year, semester, start_date, end_date')
+      .eq('is_active', true)
+      .lte('start_date', today)
+      .gte('end_date', today)
+      .limit(1)
+      .maybeSingle();
+    return data as Period | null;
+  }
+
+  /**
+   * Returns all active enrollments whose edition start_date falls inside the
+   * given period range.  Joins profiles, course_editions→courses for metrics.
+   */
+  private async getEnrollmentsForPeriod(period: Period) {
+    const { data } = await this.supabase.db
       .from('course_enrollments')
       .select(`
-        enrolled_at,
-        completed_at,
-        status,
-        course_editions(
-          courses(duration_hours, cost)
+        id, status, enrolled_at, completed_at, profile_id,
+        profiles(id, department_id),
+        course_editions!inner(
+          id, start_date,
+          courses(id, total_hours, cost)
         )
-      `);
+      `)
+      .eq('is_active', true)
+      .gte('course_editions.start_date', period.start_date)
+      .lte('course_editions.start_date', period.end_date);
 
-    // Count active courses
-    const { count: activeCourses } = await this.supabase.db
-      .from('courses')
-      .select('*', { count: 'exact', head: true })
+    return (data ?? []) as any[];
+  }
+
+  // ── KPI calculators ──────────────────────────────────────
+
+  private async calculateBudgetExecution(periodId: string): Promise<KpiValue> {
+    const { data: budgets } = await this.supabase.db
+      .from('budgets')
+      .select('assigned_amount, consumed_amount')
+      .eq('period_id', periodId)
       .eq('is_active', true);
 
-    // Calculate metrics
-    let totalHours = 0;
-    let totalSpent = 0;
-    let completedCount = 0;
-    let totalDays = 0;
-    let completedWithDates = 0;
-
-    if (enrollments) {
-      for (const e of enrollments as any[]) {
-        const course = e.course_editions?.courses;
-        if (!course) continue;
-
-        if (e.status === 'completo') {
-          totalHours += course.duration_hours || 0;
-          completedCount++;
-
-          if (e.completed_at && e.enrolled_at) {
-            const enrolled = new Date(e.enrolled_at);
-            const completed = new Date(e.completed_at);
-            const days = Math.floor(
-              (completed.getTime() - enrolled.getTime()) / (1000 * 60 * 60 * 24),
-            );
-            totalDays += days;
-            completedWithDates++;
-          }
-        }
-
-        if (['inscrito', 'en_curso', 'completo'].includes(e.status)) {
-          totalSpent += course.cost || 0;
-        }
-      }
+    let totalAssigned = 0;
+    let totalConsumed = 0;
+    for (const b of (budgets ?? []) as any[]) {
+      totalAssigned += Number(b.assigned_amount) || 0;
+      totalConsumed += Number(b.consumed_amount) || 0;
     }
 
+    const pct = this.pct(totalConsumed, totalAssigned);
+
     return {
-      totalHours,
-      totalSpent,
-      activeCourses: activeCourses || 0,
-      totalEnrolled: enrollments?.length || 0,
-      completedCount,
-      avgCompletionDays:
-        completedWithDates > 0 ? Math.round(totalDays / completedWithDates) : 0,
+      value: pct,
+      formatted: `${pct}%`,
+      subtitle: `${this.formatCurrency(totalConsumed)} de ${this.formatCurrency(totalAssigned)} asignados`,
+    };
+  }
+
+  private calculateInvestmentPerEmployee(
+    enrollments: any[],
+  ): KpiValue {
+    const profileCosts = new Map<string, number>();
+    for (const e of enrollments) {
+      if (e.status === 'cancelado') continue;
+      const cost = Number(e.course_editions?.courses?.cost) || 0;
+      const pid = e.profile_id as string;
+      profileCosts.set(pid, (profileCosts.get(pid) || 0) + cost);
+    }
+
+    const totalCost = [...profileCosts.values()].reduce((a, b) => a + b, 0);
+    const count = profileCosts.size;
+    const avg = count > 0 ? Math.round(totalCost / count) : 0;
+
+    return {
+      value: avg,
+      formatted: this.formatCurrency(avg),
+      subtitle: `${count} colaboradores capacitados`,
+    };
+  }
+
+  private calculateHoursPerEmployee(enrollments: any[]): KpiValue {
+    const profileHours = new Map<string, number>();
+    let totalCompleted = 0;
+
+    for (const e of enrollments) {
+      if (e.status !== 'completo') continue;
+      totalCompleted++;
+      const hours = Number(e.course_editions?.courses?.total_hours) || 0;
+      const pid = e.profile_id as string;
+      profileHours.set(pid, (profileHours.get(pid) || 0) + hours);
+    }
+
+    const totalHours = [...profileHours.values()].reduce((a, b) => a + b, 0);
+    const count = profileHours.size;
+    const avg = count > 0 ? Math.round((totalHours / count) * 10) / 10 : 0;
+
+    return {
+      value: avg,
+      formatted: `${avg} hrs`,
+      subtitle: `${totalCompleted} cursos completados en total`,
+    };
+  }
+
+  private async calculateCoverageRate(
+    enrollments: any[],
+  ): Promise<KpiValue> {
+    // Unique profiles with at least 1 non-cancelled enrollment in period
+    const enrolledProfiles = new Set<string>();
+    for (const e of enrollments) {
+      if (e.status !== 'cancelado') enrolledProfiles.add(e.profile_id);
+    }
+
+    // Total active employees
+    const { count: totalActive } = await this.supabase.db
+      .from('profiles')
+      .select('id', { count: 'exact', head: true })
+      .eq('is_active', true);
+
+    const total = totalActive ?? 0;
+    const enrolled = enrolledProfiles.size;
+    const pct = this.pct(enrolled, total);
+
+    return {
+      value: pct,
+      formatted: `${pct}%`,
+      subtitle: `${enrolled} de ${total} colaboradores`,
+    };
+  }
+
+  private calculateCompletionRate(enrollments: any[]): KpiValue {
+    let completed = 0;
+    let nonCancelled = 0;
+
+    for (const e of enrollments) {
+      if (e.status === 'cancelado') continue;
+      nonCancelled++;
+      if (e.status === 'completo') completed++;
+    }
+
+    const pct = this.pct(completed, nonCancelled);
+
+    return {
+      value: pct,
+      formatted: `${pct}%`,
+      subtitle: `${completed} completados de ${nonCancelled} inscritos`,
+    };
+  }
+
+  // ── public endpoints ─────────────────────────────────────
+
+  async getSummary() {
+    const period = await this.getCurrentPeriod();
+
+    if (!period) {
+      const empty: KpiValue = { value: 0, formatted: '—', subtitle: 'Sin datos' };
+      return {
+        period: null,
+        kpis: {
+          budgetExecution: empty,
+          investmentPerEmployee: empty,
+          hoursPerEmployee: empty,
+          coverageRate: empty,
+          completionRate: empty,
+        },
+      };
+    }
+
+    const enrollments = await this.getEnrollmentsForPeriod(period);
+
+    const [budgetExecution, coverageRate] = await Promise.all([
+      this.calculateBudgetExecution(period.id),
+      this.calculateCoverageRate(enrollments),
+    ]);
+
+    return {
+      period: {
+        id: period.id,
+        label: period.label,
+        year: period.year,
+        semester: period.semester,
+      },
+      kpis: {
+        budgetExecution,
+        investmentPerEmployee: this.calculateInvestmentPerEmployee(enrollments),
+        hoursPerEmployee: this.calculateHoursPerEmployee(enrollments),
+        coverageRate,
+        completionRate: this.calculateCompletionRate(enrollments),
+      },
     };
   }
 
   async getByDepartment() {
-    // Get enrollments with profile and department info
-    const { data: enrollments } = await this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        status,
-        profiles(
-          id,
-          department_id,
-          departments(id, name)
-        ),
-        course_editions(
-          courses(duration_hours, cost)
-        )
-      `);
+    const period = await this.getCurrentPeriod();
+    if (!period) return [];
 
-    // Get budgets
+    const enrollments = await this.getEnrollmentsForPeriod(period);
+
     const { data: budgets } = await this.supabase.db
       .from('budgets')
-      .select('department_id, assigned_amount, spent_amount, departments(name)');
+      .select('department_id, assigned_amount, consumed_amount, departments(name)')
+      .eq('period_id', period.id)
+      .eq('is_active', true);
 
-    // Group by department
-    const deptStats: Record<
-      string,
-      {
-        department_id: string;
-        department_name: string;
-        totalHours: number;
-        totalSpent: number;
-        enrolledCount: number;
-        completedCount: number;
-        budgetAssigned: number;
-        budgetRemaining: number;
+    // Group enrollments by department
+    const stats: Record<string, {
+      department_id: string;
+      department_name: string;
+      totalHours: number;
+      totalSpent: number;
+      enrolledCount: number;
+      completedCount: number;
+      budgetAssigned: number;
+      budgetRemaining: number;
+    }> = {};
+
+    for (const e of enrollments) {
+      const deptId = e.profiles?.department_id;
+      if (!deptId || e.status === 'cancelado') continue;
+
+      if (!stats[deptId]) {
+        stats[deptId] = {
+          department_id: deptId,
+          department_name: '',
+          totalHours: 0, totalSpent: 0,
+          enrolledCount: 0, completedCount: 0,
+          budgetAssigned: 0, budgetRemaining: 0,
+        };
       }
-    > = {};
 
-    if (enrollments) {
-      for (const e of enrollments as any[]) {
-        const profile = e.profiles;
-        const deptId = profile?.department_id;
-        const deptName = profile?.departments?.name || 'Sin Área';
-        const course = e.course_editions?.courses;
+      stats[deptId].enrolledCount++;
+      const cost = Number(e.course_editions?.courses?.cost) || 0;
+      stats[deptId].totalSpent += cost;
 
-        if (!deptId) continue;
-
-        if (!deptStats[deptId]) {
-          deptStats[deptId] = {
-            department_id: deptId,
-            department_name: deptName,
-            totalHours: 0,
-            totalSpent: 0,
-            enrolledCount: 0,
-            completedCount: 0,
-            budgetAssigned: 0,
-            budgetRemaining: 0,
-          };
-        }
-
-        deptStats[deptId].enrolledCount++;
-
-        if (e.status === 'completo' && course) {
-          deptStats[deptId].totalHours += course.duration_hours || 0;
-          deptStats[deptId].completedCount++;
-        }
-
-        if (['inscrito', 'en_curso', 'completo'].includes(e.status) && course) {
-          deptStats[deptId].totalSpent += course.cost || 0;
-        }
+      if (e.status === 'completo') {
+        stats[deptId].completedCount++;
+        stats[deptId].totalHours += Number(e.course_editions?.courses?.total_hours) || 0;
       }
     }
 
-    // Add budget info
-    if (budgets) {
-      for (const b of budgets as any[]) {
-        if (deptStats[b.department_id]) {
-          deptStats[b.department_id].budgetAssigned += b.assigned_amount || 0;
-          deptStats[b.department_id].budgetRemaining +=
-            (b.assigned_amount || 0) - (b.spent_amount || 0);
-        } else {
-          const deptName = b.departments?.name || 'Sin Área';
-          deptStats[b.department_id] = {
-            department_id: b.department_id,
-            department_name: deptName,
-            totalHours: 0,
-            totalSpent: 0,
-            enrolledCount: 0,
-            completedCount: 0,
-            budgetAssigned: b.assigned_amount || 0,
-            budgetRemaining:
-              (b.assigned_amount || 0) - (b.spent_amount || 0),
-          };
-        }
+    // Merge budget data
+    for (const b of (budgets ?? []) as any[]) {
+      const deptId = b.department_id;
+      if (!stats[deptId]) {
+        stats[deptId] = {
+          department_id: deptId,
+          department_name: b.departments?.name || 'Sin Área',
+          totalHours: 0, totalSpent: 0,
+          enrolledCount: 0, completedCount: 0,
+          budgetAssigned: 0, budgetRemaining: 0,
+        };
+      }
+      stats[deptId].department_name = b.departments?.name || stats[deptId].department_name || 'Sin Área';
+      stats[deptId].budgetAssigned += Number(b.assigned_amount) || 0;
+      stats[deptId].budgetRemaining += (Number(b.assigned_amount) || 0) - (Number(b.consumed_amount) || 0);
+    }
+
+    // Fill missing department names from enrollments
+    if (Object.values(stats).some((s) => !s.department_name)) {
+      const { data: depts } = await this.supabase.db
+        .from('departments')
+        .select('id, name');
+      const deptMap = new Map((depts ?? []).map((d: any) => [d.id, d.name]));
+      for (const s of Object.values(stats)) {
+        if (!s.department_name) s.department_name = deptMap.get(s.department_id) || 'Sin Área';
       }
     }
 
-    return Object.values(deptStats).sort((a, b) =>
-      a.department_name.localeCompare(b.department_name),
-    );
+    return Object.values(stats).sort((a, b) => a.department_name.localeCompare(b.department_name));
   }
 
   async getByInstitution() {
@@ -174,102 +312,49 @@ export class DashboardService {
       .select('id, cost, is_active, institutions(id, name)')
       .eq('is_active', true);
 
-    // Group by institution
-    const instStats: Record<
-      string,
-      {
-        institution_id: string;
-        institution_name: string;
-        activeCourses: number;
-        totalInvestment: number;
-      }
-    > = {};
+    const stats: Record<string, {
+      institution_id: string;
+      institution_name: string;
+      activeCourses: number;
+      totalInvestment: number;
+    }> = {};
 
-    if (courses) {
-      for (const c of courses as any[]) {
-        const instId = c.institutions?.id || 'sin_institucion';
-        const instName = c.institutions?.name || 'Sin Institución';
-
-        if (!instStats[instId]) {
-          instStats[instId] = {
-            institution_id: instId,
-            institution_name: instName,
-            activeCourses: 0,
-            totalInvestment: 0,
-          };
-        }
-
-        instStats[instId].activeCourses++;
-        instStats[instId].totalInvestment += c.cost || 0;
-      }
+    for (const c of (courses ?? []) as any[]) {
+      const id = c.institutions?.id || 'sin_institucion';
+      const name = c.institutions?.name || 'Sin Institución';
+      if (!stats[id]) stats[id] = { institution_id: id, institution_name: name, activeCourses: 0, totalInvestment: 0 };
+      stats[id].activeCourses++;
+      stats[id].totalInvestment += Number(c.cost) || 0;
     }
 
-    return Object.values(instStats).sort(
-      (a, b) => b.totalInvestment - a.totalInvestment,
-    );
+    return Object.values(stats).sort((a, b) => b.totalInvestment - a.totalInvestment);
   }
 
   async getCompletionTime() {
     const { data: enrollments } = await this.supabase.db
       .from('course_enrollments')
       .select(`
-        enrolled_at,
-        completed_at,
-        course_editions(
-          courses(
-            modalities(id, name)
-          )
-        )
+        enrolled_at, completed_at,
+        course_editions(courses(modalities(id, name)))
       `)
       .eq('status', 'completo')
       .not('completed_at', 'is', null);
 
-    // Group by modality
-    const modalityStats: Record<
-      string,
-      {
-        modality: string;
-        totalDays: number;
-        minDays: number;
-        maxDays: number;
-        count: number;
-      }
-    > = {};
+    const stats: Record<string, { modality: string; totalDays: number; minDays: number; maxDays: number; count: number }> = {};
 
-    if (enrollments) {
-      for (const e of enrollments as any[]) {
-        const modality =
-          e.course_editions?.courses?.modalities?.name || 'Sin Modalidad';
-        const enrolled = new Date(e.enrolled_at);
-        const completed = new Date(e.completed_at);
-        const days = Math.floor(
-          (completed.getTime() - enrolled.getTime()) / (1000 * 60 * 60 * 24),
-        );
-
-        if (!modalityStats[modality]) {
-          modalityStats[modality] = {
-            modality,
-            totalDays: 0,
-            minDays: Infinity,
-            maxDays: 0,
-            count: 0,
-          };
-        }
-
-        modalityStats[modality].totalDays += days;
-        modalityStats[modality].minDays = Math.min(
-          modalityStats[modality].minDays,
-          days,
-        );
-        modalityStats[modality].maxDays = Math.max(
-          modalityStats[modality].maxDays,
-          days,
-        );
-        modalityStats[modality].count++;
-      }
+    for (const e of (enrollments ?? []) as any[]) {
+      const modality = e.course_editions?.courses?.modalities?.name || 'Sin Modalidad';
+      const days = Math.floor(
+        (new Date(e.completed_at).getTime() - new Date(e.enrolled_at).getTime()) / 86_400_000,
+      );
+      if (!stats[modality]) stats[modality] = { modality, totalDays: 0, minDays: Infinity, maxDays: 0, count: 0 };
+      stats[modality].totalDays += days;
+      stats[modality].minDays = Math.min(stats[modality].minDays, days);
+      stats[modality].maxDays = Math.max(stats[modality].maxDays, days);
+      stats[modality].count++;
     }
 
-    return Object.values(modalityStats)
+    return Object.values(stats)
       .map((m) => ({
         modality: m.modality,
         avgDays: m.count > 0 ? Math.round(m.totalDays / m.count) : 0,

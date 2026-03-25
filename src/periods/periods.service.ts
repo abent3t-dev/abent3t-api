@@ -1,16 +1,25 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { BaseCrudService } from '../common/services/base-crud.service';
 import { CreatePeriodDto } from './dto/create-period.dto';
 import { UpdatePeriodDto } from './dto/update-period.dto';
 
 @Injectable()
-export class PeriodsService {
-  constructor(private readonly supabase: SupabaseService) {}
+export class PeriodsService extends BaseCrudService<CreatePeriodDto, UpdatePeriodDto> {
+  protected readonly tableName = 'periods';
+  protected readonly selectFields = '*';
+  protected readonly orderField = 'year';
+  protected readonly searchFields = ['label'];
+  private readonly logger = new Logger(PeriodsService.name);
+
+  constructor(supabase: SupabaseService) {
+    super(supabase);
+  }
 
   async findAll() {
     const { data, error } = await this.supabase.db
-      .from('periods')
-      .select('*')
+      .from(this.tableName)
+      .select(this.selectFields)
       .order('year', { ascending: false })
       .order('semester', { ascending: true });
 
@@ -18,47 +27,18 @@ export class PeriodsService {
     return data;
   }
 
-  async findOne(id: string) {
-    const { data, error } = await this.supabase.db
-      .from('periods')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error || !data) throw new NotFoundException('Periodo no encontrado');
-    return data;
-  }
-
-  async create(dto: CreatePeriodDto) {
-    const { data, error } = await this.supabase.db
-      .from('periods')
-      .insert(dto)
-      .select()
-      .single();
-
-    if (error) throw error;
-    return data;
-  }
-
-  async update(id: string, dto: UpdatePeriodDto) {
-    const { data, error } = await this.supabase.db
-      .from('periods')
-      .update(dto)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error || !data) throw new NotFoundException('Periodo no encontrado');
-    return data;
-  }
-
   async remove(id: string) {
-    const { error } = await this.supabase.db
-      .from('periods')
-      .update({ is_active: false })
-      .eq('id', id);
+    const { count } = await this.supabase.db
+      .from('budgets')
+      .select('id', { count: 'exact', head: true })
+      .eq('period_id', id)
+      .eq('is_active', true);
 
-    if (error) throw error;
-    return { message: 'Periodo desactivado' };
+    if (count && count > 0) {
+      this.logger.warn(
+        `Deactivating period ${id} which has ${count} active budgets — budgets NOT cascade-deactivated`,
+      );
+    }
+    return super.remove(id);
   }
 }

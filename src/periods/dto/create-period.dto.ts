@@ -6,11 +6,16 @@ import {
   IsIn,
   IsDateString,
   MaxLength,
+  Min,
+  Max,
 } from 'class-validator';
+import { IsAfter } from '../../common/validators/is-after.validator';
 
 export class CreatePeriodDto {
   @IsInt()
   @IsNotEmpty()
+  @Min(2020)
+  @Max(2040)
   year: number;
 
   @IsInt()
@@ -29,5 +34,6 @@ export class CreatePeriodDto {
 
   @IsDateString()
   @IsNotEmpty()
+  @IsAfter('start_date')
   end_date: string;
 }

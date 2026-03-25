@@ -7,6 +7,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
+import { IsAfter } from '../../common/validators/is-after.validator';
 
 export class UpdateCourseEditionDto {
   @IsDateString()
@@ -15,6 +16,7 @@ export class UpdateCourseEditionDto {
 
   @IsDateString()
   @IsOptional()
+  @IsAfter('start_date')
   end_date?: string;
 
   @IsString()

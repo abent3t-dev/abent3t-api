@@ -1,63 +1,33 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { BaseCrudService } from '../common/services/base-crud.service';
 import { CreateDepartmentDto } from './dto/create-department.dto';
 import { UpdateDepartmentDto } from './dto/update-department.dto';
 
 @Injectable()
-export class DepartmentsService {
-  constructor(private readonly supabase: SupabaseService) {}
+export class DepartmentsService extends BaseCrudService<CreateDepartmentDto, UpdateDepartmentDto> {
+  protected readonly tableName = 'departments';
+  protected readonly selectFields = '*';
+  protected readonly orderField = 'name';
+  protected readonly searchFields = ['name'];
+  private readonly logger = new Logger(DepartmentsService.name);
 
-  async findAll() {
-    const { data, error } = await this.supabase.db
-      .from('departments')
-      .select('*')
-      .order('name');
-
-    if (error) throw error;
-    return data;
-  }
-
-  async findOne(id: string) {
-    const { data, error } = await this.supabase.db
-      .from('departments')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error || !data) throw new NotFoundException('Departamento no encontrado');
-    return data;
-  }
-
-  async create(dto: CreateDepartmentDto) {
-    const { data, error } = await this.supabase.db
-      .from('departments')
-      .insert(dto)
-      .select()
-      .single();
-
-    if (error) throw error;
-    return data;
-  }
-
-  async update(id: string, dto: UpdateDepartmentDto) {
-    const { data, error } = await this.supabase.db
-      .from('departments')
-      .update(dto)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error || !data) throw new NotFoundException('Departamento no encontrado');
-    return data;
+  constructor(supabase: SupabaseService) {
+    super(supabase);
   }
 
   async remove(id: string) {
-    const { error } = await this.supabase.db
-      .from('departments')
-      .update({ is_active: false })
-      .eq('id', id);
+    const { count } = await this.supabase.db
+      .from('profiles')
+      .select('id', { count: 'exact', head: true })
+      .eq('department_id', id)
+      .eq('is_active', true);
 
-    if (error) throw error;
-    return { message: 'Departamento desactivado' };
+    if (count && count > 0) {
+      this.logger.warn(
+        `Deactivating department ${id} which has ${count} active profiles — profiles NOT cascade-deactivated`,
+      );
+    }
+    return super.remove(id);
   }
 }
