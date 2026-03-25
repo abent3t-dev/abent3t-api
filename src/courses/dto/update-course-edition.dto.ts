@@ -37,4 +37,8 @@ export class UpdateCourseEditionDto {
   @IsBoolean()
   @IsOptional()
   is_active?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  prorate_cost?: boolean;
 }

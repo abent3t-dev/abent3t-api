@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsDateString,
   IsInt,
+  IsBoolean,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -33,4 +34,8 @@ export class CreateCourseEditionDto {
   @Min(1)
   @IsOptional()
   max_participants?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  prorate_cost?: boolean;
 }
