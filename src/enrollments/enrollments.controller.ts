@@ -7,12 +7,14 @@ import {
   Param,
   Body,
   ParseUUIDPipe,
+  ForbiddenException,
 } from '@nestjs/common';
 import { EnrollmentsService } from './enrollments.service';
 import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 import { BulkEnrollmentDto } from './dto/bulk-enrollment.dto';
 import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 @Controller('enrollments')
 export class EnrollmentsController {
@@ -29,10 +31,21 @@ export class EnrollmentsController {
     return this.service.findByEdition(editionId);
   }
 
-  // TODO: agregar lógica para que el propio usuario pueda ver sus enrollments
-  @Roles('admin_rh')
+  /**
+   * Obtiene inscripciones de un perfil
+   * - admin_rh puede ver cualquier perfil
+   * - Otros usuarios solo pueden ver su propio perfil
+   */
   @Get('profile/:profileId')
-  findByProfile(@Param('profileId', ParseUUIDPipe) profileId: string) {
+  findByProfile(
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+    @CurrentUser('id') currentUserId: string,
+    @CurrentUser('role') role: string,
+  ) {
+    // Permitir si es admin_rh o si solicita sus propios datos
+    if (role !== 'admin_rh' && profileId !== currentUserId) {
+      throw new ForbiddenException('Solo puedes ver tus propias inscripciones');
+    }
     return this.service.findByProfile(profileId);
   }
 

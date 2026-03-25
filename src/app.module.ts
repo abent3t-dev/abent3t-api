@@ -13,6 +13,7 @@ import { PeriodsModule } from './periods/periods.module';
 import { CoursesModule } from './courses/courses.module';
 import { BudgetsModule } from './budgets/budgets.module';
 import { EnrollmentsModule } from './enrollments/enrollments.module';
+import { EvidencesModule } from './evidences/evidences.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
@@ -30,6 +31,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     CoursesModule,
     BudgetsModule,
     EnrollmentsModule,
+    EvidencesModule,
     DashboardModule,
   ],
   controllers: [AppController],
