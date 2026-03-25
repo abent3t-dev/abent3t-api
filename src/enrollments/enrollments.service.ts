@@ -67,6 +67,78 @@ export class EnrollmentsService {
     if (!data.is_active) throw new BadRequestException('profile_id: el perfil está desactivado');
   }
 
+  /**
+   * Validates that the profile doesn't have any blocking enrollments.
+   * A blocking enrollment is one where:
+   * - Edition has require_evidence_for_completion = true
+   * - Status is NOT 'cancelado' or 'completo'
+   * - OR status is 'completo' but has no approved evidence
+   *
+   * Rule: Sin diploma/evidencia aprobada, el colaborador NO puede
+   *       inscribirse en otro curso.
+   */
+  private async validateNoBlockingEnrollments(
+    profileId: string,
+    bypassCheck = false,
+  ): Promise<void> {
+    if (bypassCheck) return;
+
+    // Get all active enrollments for this profile that require evidence
+    const { data: enrollments } = await this.supabase.db
+      .from('course_enrollments')
+      .select(`
+        id,
+        status,
+        course_edition_id,
+        course_editions!inner(
+          id,
+          require_evidence_for_completion,
+          courses(name)
+        )
+      `)
+      .eq('profile_id', profileId)
+      .eq('is_active', true)
+      .neq('status', 'cancelado');
+
+    if (!enrollments || enrollments.length === 0) return;
+
+    // Check each enrollment
+    for (const enrollment of enrollments) {
+      const edition = enrollment.course_editions as any;
+
+      // Skip if edition doesn't require evidence
+      if (!edition?.require_evidence_for_completion) continue;
+
+      const courseName = edition?.courses?.name || 'curso anterior';
+
+      // If enrollment is not complete, it's blocking
+      if (enrollment.status !== 'completo') {
+        throw new BadRequestException(
+          `El colaborador tiene una inscripción pendiente en "${courseName}". ` +
+          `Debe completar el curso antes de inscribirse en otro.`,
+        );
+      }
+
+      // If enrollment is complete, check for approved evidence
+      const { data: evidences } = await this.supabase.db
+        .from('enrollment_evidences')
+        .select('id, verification_status')
+        .eq('enrollment_id', enrollment.id)
+        .eq('is_active', true);
+
+      const hasApprovedEvidence = evidences?.some(
+        (e) => e.verification_status === 'approved',
+      );
+
+      if (!hasApprovedEvidence) {
+        throw new BadRequestException(
+          `El colaborador completó "${courseName}" pero no tiene evidencia aprobada. ` +
+          `Sin diploma/evidencia aprobada no puede inscribirse en otro curso.`,
+        );
+      }
+    }
+  }
+
   async findAll() {
     const { data, error } = await this.supabase.db
       .from('course_enrollments')
@@ -115,10 +187,11 @@ export class EnrollmentsService {
     return data;
   }
 
-  async create(dto: CreateEnrollmentDto) {
+  async create(dto: CreateEnrollmentDto, bypassBlockingCheck = false) {
     await Promise.all([
       this.validateEditionCapacity(dto.course_edition_id),
       this.validateProfileExists(dto.profile_id),
+      this.validateNoBlockingEnrollments(dto.profile_id, bypassBlockingCheck),
     ]);
 
     const { data, error } = await this.supabase.db
@@ -150,9 +223,12 @@ export class EnrollmentsService {
     return data;
   }
 
-  async createBulk(dto: BulkEnrollmentDto) {
+  async createBulk(dto: BulkEnrollmentDto, bypassBlockingCheck = false) {
     await this.validateEditionCapacity(dto.course_edition_id, dto.profile_ids.length);
-    await Promise.all(dto.profile_ids.map((pid) => this.validateProfileExists(pid)));
+    await Promise.all([
+      ...dto.profile_ids.map((pid) => this.validateProfileExists(pid)),
+      ...dto.profile_ids.map((pid) => this.validateNoBlockingEnrollments(pid, bypassBlockingCheck)),
+    ]);
 
     const enrollments = dto.profile_ids.map((profileId) => ({
       course_edition_id: dto.course_edition_id,

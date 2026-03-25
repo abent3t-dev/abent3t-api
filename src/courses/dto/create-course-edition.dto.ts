@@ -38,4 +38,8 @@ export class CreateCourseEditionDto {
   @IsBoolean()
   @IsOptional()
   prorate_cost?: boolean;
+
+  @IsBoolean()
+  @IsOptional()
+  require_evidence_for_completion?: boolean;
 }
