@@ -149,4 +149,24 @@ export class AuthService {
     if (error || !data) throw new NotFoundException('Perfil no encontrado');
     return data;
   }
+
+  /**
+   * Get team members for a department (jefe_area use case)
+   */
+  async getMyTeam(departmentId: string, excludeUserId?: string) {
+    let query = this.supabase.db
+      .from('profiles')
+      .select('*, departments(id, name)')
+      .eq('department_id', departmentId)
+      .eq('is_active', true)
+      .order('full_name');
+
+    if (excludeUserId) {
+      query = query.neq('id', excludeUserId);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data;
+  }
 }

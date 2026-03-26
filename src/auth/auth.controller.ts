@@ -25,6 +25,16 @@ export class AuthController {
     return this.service.getProfile(user.id);
   }
 
+  /** Get team members (jefe_area/director - returns users from their department) */
+  @Get('my-team')
+  @Roles('jefe_area', 'director', 'admin_rh', 'super_admin')
+  getMyTeam(@CurrentUser() user: AuthUser) {
+    if (!user.department_id) {
+      return [];
+    }
+    return this.service.getMyTeam(user.department_id, user.id);
+  }
+
   /** List all users (Super Admin only) */
   @Get('users')
   @UseGuards(RolesGuard)
