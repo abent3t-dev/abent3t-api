@@ -14,10 +14,16 @@ import { CreateBudgetDto } from './dto/create-budget.dto';
 import { UpdateBudgetDto } from './dto/update-budget.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { AuditService } from '../audit/audit.service';
 
 @Controller('budgets')
 export class BudgetsController {
-  constructor(private readonly service: BudgetsService) {}
+  constructor(
+    private readonly service: BudgetsService,
+    private readonly audit: AuditService,
+  ) {}
 
   @Roles('admin_rh')
   @Get()
@@ -48,22 +54,58 @@ export class BudgetsController {
 
   @Roles('admin_rh')
   @Post()
-  create(@Body() dto: CreateBudgetDto) {
-    return this.service.create(dto);
+  async create(@Body() dto: CreateBudgetDto, @CurrentUser() user: AuthUser) {
+    const result = await this.service.create(dto);
+    await this.audit.log({
+      action: 'create',
+      entity_type: 'budget',
+      entity_id: result.id,
+      entity_name: `${result.departments?.name || 'Área'} - ${result.periods?.label || 'Período'}`,
+      user_id: user.id,
+      user_name: user.full_name,
+      user_role: user.role,
+      new_values: { assigned_amount: dto.assigned_amount },
+    });
+    return result;
   }
 
   @Roles('admin_rh')
   @Put(':id')
-  update(
+  async update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateBudgetDto,
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.update(id, dto);
+    const oldBudget = await this.service.findOne(id);
+    const result = await this.service.update(id, dto);
+    await this.audit.log({
+      action: 'update',
+      entity_type: 'budget',
+      entity_id: id,
+      entity_name: `${result.departments?.name || 'Área'} - ${result.periods?.label || 'Período'}`,
+      user_id: user.id,
+      user_name: user.full_name,
+      user_role: user.role,
+      old_values: { assigned_amount: oldBudget.assigned_amount },
+      new_values: dto,
+    });
+    return result;
   }
 
   @Roles('admin_rh')
   @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.service.remove(id);
+  async remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    const budget = await this.service.findOne(id);
+    const result = await this.service.remove(id);
+    await this.audit.log({
+      action: 'delete',
+      entity_type: 'budget',
+      entity_id: id,
+      entity_name: `${budget.departments?.name || 'Área'} - ${budget.periods?.label || 'Período'}`,
+      user_id: user.id,
+      user_name: user.full_name,
+      user_role: user.role,
+    });
+    return result;
   }
 }

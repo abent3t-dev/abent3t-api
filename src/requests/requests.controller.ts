@@ -15,10 +15,14 @@ import { ReviewRequestDto } from './dto/review-request.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { AuditService } from '../audit/audit.service';
 
 @Controller('requests')
 export class RequestsController {
-  constructor(private readonly service: RequestsService) {}
+  constructor(
+    private readonly service: RequestsService,
+    private readonly audit: AuditService,
+  ) {}
 
   /**
    * List all requests (admin_rh only)
@@ -73,12 +77,28 @@ export class RequestsController {
    */
   @Roles('admin_rh')
   @Put(':id/review')
-  review(
+  async review(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ReviewRequestDto,
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.review(id, dto, userId);
+    const result = await this.service.review(id, dto, user.id);
+    const profile = result.profiles as any;
+    const course = (result.course_editions as any)?.courses;
+    await this.audit.log({
+      action: dto.status === 'aprobada' ? 'approve' : 'reject',
+      entity_type: 'request',
+      entity_id: id,
+      entity_name: `${profile?.full_name || 'Colaborador'} - ${course?.name || 'Curso'}`,
+      user_id: user.id,
+      user_name: user.full_name,
+      user_role: user.role,
+      new_values: {
+        status: dto.status,
+        rejection_reason: dto.rejection_reason,
+      },
+    });
+    return result;
   }
 
   /**

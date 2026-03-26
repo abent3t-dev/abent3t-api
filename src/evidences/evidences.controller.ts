@@ -17,10 +17,15 @@ import { UpdateEvidenceDto } from './dto/update-evidence.dto';
 import { VerifyEvidenceDto } from './dto/verify-evidence.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { AuditService } from '../audit/audit.service';
 
 @Controller('evidences')
 export class EvidencesController {
-  constructor(private readonly service: EvidencesService) {}
+  constructor(
+    private readonly service: EvidencesService,
+    private readonly audit: AuditService,
+  ) {}
 
   /**
    * Lista todas las evidencias (admin_rh)
@@ -96,12 +101,26 @@ export class EvidencesController {
    */
   @Roles('admin_rh')
   @Put(':id/verify')
-  verify(
+  async verify(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: VerifyEvidenceDto,
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.verify(id, dto, userId);
+    const result = await this.service.verify(id, dto, user.id);
+    await this.audit.log({
+      action: dto.verification_status === 'approved' ? 'approve' : 'reject',
+      entity_type: 'evidence',
+      entity_id: id,
+      entity_name: result.file_name,
+      user_id: user.id,
+      user_name: user.full_name,
+      user_role: user.role,
+      new_values: {
+        status: dto.verification_status,
+        rejection_reason: dto.rejection_reason,
+      },
+    });
+    return result;
   }
 
   /**
