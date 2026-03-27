@@ -19,6 +19,7 @@ import { RequestsModule } from './requests/requests.module';
 import { ReportsModule } from './reports/reports.module';
 import { AuditModule } from './audit/audit.module';
 import { PersonnelModule } from './personnel/personnel.module';
+import { ProposalsModule } from './proposals/proposals.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -41,6 +42,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     ReportsModule,
     AuditModule,
     PersonnelModule,
+    ProposalsModule,
   ],
   controllers: [AppController],
   providers: [
