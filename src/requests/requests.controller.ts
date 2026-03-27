@@ -44,12 +44,17 @@ export class RequestsController {
   }
 
   /**
-   * List my requests (jefe_area sees their own requests)
+   * List my requests:
+   * - jefe_area/director: sees requests they created
+   * - colaborador: sees requests where they are the beneficiary
    */
-  @Roles('jefe_area', 'director')
   @Get('my-requests')
-  findMyRequests(@CurrentUser('id') userId: string) {
-    return this.service.findByRequester(userId);
+  findMyRequests(@CurrentUser() user: AuthUser) {
+    if (['jefe_area', 'director'].includes(user.role)) {
+      return this.service.findByRequester(user.id);
+    }
+    // colaborador sees requests where they are the beneficiary
+    return this.service.findByBeneficiary(user.id);
   }
 
   /**

@@ -73,6 +73,21 @@ export class RequestsService {
   }
 
   /**
+   * Get requests where the user is the beneficiary (colaborador)
+   */
+  async findByBeneficiary(profileId: string) {
+    const { data, error } = await this.supabase.db
+      .from('training_requests')
+      .select(REQUEST_SELECT)
+      .eq('profile_id', profileId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data;
+  }
+
+  /**
    * Get requests for profiles in a specific department
    */
   async findByDepartment(departmentId: string) {
