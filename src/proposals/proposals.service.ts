@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
+import { SocketService } from '../socket/socket.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
 import { ReviewProposalDto } from './dto/review-proposal.dto';
 import { ApproveProposalDto } from './dto/approve-proposal.dto';
@@ -29,6 +30,7 @@ export class ProposalsService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly enrollmentsService: EnrollmentsService,
+    private readonly socketService: SocketService,
   ) {}
 
   /**
@@ -181,6 +183,21 @@ export class ProposalsService {
       `Proposal created: "${dto.course_name}" for ${profile.full_name} by user ${proposedBy}`,
     );
 
+    // Emit socket event
+    this.socketService.emitProposal(
+      'create',
+      {
+        id: data.id,
+        proposerId: proposedBy,
+        proposerName: data.proposer?.full_name || '',
+        profileId: profileId,
+        profileName: profile.full_name,
+        courseName: dto.course_name,
+        status: 'pendiente',
+      },
+      { id: proposedBy, name: data.proposer?.full_name || '' },
+    );
+
     return data;
   }
 
@@ -233,6 +250,23 @@ export class ProposalsService {
     if (error) throw error;
 
     this.logger.log(`Proposal ${id} status changed to: ${dto.status}`);
+
+    // Emit socket event
+    const action = dto.status === 'rechazada' ? 'reject' : 'update';
+    this.socketService.emitProposal(
+      action,
+      {
+        id: data.id,
+        proposerId: proposal.proposed_by,
+        proposerName: proposal.proposer?.full_name || '',
+        profileId: proposal.profile_id,
+        profileName: proposal.profile?.full_name || '',
+        courseName: proposal.course_name,
+        status: dto.status,
+      },
+      { id: reviewedBy, name: '' },
+    );
+
     return data;
   }
 
@@ -325,6 +359,24 @@ export class ProposalsService {
     if (error) throw error;
 
     this.logger.log(`Proposal ${id} approved successfully`);
+
+    // Emit socket event
+    this.socketService.emitProposal(
+      'approve',
+      {
+        id: data.id,
+        proposerId: proposal.proposed_by,
+        proposerName: proposal.proposer?.full_name || '',
+        profileId: proposal.profile_id,
+        profileName: proposal.profile?.full_name || '',
+        courseName: dto.course_name,
+        status: 'aprobada',
+      },
+      { id: approvedBy, name: '' },
+    );
+
+    // Emit dashboard refresh
+    this.socketService.emitDashboardRefresh();
 
     return {
       proposal: data,

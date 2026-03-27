@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
+import { SocketService } from '../socket/socket.service';
 import { CreateRequestDto } from './dto/create-request.dto';
 import { ReviewRequestDto } from './dto/review-request.dto';
 
@@ -29,6 +30,7 @@ export class RequestsService {
   constructor(
     private readonly supabase: SupabaseService,
     private readonly enrollmentsService: EnrollmentsService,
+    private readonly socketService: SocketService,
   ) {}
 
   /**
@@ -213,6 +215,21 @@ export class RequestsService {
       `Request created: ${profile.full_name} for ${(edition.courses as any)?.name}`,
     );
 
+    // Emit socket event
+    this.socketService.emitRequest(
+      'create',
+      {
+        id: data.id,
+        requesterId: requestedBy,
+        requesterName: data.requester?.full_name || '',
+        profileId: dto.profile_id,
+        profileName: profile.full_name,
+        courseName: (edition.courses as any)?.name || '',
+        departmentId: profile.department_id,
+      },
+      { id: requestedBy, name: data.requester?.full_name || '' },
+    );
+
     return data;
   }
 
@@ -261,6 +278,24 @@ export class RequestsService {
       if (error) throw error;
 
       this.logger.log(`Request ${id} rejected: ${dto.rejection_reason}`);
+
+      // Emit socket event for rejection
+      const profile = data.profiles as any;
+      const courseName = (data.course_editions as any)?.courses?.name || '';
+      this.socketService.emitRequest(
+        'reject',
+        {
+          id: data.id,
+          requesterId: data.requested_by,
+          requesterName: data.requester?.full_name || '',
+          profileId: profile?.id,
+          profileName: profile?.full_name || '',
+          courseName,
+          departmentId: profile?.department_id,
+        },
+        { id: reviewedBy, name: '' },
+      );
+
       return data;
     }
 
@@ -289,6 +324,27 @@ export class RequestsService {
     if (error) throw error;
 
     this.logger.log(`Request ${id} approved, enrollment ${enrollment.id} created`);
+
+    // Emit socket event for approval
+    const profile = data.profiles as any;
+    const courseName = (data.course_editions as any)?.courses?.name || '';
+    this.socketService.emitRequest(
+      'approve',
+      {
+        id: data.id,
+        requesterId: data.requested_by,
+        requesterName: data.requester?.full_name || '',
+        profileId: profile?.id,
+        profileName: profile?.full_name || '',
+        courseName,
+        departmentId: profile?.department_id,
+      },
+      { id: reviewedBy, name: '' },
+    );
+
+    // Emit dashboard refresh
+    this.socketService.emitDashboardRefresh();
+
     return data;
   }
 
