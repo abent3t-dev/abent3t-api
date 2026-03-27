@@ -342,6 +342,97 @@ export class EnrollmentsService {
   }
 
   /**
+   * Allows a collaborator to mark their course as finished.
+   * Changes status from 'inscrito' or 'en_curso' to 'pendiente_evidencia'.
+   */
+  async finishCourse(enrollmentId: string) {
+    const enrollment = await this.findOne(enrollmentId);
+
+    const allowedStatuses = ['inscrito', 'en_curso'];
+    if (!allowedStatuses.includes(enrollment.status)) {
+      throw new BadRequestException(
+        `No puedes finalizar un curso con estado "${enrollment.status}". ` +
+        `Solo se puede finalizar cursos con estado: ${allowedStatuses.join(', ')}`,
+      );
+    }
+
+    // Check if course has started based on dates
+    const edition = enrollment.course_editions as any;
+    const today = new Date().toISOString().split('T')[0];
+
+    if (edition?.start_date && today < edition.start_date) {
+      throw new BadRequestException(
+        'No puedes finalizar un curso que aún no ha comenzado',
+      );
+    }
+
+    const { data, error } = await this.supabase.db
+      .from('course_enrollments')
+      .update({ status: 'pendiente_evidencia' })
+      .eq('id', enrollmentId)
+      .select(ENROLLMENT_SELECT)
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  /**
+   * Calculates the effective status of an enrollment based on dates.
+   * - If status is 'inscrito' and today >= start_date: effective = 'en_curso'
+   * - If status is 'inscrito'/'en_curso' and today > end_date: effective = 'pendiente_evidencia'
+   * - Otherwise returns the actual status
+   */
+  getEffectiveStatus(enrollment: any): {
+    status: string;
+    effectiveStatus: string;
+    canFinish: boolean;
+    canUploadEvidence: boolean;
+    courseStarted: boolean;
+    courseEnded: boolean;
+  } {
+    const edition = enrollment.course_editions;
+    const today = new Date().toISOString().split('T')[0];
+    const startDate = edition?.start_date;
+    const endDate = edition?.end_date;
+
+    const courseStarted = startDate ? today >= startDate : false;
+    const courseEnded = endDate ? today > endDate : false;
+
+    let effectiveStatus = enrollment.status;
+
+    // If enrolled and course has started, effective status is 'en_curso'
+    if (enrollment.status === 'inscrito' && courseStarted) {
+      effectiveStatus = 'en_curso';
+    }
+
+    // If course has ended and not yet finished, effective status is 'pendiente_evidencia'
+    if (['inscrito', 'en_curso'].includes(enrollment.status) && courseEnded) {
+      effectiveStatus = 'pendiente_evidencia';
+    }
+
+    // Determine available actions
+    const canFinish =
+      ['inscrito', 'en_curso'].includes(enrollment.status) &&
+      courseStarted &&
+      !courseEnded;
+
+    const canUploadEvidence =
+      effectiveStatus === 'pendiente_evidencia' ||
+      enrollment.status === 'pendiente_evidencia' ||
+      enrollment.status === 'completo';
+
+    return {
+      status: enrollment.status,
+      effectiveStatus,
+      canFinish,
+      canUploadEvidence,
+      courseStarted,
+      courseEnded,
+    };
+  }
+
+  /**
    * Updates the consumed_amount on the matching budget when an enrollment
    * is created or cancelled.
    *

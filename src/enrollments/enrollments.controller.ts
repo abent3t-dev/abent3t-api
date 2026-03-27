@@ -15,6 +15,7 @@ import { BulkEnrollmentDto } from './dto/bulk-enrollment.dto';
 import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
 
 @Controller('enrollments')
 export class EnrollmentsController {
@@ -80,5 +81,37 @@ export class EnrollmentsController {
   @Delete(':id')
   remove(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.remove(id);
+  }
+
+  /**
+   * Colaborador marca su curso como finalizado
+   * Cambia estado a 'pendiente_evidencia' para que pueda subir evidencias
+   */
+  @Put(':id/finish')
+  async finishCourse(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    // Verificar que la inscripción pertenece al usuario
+    const enrollment = await this.service.findOne(id);
+    if (enrollment.profile_id !== user.id && user.role !== 'admin_rh' && user.role !== 'super_admin') {
+      throw new ForbiddenException('Solo puedes finalizar tus propios cursos');
+    }
+    return this.service.finishCourse(id);
+  }
+
+  /**
+   * Obtiene el estado efectivo de una inscripción basado en fechas
+   */
+  @Get(':id/effective-status')
+  async getEffectiveStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const enrollment = await this.service.findOne(id);
+    if (enrollment.profile_id !== user.id && user.role !== 'admin_rh' && user.role !== 'super_admin') {
+      throw new ForbiddenException('Solo puedes ver tus propias inscripciones');
+    }
+    return this.service.getEffectiveStatus(enrollment);
   }
 }
