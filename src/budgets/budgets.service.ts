@@ -38,6 +38,7 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
     const { data, error } = await this.supabase.db
       .from(this.tableName)
       .select(this.selectFields)
+      .eq('is_active', true)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -49,6 +50,7 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
       .from(this.tableName)
       .select(this.selectFields)
       .eq('id', id)
+      .eq('is_active', true)
       .single();
 
     if (error || !data) throw new NotFoundException('Presupuesto no encontrado');
@@ -60,6 +62,7 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
       .from(this.tableName)
       .select(this.selectFields)
       .eq('department_id', departmentId)
+      .eq('is_active', true)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -71,6 +74,7 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
       .from(this.tableName)
       .select(this.selectFields)
       .eq('period_id', periodId)
+      .eq('is_active', true)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
