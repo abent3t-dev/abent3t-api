@@ -32,12 +32,19 @@ interface EvidenceRow {
 const EVIDENCE_SELECT = `
   *,
   course_enrollments!enrollment_id(
-    id, profile_id, course_edition_id, status,
-    profiles(id, full_name, email),
-    course_editions(id, courses(id, name))
+    id, profile_id, course_edition_id, status, enrolled_at,
+    profiles(id, full_name, email, position, departments(id, name)),
+    course_editions(
+      id, start_date, end_date, location, instructor,
+      courses(
+        id, name, total_hours, cost,
+        institutions(id, name),
+        modalities(id, name)
+      )
+    )
   ),
-  uploader:profiles!uploaded_by(id, full_name, email),
-  verifier:profiles!verified_by(id, full_name, email)
+  profiles:profiles!uploaded_by(id, full_name, email),
+  verified_by_profile:profiles!verified_by(id, full_name, email)
 `;
 
 const ALLOWED_MIME_TYPES = [

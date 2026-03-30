@@ -13,7 +13,15 @@ import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
 const ENROLLMENT_SELECT = `
   *,
   profiles(id, full_name, email, position, departments(id, name)),
-  course_editions(id, course_id, start_date, end_date, max_participants, courses(id, name))
+  course_editions(
+    id, course_id, start_date, end_date, max_participants, location, instructor,
+    courses(
+      id, name, total_hours, cost, description,
+      course_types(id, name),
+      modalities(id, name),
+      institutions(id, name)
+    )
+  )
 `;
 
 @Injectable()
