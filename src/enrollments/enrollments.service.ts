@@ -182,6 +182,34 @@ export class EnrollmentsService {
     return data;
   }
 
+  /**
+   * Obtiene inscripciones de todos los colaboradores de un departamento
+   * Útil para que jefes de área vean el progreso de su equipo
+   */
+  async findByDepartment(departmentId: string) {
+    // Primero obtenemos los profile_ids del departamento
+    const { data: profiles, error: profilesError } = await this.supabase.db
+      .from('profiles')
+      .select('id')
+      .eq('department_id', departmentId)
+      .eq('is_active', true);
+
+    if (profilesError) throw profilesError;
+    if (!profiles || profiles.length === 0) return [];
+
+    const profileIds = profiles.map((p) => p.id);
+
+    const { data, error } = await this.supabase.db
+      .from('course_enrollments')
+      .select(ENROLLMENT_SELECT)
+      .in('profile_id', profileIds)
+      .eq('is_active', true)
+      .order('enrolled_at', { ascending: false });
+
+    if (error) throw error;
+    return data;
+  }
+
   async findOne(id: string) {
     const { data, error } = await this.supabase.db
       .from('course_enrollments')

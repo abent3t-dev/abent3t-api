@@ -50,6 +50,27 @@ export class EnrollmentsController {
     return this.service.findByProfile(profileId);
   }
 
+  /**
+   * Obtiene inscripciones de un departamento
+   * - admin_rh puede ver cualquier departamento
+   * - jefe_area/director solo pueden ver su propio departamento
+   */
+  @Get('department/:departmentId')
+  findByDepartment(
+    @Param('departmentId', ParseUUIDPipe) departmentId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    // Permitir si es admin_rh o super_admin
+    if (user.role === 'admin_rh' || user.role === 'super_admin') {
+      return this.service.findByDepartment(departmentId);
+    }
+    // jefe_area/director solo pueden ver su departamento
+    if ((user.role === 'jefe_area' || user.role === 'director') && user.department_id === departmentId) {
+      return this.service.findByDepartment(departmentId);
+    }
+    throw new ForbiddenException('Solo puedes ver inscripciones de tu departamento');
+  }
+
   @Roles('admin_rh')
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
