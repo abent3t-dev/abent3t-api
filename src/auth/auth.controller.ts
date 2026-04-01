@@ -35,10 +35,10 @@ export class AuthController {
     return this.service.getMyTeam(user.department_id, user.id);
   }
 
-  /** List all users (Super Admin only) */
+  /** List all users (Super Admin and admin_rh) */
   @Get('users')
   @UseGuards(RolesGuard)
-  @Roles('super_admin')
+  @Roles('super_admin', 'admin_rh')
   listUsers(
     @Query('role') role?: string,
     @Query('department_id') departmentId?: string,
