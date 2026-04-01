@@ -8,6 +8,8 @@ import {
   Body,
   Query,
   ParseUUIDPipe,
+  ParseIntPipe,
+  DefaultValuePipe,
 } from '@nestjs/common';
 import { ProposalsService } from './proposals.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
@@ -28,11 +30,16 @@ export class ProposalsController {
   /**
    * List all proposals (admin_rh only)
    * Optional filter by status: ?status=pendiente|en_investigacion|aprobada|rechazada
+   * Pagination: ?page=1&limit=10
    */
   @Roles('admin_rh')
   @Get()
-  findAll(@Query('status') status?: string) {
-    return this.service.findAll(status);
+  findAll(
+    @Query('status') status?: string,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page?: number,
+    @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit?: number,
+  ) {
+    return this.service.findAll(status, page, limit);
   }
 
   /**

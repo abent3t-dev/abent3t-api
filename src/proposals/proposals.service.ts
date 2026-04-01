@@ -36,12 +36,31 @@ export class ProposalsService {
   /**
    * Get all proposals (for admin_rh)
    */
-  async findAll(status?: string) {
+  async findAll(status?: string, page = 1, limit = 10) {
+    // First, get the total count
+    let countQuery = this.supabase.db
+      .from('course_proposals')
+      .select('*', { count: 'exact', head: true })
+      .eq('is_active', true);
+
+    if (status) {
+      countQuery = countQuery.eq('status', status);
+    }
+
+    const { count, error: countError } = await countQuery;
+    if (countError) throw countError;
+
+    const total = count || 0;
+    const totalPages = Math.ceil(total / limit);
+    const offset = (page - 1) * limit;
+
+    // Then get the data
     let query = this.supabase.db
       .from('course_proposals')
       .select(PROPOSAL_SELECT)
       .eq('is_active', true)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
 
     if (status) {
       query = query.eq('status', status);
@@ -49,7 +68,18 @@ export class ProposalsService {
 
     const { data, error } = await query;
     if (error) throw error;
-    return data;
+
+    return {
+      data: data || [],
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    };
   }
 
   /**

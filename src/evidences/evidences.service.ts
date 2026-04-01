@@ -8,8 +8,10 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { CreateEvidenceDto } from './dto/create-evidence.dto';
 import { UpdateEvidenceDto } from './dto/update-evidence.dto';
 import { VerifyEvidenceDto } from './dto/verify-evidence.dto';
+import { PaginationDto } from '../common/dto/pagination.dto';
+import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
 
-interface EvidenceRow {
+export interface EvidenceRow {
   id: string;
   enrollment_id: string;
   file_name: string;
@@ -81,6 +83,39 @@ export class EvidencesService {
   }
 
   /**
+   * Lista todas las evidencias con paginación
+   */
+  async findAllPaginated(
+    pagination: PaginationDto,
+  ): Promise<PaginatedResponse<EvidenceRow>> {
+    const page = pagination.page ?? 1;
+    const limit = pagination.limit ?? 10;
+    const offset = (page - 1) * limit;
+
+    const { data, error, count } = await this.supabase.db
+      .from('enrollment_evidences')
+      .select(EVIDENCE_SELECT, { count: 'exact' })
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) throw error;
+
+    const total = count ?? 0;
+    return {
+      data: data ?? [],
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit) || 1,
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    };
+  }
+
+  /**
    * Busca evidencias por inscripción
    */
   async findByEnrollment(enrollmentId: string) {
@@ -108,6 +143,75 @@ export class EvidencesService {
 
     if (error) throw error;
     return data;
+  }
+
+  /**
+   * Busca evidencias pendientes con paginación
+   */
+  async findPendingPaginated(
+    pagination: PaginationDto,
+  ): Promise<PaginatedResponse<EvidenceRow>> {
+    const page = pagination.page ?? 1;
+    const limit = pagination.limit ?? 10;
+    const offset = (page - 1) * limit;
+
+    const { data, error, count } = await this.supabase.db
+      .from('enrollment_evidences')
+      .select(EVIDENCE_SELECT, { count: 'exact' })
+      .eq('verification_status', 'pending')
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+      .range(offset, offset + limit - 1);
+
+    if (error) throw error;
+
+    const total = count ?? 0;
+    return {
+      data: data ?? [],
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit) || 1,
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    };
+  }
+
+  /**
+   * Busca evidencias por estado de verificación con paginación
+   */
+  async findByStatusPaginated(
+    status: 'approved' | 'rejected',
+    pagination: PaginationDto,
+  ): Promise<PaginatedResponse<EvidenceRow>> {
+    const page = pagination.page ?? 1;
+    const limit = pagination.limit ?? 10;
+    const offset = (page - 1) * limit;
+
+    const { data, error, count } = await this.supabase.db
+      .from('enrollment_evidences')
+      .select(EVIDENCE_SELECT, { count: 'exact' })
+      .eq('verification_status', status)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) throw error;
+
+    const total = count ?? 0;
+    return {
+      data: data ?? [],
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit) || 1,
+        hasNext: page * limit < total,
+        hasPrev: page > 1,
+      },
+    };
   }
 
   /**

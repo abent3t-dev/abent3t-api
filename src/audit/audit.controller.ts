@@ -25,8 +25,8 @@ export class AuditController {
     @Query('user_id') userId?: string,
     @Query('start_date') startDate?: string,
     @Query('end_date') endDate?: string,
+    @Query('page') page?: string,
     @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
   ) {
     return this.service.findAll(
       {
@@ -37,8 +37,8 @@ export class AuditController {
         start_date: startDate,
         end_date: endDate,
       },
-      limit ? parseInt(limit) : 100,
-      offset ? parseInt(offset) : 0,
+      page ? parseInt(page) : 1,
+      limit ? parseInt(limit) : 15,
     );
   }
 

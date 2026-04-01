@@ -6,6 +6,7 @@ import {
   Delete,
   Param,
   Body,
+  Query,
   ParseUUIDPipe,
   UseInterceptors,
   UploadedFile,
@@ -15,6 +16,7 @@ import { EvidencesService } from './evidences.service';
 import { CreateEvidenceDto } from './dto/create-evidence.dto';
 import { UpdateEvidenceDto } from './dto/update-evidence.dto';
 import { VerifyEvidenceDto } from './dto/verify-evidence.dto';
+import { PaginationDto } from '../common/dto/pagination.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -29,15 +31,31 @@ export class EvidencesController {
 
   /**
    * Lista todas las evidencias (admin_rh)
+   * Soporta paginación mediante query params: ?page=1&limit=10
+   * Soporta filtro por status: ?status=pending|approved|rejected
    */
   @Roles('admin_rh')
   @Get()
-  findAll() {
+  findAll(@Query() pagination: PaginationDto, @Query('status') status?: string) {
+    // Si se solicita paginación
+    if (pagination.page || pagination.limit) {
+      // Si se filtra por status específico
+      if (status === 'pending') {
+        return this.service.findPendingPaginated(pagination);
+      }
+      if (status === 'approved' || status === 'rejected') {
+        return this.service.findByStatusPaginated(status, pagination);
+      }
+      // Todas las evidencias con paginación
+      return this.service.findAllPaginated(pagination);
+    }
+    // Sin paginación (comportamiento legacy)
     return this.service.findAll();
   }
 
   /**
    * Lista evidencias pendientes de verificación (admin_rh)
+   * Endpoint legacy mantenido para compatibilidad
    */
   @Roles('admin_rh')
   @Get('pending')

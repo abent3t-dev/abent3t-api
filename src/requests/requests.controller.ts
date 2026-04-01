@@ -27,11 +27,18 @@ export class RequestsController {
   /**
    * List all requests (admin_rh only)
    * Optional filter by status: ?status=pendiente|aprobada|rechazada
+   * Pagination: ?page=1&limit=10
    */
   @Roles('admin_rh')
   @Get()
-  findAll(@Query('status') status?: string) {
-    return this.service.findAll(status);
+  findAll(
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 10;
+    return this.service.findAll(status, pageNum, limitNum);
   }
 
   /**
@@ -44,17 +51,33 @@ export class RequestsController {
   }
 
   /**
+   * Get request statistics
+   */
+  @Get('stats')
+  getStats(@CurrentUser() user: AuthUser) {
+    return this.service.getStats(user.id, user.role);
+  }
+
+  /**
    * List my requests:
    * - jefe_area/director: sees requests they created
    * - colaborador: sees requests where they are the beneficiary
+   * Pagination: ?page=1&limit=10
    */
   @Get('my-requests')
-  findMyRequests(@CurrentUser() user: AuthUser) {
+  findMyRequests(
+    @CurrentUser() user: AuthUser,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pageNum = page ? parseInt(page, 10) : 1;
+    const limitNum = limit ? parseInt(limit, 10) : 10;
+
     if (['jefe_area', 'director'].includes(user.role)) {
-      return this.service.findByRequester(user.id);
+      return this.service.findByRequester(user.id, pageNum, limitNum);
     }
     // colaborador sees requests where they are the beneficiary
-    return this.service.findByBeneficiary(user.id);
+    return this.service.findByBeneficiary(user.id, pageNum, limitNum);
   }
 
   /**

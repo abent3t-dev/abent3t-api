@@ -102,7 +102,9 @@ export class AuditService {
   /**
    * Obtiene logs de auditoría con filtros
    */
-  async findAll(filters: AuditFilters, limit = 100, offset = 0) {
+  async findAll(filters: AuditFilters, page = 1, limit = 15) {
+    const offset = (page - 1) * limit;
+
     let query = this.supabase.db
       .from('audit_logs')
       .select('*', { count: 'exact' })
@@ -132,11 +134,15 @@ export class AuditService {
 
     if (error) throw error;
 
+    const total = count || 0;
+    const totalPages = Math.ceil(total / limit);
+
     return {
       data,
-      total: count || 0,
+      total,
+      page,
       limit,
-      offset,
+      totalPages,
     };
   }
 

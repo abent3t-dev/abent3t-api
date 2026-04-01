@@ -34,22 +34,39 @@ export class RequestsService {
   ) {}
 
   /**
-   * Get all requests (for admin_rh)
+   * Get all requests (for admin_rh) with pagination
    */
-  async findAll(status?: string) {
+  async findAll(status?: string, page = 1, limit = 10) {
+    const offset = (page - 1) * limit;
+
     let query = this.supabase.db
       .from('training_requests')
-      .select(REQUEST_SELECT)
+      .select(REQUEST_SELECT, { count: 'exact' })
       .eq('is_active', true)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
 
     if (status) {
       query = query.eq('status', status);
     }
 
-    const { data, error } = await query;
+    const { data, error, count } = await query;
     if (error) throw error;
-    return data;
+
+    const total = count || 0;
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      data: data || [],
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    };
   }
 
   /**
@@ -60,33 +77,99 @@ export class RequestsService {
   }
 
   /**
-   * Get requests made by a specific user (jefe_area)
+   * Get request statistics
    */
-  async findByRequester(requesterId: string) {
-    const { data, error } = await this.supabase.db
+  async getStats(userId?: string, userRole?: string) {
+    let query = this.supabase.db
       .from('training_requests')
-      .select(REQUEST_SELECT)
-      .eq('requested_by', requesterId)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
+      .select('status', { count: 'exact' })
+      .eq('is_active', true);
 
+    // Filter by user if not admin
+    if (userId && userRole && !['admin_rh', 'super_admin'].includes(userRole)) {
+      if (['jefe_area', 'director'].includes(userRole)) {
+        query = query.eq('requested_by', userId);
+      } else {
+        query = query.eq('profile_id', userId);
+      }
+    }
+
+    const { data, error } = await query;
     if (error) throw error;
-    return data;
+
+    // Count by status
+    const stats = {
+      total: data?.length || 0,
+      pendientes: data?.filter(r => r.status === 'pendiente').length || 0,
+      aprobadas: data?.filter(r => r.status === 'aprobada').length || 0,
+      rechazadas: data?.filter(r => r.status === 'rechazada').length || 0,
+    };
+
+    return stats;
   }
 
   /**
-   * Get requests where the user is the beneficiary (colaborador)
+   * Get requests made by a specific user (jefe_area) with pagination
    */
-  async findByBeneficiary(profileId: string) {
-    const { data, error } = await this.supabase.db
+  async findByRequester(requesterId: string, page = 1, limit = 10) {
+    const offset = (page - 1) * limit;
+
+    const { data, error, count } = await this.supabase.db
       .from('training_requests')
-      .select(REQUEST_SELECT)
-      .eq('profile_id', profileId)
+      .select(REQUEST_SELECT, { count: 'exact' })
+      .eq('requested_by', requesterId)
       .eq('is_active', true)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
 
     if (error) throw error;
-    return data;
+
+    const total = count || 0;
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      data: data || [],
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    };
+  }
+
+  /**
+   * Get requests where the user is the beneficiary (colaborador) with pagination
+   */
+  async findByBeneficiary(profileId: string, page = 1, limit = 10) {
+    const offset = (page - 1) * limit;
+
+    const { data, error, count } = await this.supabase.db
+      .from('training_requests')
+      .select(REQUEST_SELECT, { count: 'exact' })
+      .eq('profile_id', profileId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (error) throw error;
+
+    const total = count || 0;
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      data: data || [],
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    };
   }
 
   /**
