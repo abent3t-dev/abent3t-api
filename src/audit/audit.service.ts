@@ -7,7 +7,7 @@ export type AuditEntity = 'course' | 'course_edition' | 'enrollment' | 'evidence
 export interface AuditLogEntry {
   action: AuditAction;
   entity_type: AuditEntity;
-  entity_id: string;
+  entity_id: string; // UUID especial '00000000-0000-0000-0000-000000000000' para operaciones masivas
   entity_name?: string;
   user_id: string;
   user_name?: string;

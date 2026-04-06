@@ -8,8 +8,13 @@ import {
   Body,
   Query,
   ParseUUIDPipe,
+  UseInterceptors,
+  UploadedFile,
+  Res,
 } from '@nestjs/common';
-import { BudgetsService } from './budgets.service';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Response } from 'express';
+import { BudgetsService, ImportResult } from './budgets.service';
 import { CreateBudgetDto } from './dto/create-budget.dto';
 import { UpdateBudgetDto } from './dto/update-budget.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -35,9 +40,25 @@ export class BudgetsController {
   }
 
   @Roles('admin_rh')
-  @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.service.findOne(id);
+  @Get('export-template')
+  async exportTemplate(
+    @Query('include_data') includeData?: string,
+    @Res() res?: Response,
+  ): Promise<void> {
+    const shouldIncludeData = includeData === 'true';
+    const buffer = await this.service.exportTemplate(shouldIncludeData);
+
+    const filename = shouldIncludeData
+      ? 'presupuestos_con_datos.xlsx'
+      : 'plantilla_presupuestos.xlsx';
+
+    if (!res) {
+      throw new Error('Response object not available');
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
   }
 
   @Roles('admin_rh')
@@ -50,6 +71,12 @@ export class BudgetsController {
   @Get('period/:periodId')
   findByPeriod(@Param('periodId', ParseUUIDPipe) periodId: string) {
     return this.service.findByPeriod(periodId);
+  }
+
+  @Roles('admin_rh')
+  @Get(':id')
+  findOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.service.findOne(id);
   }
 
   @Roles('admin_rh')
@@ -106,6 +133,48 @@ export class BudgetsController {
       user_name: user.full_name,
       user_role: user.role,
     });
+    return result;
+  }
+
+  @Roles('admin_rh')
+  @Post('import')
+  @UseInterceptors(FileInterceptor('file'))
+  async importBudgets(
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: AuthUser,
+  ): Promise<ImportResult> {
+    if (!file) {
+      throw new Error('No se proporcionó ningún archivo');
+    }
+
+    // Validar extensión
+    const allowedExtensions = ['.xlsx', '.xls'];
+    const fileExtension = file.originalname.toLowerCase().substring(file.originalname.lastIndexOf('.'));
+
+    if (!allowedExtensions.includes(fileExtension)) {
+      throw new Error('Formato de archivo inválido. Solo se permiten archivos .xlsx o .xls');
+    }
+
+    // Validar tamaño (5MB max)
+    const maxSize = 5 * 1024 * 1024; // 5MB
+    if (file.size > maxSize) {
+      throw new Error('El archivo es demasiado grande. Tamaño máximo: 5MB');
+    }
+
+    const result = await this.service.importBudgets(file.buffer);
+
+    // Log de auditoría
+    await this.audit.log({
+      action: 'create',
+      entity_type: 'budget',
+      entity_id: '00000000-0000-0000-0000-000000000000', // UUID especial para operaciones masivas
+      entity_name: `Importación masiva: ${result.success} exitosos, ${result.errors.length} errores`,
+      user_id: user.id,
+      user_name: user.full_name,
+      user_role: user.role,
+      new_values: result,
+    });
+
     return result;
   }
 }
