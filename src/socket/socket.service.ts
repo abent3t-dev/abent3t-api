@@ -9,8 +9,13 @@ export interface NotificationPayload {
     | 'proposal'
     | 'budget'
     | 'course'
-    | 'user';
-  action: 'create' | 'update' | 'delete' | 'approve' | 'reject' | 'upload' | 'verify';
+    | 'user'
+    // Tipos de Compras
+    | 'requisition'
+    | 'purchase_order'
+    | 'approval'
+    | 'supplier';
+  action: 'create' | 'update' | 'delete' | 'approve' | 'reject' | 'upload' | 'verify' | 'pending_approval';
   entityId: string;
   entityName?: string;
   message: string;

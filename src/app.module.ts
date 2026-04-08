@@ -21,6 +21,11 @@ import { AuditModule } from './audit/audit.module';
 import { PersonnelModule } from './personnel/personnel.module';
 import { ProposalsModule } from './proposals/proposals.module';
 import { SocketModule } from './socket/socket.module';
+// Modulos de Compras
+import { SuppliersModule } from './suppliers/suppliers.module';
+import { RequisitionsModule } from './requisitions/requisitions.module';
+import { ApprovalsModule } from './approvals/approvals.module';
+import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -45,6 +50,11 @@ import { RolesGuard } from './common/guards/roles.guard';
     PersonnelModule,
     ProposalsModule,
     SocketModule,
+    // Modulos de Compras
+    SuppliersModule,
+    RequisitionsModule,
+    ApprovalsModule,
+    PurchaseOrdersModule,
   ],
   controllers: [AppController],
   providers: [
