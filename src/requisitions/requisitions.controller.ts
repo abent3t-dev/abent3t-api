@@ -9,7 +9,8 @@ import {
   Query,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { RequisitionsService, RequisitionStatus } from './requisitions.service';
+import { RequisitionsService } from './requisitions.service';
+import type { RequisitionStatus } from './requisitions.service';
 import { CreateRequisitionDto } from './dto/create-requisition.dto';
 import { UpdateRequisitionDto } from './dto/update-requisition.dto';
 import { FilterRequisitionDto } from './dto/filter-requisition.dto';

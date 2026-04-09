@@ -9,7 +9,8 @@ import {
   Query,
   ParseUUIDPipe,
 } from '@nestjs/common';
-import { PurchaseOrdersService, POStatus } from './purchase-orders.service';
+import { PurchaseOrdersService } from './purchase-orders.service';
+import type { POStatus } from './purchase-orders.service';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -29,16 +30,16 @@ export class PurchaseOrdersController {
     @Query() pagination: PaginationDto,
     @Query('status') status?: POStatus,
     @Query('supplier_id') supplierId?: string,
-    @Query('procurement_type') procurementType?: string,
-    @Query('type') type?: string,
+    @Query('purchase_type_id') purchaseTypeId?: string,
+    @Query('expense_type') expenseType?: string,
     @Query('date_from') dateFrom?: string,
     @Query('date_to') dateTo?: string,
   ) {
     return this.service.findAll(pagination, {
       status,
       supplier_id: supplierId,
-      procurement_type: procurementType,
-      type,
+      purchase_type_id: purchaseTypeId,
+      expense_type: expenseType,
       date_from: dateFrom,
       date_to: dateTo,
     });
@@ -49,12 +50,12 @@ export class PurchaseOrdersController {
   getStats(
     @Query('date_from') dateFrom?: string,
     @Query('date_to') dateTo?: string,
-    @Query('type') type?: string,
+    @Query('expense_type') expenseType?: string,
   ) {
     return this.service.getStats({
       date_from: dateFrom,
       date_to: dateTo,
-      type,
+      expense_type: expenseType,
     });
   }
 

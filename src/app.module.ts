@@ -26,6 +26,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
 import { RequisitionsModule } from './requisitions/requisitions.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
+import { PurchaseTypesModule } from './purchase-types/purchase-types.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -55,6 +56,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     RequisitionsModule,
     ApprovalsModule,
     PurchaseOrdersModule,
+    PurchaseTypesModule,
   ],
   controllers: [AppController],
   providers: [
