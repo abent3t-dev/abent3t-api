@@ -27,6 +27,8 @@ import { RequisitionsModule } from './requisitions/requisitions.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { PurchaseTypesModule } from './purchase-types/purchase-types.module';
+// Modulo de Plataformas (Crehana, etc.)
+import { PlatformsModule } from './platforms/platforms.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -57,6 +59,8 @@ import { RolesGuard } from './common/guards/roles.guard';
     ApprovalsModule,
     PurchaseOrdersModule,
     PurchaseTypesModule,
+    // Modulo de Plataformas
+    PlatformsModule,
   ],
   controllers: [AppController],
   providers: [
