@@ -4,10 +4,13 @@ import {
   IsBoolean,
   IsDateString,
   IsInt,
+  IsNumber,
+  IsIn,
   MaxLength,
   Min,
 } from 'class-validator';
 import { IsAfter } from '../../common/validators/is-after.validator';
+import type { EditionPaymentStatus } from './create-course-edition.dto';
 
 export class UpdateCourseEditionDto {
   @IsDateString()
@@ -45,4 +48,24 @@ export class UpdateCourseEditionDto {
   @IsBoolean()
   @IsOptional()
   require_evidence_for_completion?: boolean;
+
+  // Campos de costo y pago por edición
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  cost_override?: number | null;
+
+  @IsString()
+  @IsIn(['pending', 'paid', 'cancelled', 'na'])
+  @IsOptional()
+  payment_status?: EditionPaymentStatus;
+
+  @IsString()
+  @MaxLength(255)
+  @IsOptional()
+  payment_reference?: string | null;
+
+  @IsDateString()
+  @IsOptional()
+  payment_date?: string | null;
 }

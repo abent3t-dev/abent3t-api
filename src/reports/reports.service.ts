@@ -37,6 +37,7 @@ export class ReportsService {
         course_editions!inner(
           id,
           start_date,
+          cost_override,
           courses!inner(
             id,
             name,
@@ -83,10 +84,11 @@ export class ReportsService {
       }
 
       const hours = course?.total_hours || 0;
-      const cost = course?.cost || 0;
+      // Costo efectivo: usa cost_override de la edición si existe, sino el costo base del curso
+      const effectiveCost = edition?.cost_override ?? course?.cost ?? 0;
 
       byPerson[profile.id].courses_enrolled += 1;
-      byPerson[profile.id].total_investment += cost;
+      byPerson[profile.id].total_investment += effectiveCost;
 
       if (enrollment.status === 'completo') {
         byPerson[profile.id].courses_completed += 1;
@@ -134,6 +136,7 @@ export class ReportsService {
         profile_id,
         profiles!inner(department_id),
         course_editions!inner(
+          cost_override,
           courses!inner(total_hours, cost)
         )
       `)
@@ -201,6 +204,7 @@ export class ReportsService {
         id,
         status,
         course_editions!inner(
+          cost_override,
           courses!inner(
             id,
             name,
@@ -220,7 +224,8 @@ export class ReportsService {
     const byInstitution: Record<string, any> = {};
 
     for (const e of enrollments || []) {
-      const course = (e.course_editions as any)?.courses;
+      const edition = e.course_editions as any;
+      const course = edition?.courses;
       const institution = course?.institutions;
 
       if (!institution?.id) continue;
@@ -238,7 +243,9 @@ export class ReportsService {
         };
       }
 
-      byInstitution[institution.id].total_investment += course.cost || 0;
+      // Costo efectivo: usa cost_override de la edición si existe, sino el costo base del curso
+      const effectiveCost = edition?.cost_override ?? course?.cost ?? 0;
+      byInstitution[institution.id].total_investment += effectiveCost;
       byInstitution[institution.id].total_hours += course.total_hours || 0;
       byInstitution[institution.id].courses_count.add(course.id);
       byInstitution[institution.id].enrollments_count += 1;
@@ -287,6 +294,7 @@ export class ReportsService {
         enrolled_at,
         course_editions!inner(
           start_date,
+          cost_override,
           courses!inner(total_hours, cost)
         )
       `)
@@ -314,6 +322,13 @@ export class ReportsService {
         return sum + ((e.course_editions as any)?.courses?.total_hours || 0);
       }, 0);
 
+      // Calcular inversión total usando costo efectivo
+      const totalInvestment = periodEnrollments.reduce((sum: number, e: any) => {
+        const edition = e.course_editions as any;
+        const effectiveCost = edition?.cost_override ?? edition?.courses?.cost ?? 0;
+        return sum + effectiveCost;
+      }, 0);
+
       const completedCount = periodEnrollments.filter((e: any) => e.status === 'completo').length;
 
       return {
@@ -329,6 +344,7 @@ export class ReportsService {
         completed_enrollments: completedCount,
         completion_rate: periodEnrollments.length > 0 ? Math.round((completedCount / periodEnrollments.length) * 100) : 0,
         total_hours: totalHours,
+        total_investment: totalInvestment,
       };
     });
 

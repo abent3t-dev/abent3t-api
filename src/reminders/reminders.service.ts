@@ -148,7 +148,38 @@ export class RemindersService {
     for (const record of data || []) {
       const hasApprovedEvidence = await this.checkApprovedEvidence(record.id);
       if (!hasApprovedEvidence) {
-        pendingRecords.push(record as PendingEvidenceRecord);
+        // Supabase puede retornar arrays o objetos según la relación
+        // Normalizamos para acceder al primer elemento si es array
+        const edition = Array.isArray(record.course_editions)
+          ? record.course_editions[0]
+          : record.course_editions;
+        const profile = Array.isArray(record.profiles)
+          ? record.profiles[0]
+          : record.profiles;
+
+        if (!edition || !profile) continue;
+
+        // Cast seguro: validamos estructura antes de agregar
+        const typedRecord: PendingEvidenceRecord = {
+          id: record.id,
+          status: record.status,
+          profile_id: record.profile_id,
+          enrolled_at: record.enrolled_at,
+          course_editions: {
+            id: edition.id,
+            end_date: edition.end_date,
+            require_evidence_for_completion: edition.require_evidence_for_completion,
+            courses: Array.isArray(edition.courses) ? edition.courses[0] : edition.courses,
+          } as PendingEvidenceRecord['course_editions'],
+          profiles: {
+            id: profile.id,
+            full_name: profile.full_name,
+            email: profile.email,
+            department_id: profile.department_id,
+            departments: Array.isArray(profile.departments) ? profile.departments[0] : profile.departments,
+          } as PendingEvidenceRecord['profiles'],
+        };
+        pendingRecords.push(typedRecord);
       }
     }
 

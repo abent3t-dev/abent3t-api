@@ -9,7 +9,7 @@ import {
   ParseUUIDPipe,
   ForbiddenException,
 } from '@nestjs/common';
-import { EnrollmentsService } from './enrollments.service';
+import { EnrollmentsService, EnrichedEnrollment } from './enrollments.service';
 import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 import { BulkEnrollmentDto } from './dto/bulk-enrollment.dto';
 import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
@@ -23,12 +23,12 @@ export class EnrollmentsController {
 
   @Roles('admin_rh')
   @Get()
-  findAll() {
+  findAll(): Promise<EnrichedEnrollment[]> {
     return this.service.findAll();
   }
 
   @Get('edition/:editionId')
-  findByEdition(@Param('editionId', ParseUUIDPipe) editionId: string) {
+  findByEdition(@Param('editionId', ParseUUIDPipe) editionId: string): Promise<EnrichedEnrollment[]> {
     return this.service.findByEdition(editionId);
   }
 
@@ -42,7 +42,7 @@ export class EnrollmentsController {
     @Param('profileId', ParseUUIDPipe) profileId: string,
     @CurrentUser('id') currentUserId: string,
     @CurrentUser('role') role: string,
-  ) {
+  ): Promise<EnrichedEnrollment[]> {
     // Permitir si es admin_rh o si solicita sus propios datos
     if (role !== 'admin_rh' && profileId !== currentUserId) {
       throw new ForbiddenException('Solo puedes ver tus propias inscripciones');
@@ -59,7 +59,7 @@ export class EnrollmentsController {
   findByDepartment(
     @Param('departmentId', ParseUUIDPipe) departmentId: string,
     @CurrentUser() user: AuthUser,
-  ) {
+  ): Promise<EnrichedEnrollment[]> {
     // Permitir si es admin_rh o super_admin
     if (user.role === 'admin_rh' || user.role === 'super_admin') {
       return this.service.findByDepartment(departmentId);
@@ -73,7 +73,7 @@ export class EnrollmentsController {
 
   @Roles('admin_rh')
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
+  findOne(@Param('id', ParseUUIDPipe) id: string): Promise<EnrichedEnrollment> {
     return this.service.findOne(id);
   }
 

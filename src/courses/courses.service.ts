@@ -96,6 +96,7 @@ export class CoursesService extends BaseCrudService<CreateCourseDto, UpdateCours
   /**
    * Replicates the budget subtraction logic from EnrollmentsService.
    * Kept separate to avoid circular dependency.
+   * Uses effective cost: edition.cost_override ?? course.cost
    */
   private async adjustBudgetForCancellation(
     profileId: string,
@@ -111,11 +112,13 @@ export class CoursesService extends BaseCrudService<CreateCourseDto, UpdateCours
 
     const { data: edition } = await this.supabase.db
       .from('course_editions')
-      .select('courses(cost)')
+      .select('cost_override, courses(cost)')
       .eq('id', courseEditionId)
       .single();
 
-    const cost = (edition?.courses as any)?.cost ?? 0;
+    // Effective cost: edition override takes precedence over course base cost
+    const baseCost = (edition?.courses as any)?.cost ?? 0;
+    const cost = edition?.cost_override ?? baseCost;
     if (cost === 0) return;
 
     const today = new Date().toISOString().split('T')[0];

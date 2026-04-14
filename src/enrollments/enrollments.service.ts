@@ -26,10 +26,20 @@ const ENROLLMENT_SELECT = `
 `;
 
 // Interface for enriched enrollment with evidence status
-interface EnrichedEnrollment {
-  [key: string]: unknown;
+export interface EnrichedEnrollment {
+  id: string;
+  course_edition_id: string;
+  profile_id: string;
+  status: string;
+  enrolled_at: string;
+  completed_at: string | null;
+  notes: string | null;
+  is_active: boolean;
+  profiles: Record<string, unknown> | null;
+  course_editions: Record<string, unknown> | null;
   has_approved_evidence: boolean;
   requires_evidence: boolean;
+  [key: string]: unknown;
 }
 
 @Injectable()
@@ -534,21 +544,25 @@ export class EnrollmentsService {
     operation: 'add' | 'subtract',
   ): Promise<void> {
     try {
-      // Check if edition has prorate_cost enabled
+      // Check if edition has prorate_cost enabled and get cost_override
       const { data: edition } = await this.supabase.db
         .from('course_editions')
-        .select('course_id, prorate_cost, courses(cost)')
+        .select('course_id, prorate_cost, cost_override, courses(cost)')
         .eq('id', courseEditionId)
         .single();
 
-      const cost = (edition?.courses as any)?.cost ?? 0;
-      if (cost === 0) return;
+      // Costo efectivo: usa cost_override de la edición si existe, sino el costo base del curso
+      const baseCost = (edition?.courses as any)?.cost ?? 0;
+      const effectiveCost = edition?.cost_override ?? baseCost;
+      if (effectiveCost === 0) return;
 
       // If prorate_cost is enabled, recalculate ALL department budgets
       if (edition?.prorate_cost) {
-        await this.recalculateProratedBudgets(courseEditionId, cost);
+        await this.recalculateProratedBudgets(courseEditionId, effectiveCost);
         return;
       }
+
+      const cost = effectiveCost;
 
       // Original logic for non-prorated enrollments
       // 1. Get profile's department
