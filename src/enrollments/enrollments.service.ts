@@ -15,6 +15,7 @@ const ENROLLMENT_SELECT = `
   profiles(id, full_name, email, position, departments(id, name)),
   course_editions(
     id, course_id, start_date, end_date, max_participants, location, instructor,
+    require_evidence_for_completion,
     courses(
       id, name, total_hours, cost, description,
       course_types(id, name),
@@ -23,6 +24,13 @@ const ENROLLMENT_SELECT = `
     )
   )
 `;
+
+// Interface for enriched enrollment with evidence status
+interface EnrichedEnrollment {
+  [key: string]: unknown;
+  has_approved_evidence: boolean;
+  requires_evidence: boolean;
+}
 
 @Injectable()
 export class EnrollmentsService {
@@ -73,6 +81,46 @@ export class EnrollmentsService {
 
     if (!data) throw new BadRequestException('profile_id: perfil no encontrado');
     if (!data.is_active) throw new BadRequestException('profile_id: el perfil está desactivado');
+  }
+
+  /**
+   * Enriches enrollments with evidence status for the semaphore
+   * - has_approved_evidence: true if there's at least one approved evidence
+   * - requires_evidence: true if the edition requires evidence for completion
+   */
+  private async enrichWithEvidenceStatus(
+    enrollments: Record<string, unknown>[],
+  ): Promise<EnrichedEnrollment[]> {
+    if (!enrollments || enrollments.length === 0) return [];
+
+    const enrollmentIds = enrollments.map((e) => e.id as string);
+
+    // Get all evidences for these enrollments in one query
+    const { data: evidences } = await this.supabase.db
+      .from('enrollment_evidences')
+      .select('enrollment_id, verification_status')
+      .in('enrollment_id', enrollmentIds)
+      .eq('is_active', true);
+
+    // Create a map of enrollment_id -> has_approved_evidence
+    const approvedMap = new Map<string, boolean>();
+    if (evidences) {
+      for (const ev of evidences) {
+        if (ev.verification_status === 'approved') {
+          approvedMap.set(ev.enrollment_id, true);
+        }
+      }
+    }
+
+    // Enrich each enrollment
+    return enrollments.map((enrollment) => {
+      const edition = enrollment.course_editions as Record<string, unknown> | null;
+      return {
+        ...enrollment,
+        has_approved_evidence: approvedMap.get(enrollment.id as string) || false,
+        requires_evidence: edition?.require_evidence_for_completion === true,
+      } as EnrichedEnrollment;
+    });
   }
 
   /**
@@ -155,7 +203,7 @@ export class EnrollmentsService {
       .order('enrolled_at', { ascending: false });
 
     if (error) throw error;
-    return data;
+    return this.enrichWithEvidenceStatus(data || []);
   }
 
   async findByEdition(editionId: string) {
@@ -167,7 +215,7 @@ export class EnrollmentsService {
       .order('enrolled_at', { ascending: false });
 
     if (error) throw error;
-    return data;
+    return this.enrichWithEvidenceStatus(data || []);
   }
 
   async findByProfile(profileId: string) {
@@ -179,7 +227,7 @@ export class EnrollmentsService {
       .order('enrolled_at', { ascending: false });
 
     if (error) throw error;
-    return data;
+    return this.enrichWithEvidenceStatus(data || []);
   }
 
   /**
@@ -207,7 +255,7 @@ export class EnrollmentsService {
       .order('enrolled_at', { ascending: false });
 
     if (error) throw error;
-    return data;
+    return this.enrichWithEvidenceStatus(data || []);
   }
 
   async findOne(id: string) {
@@ -220,7 +268,9 @@ export class EnrollmentsService {
     if (error || !data) {
       throw new NotFoundException('Inscripción no encontrada');
     }
-    return data;
+
+    const enriched = await this.enrichWithEvidenceStatus([data]);
+    return enriched[0];
   }
 
   async create(dto: CreateEnrollmentDto, bypassBlockingCheck = false) {
