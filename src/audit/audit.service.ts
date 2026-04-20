@@ -2,7 +2,20 @@ import { Injectable, Logger } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 
 export type AuditAction = 'create' | 'update' | 'delete' | 'approve' | 'reject' | 'upload' | 'verify';
-export type AuditEntity = 'course' | 'course_edition' | 'enrollment' | 'evidence' | 'budget' | 'request' | 'user' | 'proposal';
+export type AuditEntity =
+  | 'course'
+  | 'course_edition'
+  | 'enrollment'
+  | 'evidence'
+  | 'budget'
+  | 'request'
+  | 'user'
+  | 'proposal'
+  // Contabilidad entities
+  | 'fiscal_loss'
+  | 'non_deductible'
+  | 'shareholding'
+  | 'okr';
 
 export interface AuditLogEntry {
   action: AuditAction;
@@ -90,6 +103,11 @@ export class AuditService {
       request: 'solicitud',
       user: 'usuario',
       proposal: 'propuesta de curso',
+      // Contabilidad entities
+      fiscal_loss: 'pérdida fiscal',
+      non_deductible: 'gasto no deducible',
+      shareholding: 'tenencia accionaria',
+      okr: 'OKR',
     };
 
     const action = actionLabels[entry.action] || entry.action;

@@ -32,6 +32,8 @@ import { PlatformsModule } from './platforms/platforms.module';
 // Modulos de Email y Recordatorios
 import { EmailModule } from './email/email.module';
 import { RemindersModule } from './reminders/reminders.module';
+// Modulo de Contabilidad y Compliance Fiscal
+import { ContabilidadModule } from './contabilidad/contabilidad.module';
 import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
@@ -67,6 +69,8 @@ import { RolesGuard } from './common/guards/roles.guard';
     // Modulos de Email y Recordatorios
     EmailModule,
     RemindersModule,
+    // Modulo de Contabilidad y Compliance Fiscal
+    ContabilidadModule,
   ],
   controllers: [AppController],
   providers: [
