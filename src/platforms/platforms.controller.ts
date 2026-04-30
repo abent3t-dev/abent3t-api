@@ -21,6 +21,37 @@ export class PlatformsController {
   constructor(private readonly platformsService: PlatformsService) {}
 
   // =====================================================
+  // CREHANA — VISTAS PARA EL FRONTEND
+  // =====================================================
+  // IMPORTANTE: estos endpoints van ANTES de las rutas con `:id` para que
+  // NestJS no intente parsear "crehana" como UUID en `@Get(':id/courses')`,
+  // `@Get('courses/:courseId')`, etc.
+
+  @Get('crehana/dashboard')
+  @Roles('super_admin', 'admin_rh', 'executive')
+  getCrehanaDashboard() {
+    return this.platformsService.getCrehanaDashboard();
+  }
+
+  @Get('crehana/courses')
+  @Roles('super_admin', 'admin_rh', 'executive')
+  findCrehanaCourses() {
+    return this.platformsService.findCrehanaCourses();
+  }
+
+  @Get('crehana/users')
+  @Roles('super_admin', 'admin_rh', 'executive')
+  findCrehanaUsers() {
+    return this.platformsService.findCrehanaUsers();
+  }
+
+  @Get('crehana/users/:externalUserId')
+  @Roles('super_admin', 'admin_rh', 'executive')
+  findCrehanaUserDetail(@Param('externalUserId') externalUserId: string) {
+    return this.platformsService.findCrehanaUserDetail(externalUserId);
+  }
+
+  // =====================================================
   // INTEGRACIONES
   // =====================================================
 

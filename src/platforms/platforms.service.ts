@@ -4,11 +4,14 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateIntegrationDto, PlatformType } from './dto/create-integration.dto';
 import { UpdateIntegrationDto } from './dto/update-integration.dto';
 import { SyncOptionsDto, SyncType } from './dto/sync-options.dto';
+import { CrehanaClient } from './clients/crehana';
+import { PlatformSyncService } from './sync/platform-sync.service';
 import * as crypto from 'crypto';
 
 // Selects para queries
@@ -34,14 +37,77 @@ const ENROLLMENT_SELECT = `
 `;
 
 @Injectable()
-export class PlatformsService {
+export class PlatformsService implements OnModuleInit {
   private readonly logger = new Logger(PlatformsService.name);
 
   // Clave para encriptar/desencriptar (en producción usar variable de entorno)
   private readonly ENCRYPTION_KEY = process.env.PLATFORM_ENCRYPTION_KEY || 'default-key-change-in-production-32';
   private readonly ENCRYPTION_IV_LENGTH = 16;
 
-  constructor(private readonly supabase: SupabaseService) {}
+  /** Sync logs/integraciones que llevan más de este tiempo en 'in_progress' se consideran zombies. */
+  private readonly STALE_SYNC_THRESHOLD_MS = 30 * 60 * 1000;
+
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly crehanaClient: CrehanaClient,
+    private readonly syncService: PlatformSyncService,
+  ) {}
+
+  /**
+   * Al arrancar el servicio, marca como 'failed' cualquier sync que se haya
+   * quedado en 'in_progress' (p.ej. porque el server se reinició a mitad
+   * de un sync largo). Evita que la UI muestre eternamente "Sincronizando...".
+   */
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.cleanupStaleSyncs();
+    } catch (error) {
+      this.logger.error('Failed to cleanup stale syncs on startup', error);
+    }
+  }
+
+  private async cleanupStaleSyncs(): Promise<void> {
+    const cutoff = new Date(Date.now() - this.STALE_SYNC_THRESHOLD_MS).toISOString();
+
+    // Sync logs huérfanos: 'in_progress' iniciados antes del corte.
+    const { data: staleLogs } = await this.supabase.db
+      .from('platform_sync_logs')
+      .select('id, platform_integration_id')
+      .eq('status', 'in_progress')
+      .lt('started_at', cutoff);
+
+    if (staleLogs && staleLogs.length > 0) {
+      const logIds = staleLogs.map((l) => l.id);
+      const errMsg = 'Marcado como fallido al reiniciar el servidor (zombie cleanup)';
+
+      await this.supabase.db
+        .from('platform_sync_logs')
+        .update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          errors_count: 1,
+          error_details: { message: errMsg },
+        })
+        .in('id', logIds);
+
+      // Y marcar las integraciones cuyas integraciones estén también en 'in_progress'.
+      const integrationIds = [...new Set(staleLogs.map((l) => l.platform_integration_id))];
+
+      await this.supabase.db
+        .from('platform_integrations')
+        .update({
+          last_sync_status: 'failed',
+          last_sync_error: errMsg,
+          last_sync_at: new Date().toISOString(),
+        })
+        .in('id', integrationIds)
+        .eq('last_sync_status', 'in_progress');
+
+      this.logger.warn(
+        `Cleaned up ${staleLogs.length} stale sync log(s) on startup (older than ${this.STALE_SYNC_THRESHOLD_MS / 60000} min)`,
+      );
+    }
+  }
 
   // =====================================================
   // CRUD DE INTEGRACIONES
@@ -124,6 +190,7 @@ export class PlatformsService {
       institution_id: dto.institution_id,
       platform_type: dto.platform_type,
       api_url: dto.api_url,
+      organization_slug: dto.organization_slug ?? null,
       public_key: dto.public_key,
       sync_enabled: dto.sync_enabled ?? true,
       sync_frequency_hours: dto.sync_frequency_hours ?? 24,
@@ -204,12 +271,11 @@ export class PlatformsService {
     if (!integration.api_url || !integration.public_key) {
       return {
         success: false,
-        message: 'Faltan credenciales de API (URL o clave pública)',
+        message: 'Faltan credenciales de API (URL o API Key)',
       };
     }
 
     try {
-      // Según el tipo de plataforma, usar el cliente correspondiente
       switch (integration.platform_type) {
         case PlatformType.CREHANA:
           return await this.testCrehanaConnection(integration);
@@ -223,36 +289,41 @@ export class PlatformsService {
       this.logger.error(`Connection test failed for integration ${id}`, error);
       return {
         success: false,
-        message: 'Error al conectar con la plataforma',
+        message: error instanceof Error ? error.message : 'Error al conectar con la plataforma',
         details: error instanceof Error ? error.message : error,
       };
     }
   }
 
   private async testCrehanaConnection(integration: any): Promise<{ success: boolean; message: string; details?: unknown }> {
-    // TODO: Implementar llamada real a API de Crehana
-    // Por ahora, simular una conexión exitosa si hay credenciales
-
-    const hasCredentials = integration.api_url && integration.public_key && integration.private_key_encrypted;
-
-    if (!hasCredentials) {
+    if (!integration.organization_slug) {
       return {
         success: false,
-        message: 'Credenciales incompletas para Crehana',
+        message: 'Falta el slug de la organización para Crehana',
+      };
+    }
+    if (!integration.private_key_encrypted) {
+      return {
+        success: false,
+        message: 'Falta la Secret Key de Crehana',
       };
     }
 
-    // Simular llamada a endpoint de organización
-    // En implementación real: await this.crehanaClient.getOrganizationInfo()
+    const secretAccess = this.decryptKey(integration.private_key_encrypted);
+
+    this.crehanaClient.configure({
+      api_url: integration.api_url,
+      organization_slug: integration.organization_slug,
+      api_key: integration.public_key,
+      secret_access: secretAccess,
+    });
+
+    const result = await this.crehanaClient.testConnection();
 
     return {
-      success: true,
-      message: 'Conexión exitosa con Crehana',
-      details: {
-        platform: 'Crehana',
-        api_url: integration.api_url,
-        // organization_name: response.name,
-      },
+      success: result.success,
+      message: `Conexión exitosa con Crehana (${result.users_total} usuarios, ${result.enrollments_total} inscripciones)`,
+      details: result,
     };
   }
 
@@ -397,6 +468,22 @@ export class PlatformsService {
   // SINCRONIZACIÓN
   // =====================================================
 
+  /**
+   * Inicia una sincronización en SEGUNDO PLANO y retorna inmediatamente.
+   *
+   * El sync con Crehana puede tardar varios minutos (un GET por cada página
+   * del reporte general más los upserts en BD). Si esperáramos al await,
+   * el cliente HTTP cortaría la conexión por timeout antes de que termine.
+   *
+   * Flujo:
+   *  1. Validamos credenciales y creamos el log con status='in_progress'.
+   *  2. Marcamos la integración como 'in_progress'.
+   *  3. Disparamos el sync sin await — el job corre en background.
+   *  4. Retornamos { sync_log_id, status: 'in_progress' } inmediatamente.
+   *
+   * El frontend hace polling al GET /platforms para detectar la transición
+   * a 'completed' o 'failed'.
+   */
   async triggerSync(integrationId: string, options: SyncOptionsDto, userId?: string) {
     const integration = await this.getIntegrationWithCredentials(integrationId);
 
@@ -404,12 +491,18 @@ export class PlatformsService {
       throw new BadRequestException('La sincronización está deshabilitada para esta integración');
     }
 
+    if (integration.last_sync_status === 'in_progress') {
+      throw new ConflictException('Ya hay una sincronización en progreso para esta integración');
+    }
+
+    const syncType = options.sync_type || SyncType.FULL;
+
     // Crear log de sincronización
     const { data: syncLog, error: logError } = await this.supabase.db
       .from('platform_sync_logs')
       .insert({
         platform_integration_id: integrationId,
-        sync_type: options.sync_type || SyncType.FULL,
+        sync_type: syncType,
         status: 'in_progress',
         triggered_by: userId,
       })
@@ -418,19 +511,47 @@ export class PlatformsService {
 
     if (logError) throw logError;
 
-    try {
-      // Ejecutar sincronización según tipo de plataforma
-      let result;
+    // Marcar la integración como 'in_progress' para que el frontend pueda detectarlo.
+    await this.supabase.db
+      .from('platform_integrations')
+      .update({
+        last_sync_status: 'in_progress',
+        last_sync_error: null,
+      })
+      .eq('id', integrationId);
 
-      switch (integration.platform_type) {
-        case PlatformType.CREHANA:
-          result = await this.syncCrehana(integration, options.sync_type || SyncType.FULL);
-          break;
-        default:
-          throw new BadRequestException(`Sincronización no implementada para: ${integration.platform_type}`);
+    // Disparar el sync en background (sin await).
+    // Cualquier error se captura y se persiste en el log + integración.
+    this.runSyncInBackground(integration, syncType, syncLog.id).catch((err) => {
+      this.logger.error(`Background sync crashed for integration ${integrationId}`, err);
+    });
+
+    // Respuesta inmediata
+    return {
+      success: true,
+      status: 'in_progress' as const,
+      sync_log_id: syncLog.id,
+      message: 'Sincronización iniciada en segundo plano',
+    };
+  }
+
+  /**
+   * Ejecuta el sync real (puede tardar varios minutos) y persiste el resultado.
+   * Se invoca SIN await desde triggerSync.
+   */
+  private async runSyncInBackground(
+    integration: any,
+    syncType: SyncType,
+    syncLogId: string,
+  ): Promise<void> {
+    const integrationId = integration.id;
+    try {
+      const result = await this.syncService.syncIntegration(integration, syncType);
+
+      if (!result.success) {
+        throw new Error(result.errors[0] || 'La sincronización falló');
       }
 
-      // Actualizar log con resultado exitoso
       await this.supabase.db
         .from('platform_sync_logs')
         .update({
@@ -439,11 +560,12 @@ export class PlatformsService {
           courses_synced: result.courses_synced,
           enrollments_synced: result.enrollments_synced,
           users_synced: result.users_synced,
+          errors_count: result.errors.length,
+          error_details: result.errors.length ? { errors: result.errors } : null,
           sync_summary: result.summary,
         })
-        .eq('id', syncLog.id);
+        .eq('id', syncLogId);
 
-      // Actualizar integración
       await this.supabase.db
         .from('platform_integrations')
         .update({
@@ -453,14 +575,12 @@ export class PlatformsService {
         })
         .eq('id', integrationId);
 
-      return {
-        success: true,
-        sync_log_id: syncLog.id,
-        ...result,
-      };
+      this.logger.log(
+        `Sync completed for integration ${integrationId}: ${result.users_synced} users, ${result.courses_synced} courses, ${result.enrollments_synced} enrollments`,
+      );
     } catch (error) {
-      // Actualizar log con error
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
+      this.logger.error(`Sync failed for integration ${integrationId}: ${errorMessage}`);
 
       await this.supabase.db
         .from('platform_sync_logs')
@@ -470,9 +590,8 @@ export class PlatformsService {
           errors_count: 1,
           error_details: { message: errorMessage },
         })
-        .eq('id', syncLog.id);
+        .eq('id', syncLogId);
 
-      // Actualizar integración con error
       await this.supabase.db
         .from('platform_integrations')
         .update({
@@ -481,37 +600,289 @@ export class PlatformsService {
           last_sync_error: errorMessage,
         })
         .eq('id', integrationId);
-
-      throw error;
     }
   }
 
-  private async syncCrehana(integration: any, syncType: SyncType) {
-    // TODO: Implementar sincronización real con Crehana
-    // Por ahora retornar datos simulados
+  // =====================================================
+  // CREHANA — VISTAS PARA EL FRONTEND
+  // =====================================================
+  //
+  // Estos endpoints alimentan la sección /capacitacion/crehana del frontend.
+  // Hoy la única plataforma sincronizada es Crehana, así que filtramos por
+  // la integración cuyo platform_type='crehana'. En el futuro, si entra otra
+  // plataforma (Udemy, etc.), se puede generalizar.
 
-    this.logger.log(`Starting Crehana sync (${syncType}) for integration ${integration.id}`);
+  /** Devuelve la integración activa de Crehana, o null si no existe. */
+  private async findCrehanaIntegration() {
+    const { data } = await this.supabase.db
+      .from('platform_integrations')
+      .select('id, last_sync_at, last_sync_status')
+      .eq('platform_type', 'crehana')
+      .eq('is_active', true)
+      .maybeSingle();
+    return data;
+  }
 
-    // Simular sincronización
-    const result = {
-      courses_synced: 0,
-      enrollments_synced: 0,
-      users_synced: 0,
-      summary: {
-        sync_type: syncType,
-        started_at: new Date().toISOString(),
-        message: 'Sincronización pendiente de implementación con API real de Crehana',
-      },
+  /**
+   * KPIs agregados de Crehana para el resumen.
+   */
+  async getCrehanaDashboard() {
+    const integration = await this.findCrehanaIntegration();
+    if (!integration) {
+      return {
+        integration_active: false,
+        total_users: 0,
+        users_linked_to_abent: 0,
+        total_courses: 0,
+        total_enrollments: 0,
+        completed_enrollments: 0,
+        in_progress_enrollments: 0,
+        not_started_enrollments: 0,
+        total_hours_completed: 0,
+        total_certificates: 0,
+        average_progress: 0,
+        last_sync_at: null,
+        last_sync_status: null as string | null,
+      };
+    }
+
+    const [usersResult, coursesResult, enrollList] = await Promise.all([
+      this.supabase.db
+        .from('platform_user_mappings')
+        .select('id, profile_id')
+        .eq('platform_integration_id', integration.id)
+        .eq('is_active', true),
+      this.supabase.db
+        .from('platform_courses')
+        .select('id')
+        .eq('platform_integration_id', integration.id)
+        .eq('is_active', true),
+      this.getEnrollmentsForIntegration(integration.id),
+    ]);
+
+    const usersList = usersResult.data ?? [];
+    const courses = coursesResult.data ?? [];
+
+    let completed = 0;
+    let inProgress = 0;
+    let notStarted = 0;
+    let totalHours = 0;
+    let totalCertificates = 0;
+    let totalProgress = 0;
+
+    for (const e of enrollList) {
+      if (e.status === 'completed') completed++;
+      else if (e.status === 'in_progress') inProgress++;
+      else notStarted++;
+      totalHours += Number(e.hours_completed) || 0;
+      if (e.certificate_url) totalCertificates++;
+      totalProgress += Number(e.progress_percentage) || 0;
+    }
+
+    return {
+      integration_active: true,
+      total_users: usersList.length,
+      users_linked_to_abent: usersList.filter((u) => u.profile_id).length,
+      total_courses: courses.length,
+      total_enrollments: enrollList.length,
+      completed_enrollments: completed,
+      in_progress_enrollments: inProgress,
+      not_started_enrollments: notStarted,
+      total_hours_completed: Math.round(totalHours * 10) / 10,
+      total_certificates: totalCertificates,
+      average_progress:
+        enrollList.length > 0 ? Math.round(totalProgress / enrollList.length) : 0,
+      last_sync_at: integration.last_sync_at,
+      last_sync_status: integration.last_sync_status,
     };
+  }
 
-    // En implementación real:
-    // 1. Obtener cursos de Crehana API
-    // 2. Upsert en platform_courses
-    // 3. Obtener progreso de usuarios
-    // 4. Upsert en platform_enrollments
-    // 5. Actualizar mapeos de usuarios
+  /**
+   * Lista de cursos sincronizados con stats de inscripciones por curso.
+   */
+  async findCrehanaCourses() {
+    const integration = await this.findCrehanaIntegration();
+    if (!integration) return [];
 
-    return result;
+    const { data: courses } = await this.supabase.db
+      .from('platform_courses')
+      .select('id, external_course_id, name, total_hours, course_url, thumbnail_url, last_synced_at')
+      .eq('platform_integration_id', integration.id)
+      .eq('is_active', true)
+      .order('name');
+
+    if (!courses || courses.length === 0) return [];
+
+    const courseIds = courses.map((c) => c.id);
+    const { data: enrollments } = await this.supabase.db
+      .from('platform_enrollments')
+      .select('platform_course_id, status, progress_percentage')
+      .in('platform_course_id', courseIds)
+      .eq('is_active', true)
+      .limit(10000);
+
+    const statsByCourse = new Map<string, { total: number; completed: number; in_progress: number; avg_progress: number; sum: number }>();
+    for (const e of enrollments ?? []) {
+      const id = e.platform_course_id as string;
+      const s = statsByCourse.get(id) ?? { total: 0, completed: 0, in_progress: 0, avg_progress: 0, sum: 0 };
+      s.total++;
+      if (e.status === 'completed') s.completed++;
+      else if (e.status === 'in_progress') s.in_progress++;
+      s.sum += Number(e.progress_percentage) || 0;
+      statsByCourse.set(id, s);
+    }
+
+    return courses.map((c) => {
+      const s = statsByCourse.get(c.id);
+      return {
+        ...c,
+        total_enrollments: s?.total ?? 0,
+        completed_enrollments: s?.completed ?? 0,
+        in_progress_enrollments: s?.in_progress ?? 0,
+        average_progress: s && s.total > 0 ? Math.round(s.sum / s.total) : 0,
+      };
+    });
+  }
+
+  /**
+   * Lista de usuarios sincronizados con stats agregados (de sus inscripciones).
+   */
+  async findCrehanaUsers() {
+    const integration = await this.findCrehanaIntegration();
+    if (!integration) return [];
+
+    const { data: mappings } = await this.supabase.db
+      .from('platform_user_mappings')
+      .select(`
+        id, external_user_id, external_email, external_username, profile_id, last_synced_at,
+        profiles:profile_id(id, full_name, email, departments(id, name))
+      `)
+      .eq('platform_integration_id', integration.id)
+      .eq('is_active', true);
+
+    if (!mappings || mappings.length === 0) return [];
+
+    const enrollments = await this.getEnrollmentsForIntegration(integration.id);
+
+    // Emparejamos por EMAIL, no por external_user_id. Crehana usa IDs distintos
+    // entre el módulo de organización (users-organizations) y el de learning
+    // (reports), así que el id del usuario en mappings no coincide con el de
+    // las enrollments. El email sí es consistente.
+    const statsByEmail = new Map<string, { total: number; completed: number; in_progress: number; hours: number; certificates: number; sum: number; lastActivity: string | null }>();
+    for (const e of enrollments) {
+      const email = (e.external_user_email as string | null)?.toLowerCase();
+      if (!email) continue;
+      const s = statsByEmail.get(email) ?? { total: 0, completed: 0, in_progress: 0, hours: 0, certificates: 0, sum: 0, lastActivity: null };
+      s.total++;
+      if (e.status === 'completed') s.completed++;
+      else if (e.status === 'in_progress') s.in_progress++;
+      s.hours += Number(e.hours_completed) || 0;
+      if (e.certificate_url) s.certificates++;
+      s.sum += Number(e.progress_percentage) || 0;
+      if (e.last_activity_at && (!s.lastActivity || e.last_activity_at > s.lastActivity)) {
+        s.lastActivity = e.last_activity_at;
+      }
+      statsByEmail.set(email, s);
+    }
+
+    return mappings.map((m) => {
+      const s = m.external_email ? statsByEmail.get(m.external_email.toLowerCase()) : undefined;
+      return {
+        external_user_id: m.external_user_id,
+        external_email: m.external_email,
+        external_username: m.external_username,
+        is_linked: !!m.profile_id,
+        profile: m.profiles ?? null,
+        last_synced_at: m.last_synced_at,
+        total_enrollments: s?.total ?? 0,
+        completed_enrollments: s?.completed ?? 0,
+        in_progress_enrollments: s?.in_progress ?? 0,
+        total_hours_completed: s ? Math.round(s.hours * 10) / 10 : 0,
+        total_certificates: s?.certificates ?? 0,
+        average_progress: s && s.total > 0 ? Math.round(s.sum / s.total) : 0,
+        last_activity_at: s?.lastActivity ?? null,
+      };
+    });
+  }
+
+  /**
+   * Detalle de un usuario: sus datos + todas sus inscripciones con info del curso.
+   */
+  async findCrehanaUserDetail(externalUserId: string) {
+    const integration = await this.findCrehanaIntegration();
+    if (!integration) {
+      throw new NotFoundException('No hay integración activa con Crehana');
+    }
+
+    const { data: mapping } = await this.supabase.db
+      .from('platform_user_mappings')
+      .select(`
+        external_user_id, external_email, external_username, profile_id, last_synced_at,
+        profiles:profile_id(id, full_name, email, position, departments(id, name))
+      `)
+      .eq('platform_integration_id', integration.id)
+      .eq('external_user_id', externalUserId)
+      .maybeSingle();
+
+    if (!mapping) {
+      throw new NotFoundException('Usuario de Crehana no encontrado');
+    }
+
+    // Cursos de la integración para resolver el platform_course_id → datos del curso
+    const { data: courses } = await this.supabase.db
+      .from('platform_courses')
+      .select('id, external_course_id, name, total_hours, course_url, thumbnail_url')
+      .eq('platform_integration_id', integration.id)
+      .eq('is_active', true);
+
+    const courseById = new Map((courses ?? []).map((c) => [c.id, c]));
+
+    // Emparejamos por email (los IDs entre módulos de Crehana no coinciden).
+    const userEmail = mapping.external_email;
+    const { data: enrollments } = userEmail
+      ? await this.supabase.db
+          .from('platform_enrollments')
+          .select('*')
+          .ilike('external_user_email', userEmail)
+          .in('platform_course_id', Array.from(courseById.keys()))
+          .eq('is_active', true)
+          .order('last_activity_at', { ascending: false, nullsFirst: false })
+          .limit(10000)
+      : { data: [] as any[] };
+
+    const enrichedEnrollments = (enrollments ?? []).map((e) => ({
+      ...e,
+      course: courseById.get(e.platform_course_id) ?? null,
+    }));
+
+    return {
+      user: mapping,
+      enrollments: enrichedEnrollments,
+    };
+  }
+
+  /**
+   * Helper: trae todas las inscripciones (rows) de una integración.
+   *
+   * Usa un INNER JOIN con platform_courses (filtrando por
+   * platform_integration_id) para hacer todo en una sola query.
+   * Subimos el límite a 10000 porque Supabase corta a 1000 por default
+   * y ya tenemos ~950 enrollments — un crecimiento natural lo rompería.
+   */
+  private async getEnrollmentsForIntegration(integrationId: string) {
+    const { data, error } = await this.supabase.db
+      .from('platform_enrollments')
+      .select('*, platform_courses!inner(platform_integration_id)')
+      .eq('platform_courses.platform_integration_id', integrationId)
+      .eq('is_active', true)
+      .limit(10000);
+
+    if (error) {
+      this.logger.error(`getEnrollmentsForIntegration failed: ${error.message}`);
+      throw error;
+    }
+
+    return data ?? [];
   }
 
   // =====================================================

@@ -31,6 +31,10 @@ export class CreateIntegrationDto {
 
   @IsOptional()
   @IsString()
+  organization_slug?: string;
+
+  @IsOptional()
+  @IsString()
   public_key?: string;
 
   @IsOptional()

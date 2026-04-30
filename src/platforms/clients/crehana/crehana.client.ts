@@ -1,112 +1,117 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   CrehanaConfig,
-  CrehanaOrganization,
-  CrehanaUser,
-  CrehanaRegisterUserDto,
-  CrehanaUpdateUserDto,
-  CrehanaProgress,
-  CrehanaCourse,
-  CrehanaTrack,
-  CrehanaApiResponse,
+  CrehanaCursorPaginated,
+  CrehanaOffsetPaginated,
+  CrehanaUserOrganization,
+  CrehanaCatalogContent,
+  CrehanaGeneralReportRow,
+  CrehanaPerformanceReportRow,
 } from './crehana.types';
 
 /**
- * Cliente HTTP para la API de Crehana
+ * Cliente HTTP para la Crehana Centralized Public API v5.
  *
- * Documentación:
- * - https://ayuda.crehana.com/es/articles/6540231-como-integrarse-con-crehana
+ * Documentación: https://www.crehana.com/api/v5/rest/redocs
  *
- * Endpoints conocidos:
- * - Información de organización
- * - Registro de usuarios
- * - Inscripción en tracks
- * - Actualización de usuarios
- * - Progreso de usuarios
+ * Alcance: SOLO LECTURA. ABENT consume datos de Crehana para mostrarlos.
+ * No registra usuarios, no asigna cursos, no escribe nada.
+ *
+ * Auth: headers `api-key` y `secret-access` (atención: NO `secret-key`).
  */
+/**
+ * Timeout total por request (incluye DNS + TCP + TLS + body).
+ * Subido a 60s para tolerar redes lentas o saturadas, donde solo la
+ * resolución DNS puede llevarse 10+ segundos.
+ *
+ * Nota: el default INTERNO de undici para `connect.timeout` es 10s y NO se
+ * puede modificar sin importar la lib `undici` directamente. Si en redes
+ * muy saturadas seguimos viendo `UND_ERR_CONNECT_TIMEOUT` antes de los 60s,
+ * habrá que instalar `undici` como dep y configurar un Agent con timeout largo.
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
 @Injectable()
 export class CrehanaClient {
   private readonly logger = new Logger(CrehanaClient.name);
 
   private config: CrehanaConfig | null = null;
 
-  /**
-   * Configurar el cliente con las credenciales
-   */
   configure(config: CrehanaConfig): void {
     this.config = config;
-    this.logger.log(`Crehana client configured for: ${config.api_url}`);
+    this.logger.log(`Crehana client configured for org: ${config.organization_slug}`);
   }
 
-  /**
-   * Verificar que el cliente está configurado
-   */
   private ensureConfigured(): void {
     if (!this.config) {
       throw new Error('Crehana client not configured. Call configure() first.');
     }
   }
 
-  /**
-   * Construir headers de autenticación
-   */
   private getHeaders(): Record<string, string> {
     this.ensureConfigured();
     return {
+      'Accept': 'application/json',
       'Content-Type': 'application/json',
-      'X-Public-Key': this.config!.public_key,
-      'X-Private-Key': this.config!.private_key,
-      // O puede ser Authorization: Bearer <token>
-      // Depende de la documentación específica de Crehana
+      'api-key': this.config!.api_key,
+      'secret-access': this.config!.secret_access,
     };
   }
 
-  /**
-   * Realizar petición HTTP a la API de Crehana
-   */
-  private async request<T>(
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
-    endpoint: string,
-    body?: unknown,
-  ): Promise<T> {
+  /** Construye la URL completa: {api_url}/org/{slug}{path} */
+  private buildUrl(path: string, query?: Record<string, string | number | undefined>): string {
     this.ensureConfigured();
+    const base = this.config!.api_url.replace(/\/$/, '');
+    const slug = this.config!.organization_slug;
+    let url = `${base}/org/${slug}${path}`;
+    if (query) {
+      const params = new URLSearchParams();
+      for (const [k, v] of Object.entries(query)) {
+        if (v !== undefined && v !== null && v !== '') {
+          params.append(k, String(v));
+        }
+      }
+      const qs = params.toString();
+      if (qs) url += `?${qs}`;
+    }
+    return url;
+  }
 
-    const url = `${this.config!.api_url}${endpoint}`;
+  private async request<T>(path: string, query?: Record<string, string | number | undefined>): Promise<T> {
+    const url = this.buildUrl(path, query);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
       const response = await fetch(url, {
-        method,
+        method: 'GET',
         headers: this.getHeaders(),
-        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        this.logger.error(`Crehana API error: ${response.status} - ${errorText}`);
-        throw new Error(`Crehana API error: ${response.status}`);
+        this.logger.error(`Crehana API ${response.status} ${path}: ${errorText}`);
+        throw new Error(`Crehana API error ${response.status}: ${errorText}`);
       }
 
-      const data = await response.json();
-      return data as T;
+      return (await response.json()) as T;
     } catch (error) {
-      this.logger.error(`Crehana request failed: ${method} ${endpoint}`, error);
+      // Errores de red: traducir a mensajes legibles
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          throw new Error(`Timeout (${REQUEST_TIMEOUT_MS}ms) llamando a Crehana ${path}. Verifica tu conexión y que no haya un proxy bloqueando.`);
+        }
+        const cause = (error as Error & { cause?: { code?: string } }).cause;
+        if (cause?.code === 'UND_ERR_CONNECT_TIMEOUT' || cause?.code === 'ENOTFOUND' || cause?.code === 'ECONNREFUSED') {
+          throw new Error(`No se pudo conectar a Crehana (${cause.code}). Verifica tu conexión a internet o configuración de proxy.`);
+        }
+      }
       throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-  }
-
-  // =====================================================
-  // ORGANIZACIÓN
-  // =====================================================
-
-  /**
-   * Obtener información de la organización
-   * Incluye rutas de aprendizaje y cursos
-   */
-  async getOrganizationInfo(): Promise<CrehanaApiResponse<CrehanaOrganization>> {
-    return this.request<CrehanaApiResponse<CrehanaOrganization>>(
-      'GET',
-      '/organization',
-    );
   }
 
   // =====================================================
@@ -114,133 +119,133 @@ export class CrehanaClient {
   // =====================================================
 
   /**
-   * Listar todos los usuarios de la organización
+   * Listar usuarios de la organización.
+   * Paginado por offset/limit. Limit máximo: 100.
    */
-  async listUsers(): Promise<CrehanaApiResponse<CrehanaUser[]>> {
-    return this.request<CrehanaApiResponse<CrehanaUser[]>>(
-      'GET',
-      '/users',
+  async listUsers(params?: {
+    limit?: number;
+    offset?: number;
+    status?: string;
+    search?: string;
+  }): Promise<CrehanaOffsetPaginated<CrehanaUserOrganization>> {
+    return this.request<CrehanaOffsetPaginated<CrehanaUserOrganization>>(
+      '/users/user-organizations/',
+      params,
     );
   }
 
   /**
-   * Obtener información de un usuario específico
+   * Iterador que recorre todas las páginas de usuarios automáticamente.
+   * Útil para sync masivo.
    */
-  async getUser(userId: string): Promise<CrehanaApiResponse<CrehanaUser>> {
-    return this.request<CrehanaApiResponse<CrehanaUser>>(
-      'GET',
-      `/users/${userId}`,
+  async *iterateUsers(pageSize = 100): AsyncGenerator<CrehanaUserOrganization> {
+    let offset = 0;
+    while (true) {
+      // El endpoint de users rechaza offset=0 con HTTP 400. Omitirlo para la primera página.
+      const page = await this.listUsers({
+        limit: pageSize,
+        offset: offset > 0 ? offset : undefined,
+      });
+      for (const user of page.results) yield user;
+      offset += page.results.length;
+      if (offset >= page.total || page.results.length === 0) break;
+    }
+  }
+
+  // =====================================================
+  // CATÁLOGOS DE CURSOS (cursor pagination)
+  // =====================================================
+
+  /** Catálogo Elevate: cursos propios de la organización. */
+  async listElevateCatalog(params?: {
+    first?: number;
+    after?: string;
+  }): Promise<CrehanaCursorPaginated<CrehanaCatalogContent>> {
+    return this.request<CrehanaCursorPaginated<CrehanaCatalogContent>>(
+      '/learning/content/knowledge-hub/catalog/elevate/',
+      params,
     );
   }
 
-  /**
-   * Registrar un nuevo usuario en Crehana
-   */
-  async registerUser(data: CrehanaRegisterUserDto): Promise<CrehanaApiResponse<CrehanaUser>> {
-    return this.request<CrehanaApiResponse<CrehanaUser>>(
-      'POST',
-      '/users',
-      data,
-    );
-  }
-
-  /**
-   * Actualizar información de un usuario
-   */
-  async updateUser(userId: string, data: CrehanaUpdateUserDto): Promise<CrehanaApiResponse<CrehanaUser>> {
-    return this.request<CrehanaApiResponse<CrehanaUser>>(
-      'PUT',
-      `/users/${userId}`,
-      data,
-    );
-  }
-
-  /**
-   * Eliminar/desactivar un usuario de la organización
-   */
-  async removeUser(userId: string): Promise<CrehanaApiResponse<void>> {
-    return this.request<CrehanaApiResponse<void>>(
-      'DELETE',
-      `/users/${userId}`,
+  /** Catálogo Crehana: cursos del marketplace de Crehana. */
+  async listCrehanaCatalog(params?: {
+    first?: number;
+    after?: string;
+  }): Promise<CrehanaCursorPaginated<CrehanaCatalogContent>> {
+    return this.request<CrehanaCursorPaginated<CrehanaCatalogContent>>(
+      '/learning/content/knowledge-hub/catalog/crehana/',
+      params,
     );
   }
 
   // =====================================================
-  // CURSOS Y RUTAS
+  // REPORTES
   // =====================================================
 
   /**
-   * Obtener catálogo de cursos disponibles
+   * Reporte general: una fila por (usuario, curso) con progreso, fechas y certificados.
+   * Es la fuente de verdad para mostrar el progreso de cada colaborador.
    */
-  async getCourses(): Promise<CrehanaApiResponse<CrehanaCourse[]>> {
-    return this.request<CrehanaApiResponse<CrehanaCourse[]>>(
-      'GET',
-      '/courses',
+  async listGeneralReport(params?: {
+    limit?: number;
+    offset?: number;
+    user_id?: string;
+    user_email?: string;
+    user_status?: string;
+    course_id?: string;
+  }): Promise<CrehanaOffsetPaginated<CrehanaGeneralReportRow>> {
+    return this.request<CrehanaOffsetPaginated<CrehanaGeneralReportRow>>(
+      '/reports/learning/general/',
+      params,
     );
   }
 
-  /**
-   * Obtener rutas de aprendizaje (tracks)
-   */
-  async getTracks(): Promise<CrehanaApiResponse<CrehanaTrack[]>> {
-    return this.request<CrehanaApiResponse<CrehanaTrack[]>>(
-      'GET',
-      '/tracks',
+  async *iterateGeneralReport(
+    pageSize = 100,
+    filters?: { user_id?: string; user_email?: string; user_status?: string; course_id?: string },
+  ): AsyncGenerator<CrehanaGeneralReportRow> {
+    let offset = 0;
+    while (true) {
+      // Por consistencia con users, omitimos offset=0 para la primera página.
+      const page = await this.listGeneralReport({
+        limit: pageSize,
+        offset: offset > 0 ? offset : undefined,
+        ...filters,
+      });
+      for (const row of page.results) yield row;
+      offset += page.results.length;
+      if (offset >= page.total || page.results.length === 0) break;
+    }
+  }
+
+  /** Reporte performance: una fila por usuario con totales agregados. */
+  async listPerformanceReport(params?: {
+    limit?: number;
+    offset?: number;
+    user_id?: string;
+    user_email?: string;
+    user_status?: string;
+  }): Promise<CrehanaOffsetPaginated<CrehanaPerformanceReportRow>> {
+    return this.request<CrehanaOffsetPaginated<CrehanaPerformanceReportRow>>(
+      '/reports/learning/performance/',
+      params,
     );
   }
 
-  /**
-   * Obtener cursos asignados a un usuario
-   */
-  async getUserCourses(userId: string): Promise<CrehanaApiResponse<CrehanaCourse[]>> {
-    return this.request<CrehanaApiResponse<CrehanaCourse[]>>(
-      'GET',
-      `/users/${userId}/courses`,
-    );
-  }
-
-  /**
-   * Inscribir usuario en un track/ruta de aprendizaje
-   */
-  async enrollUserInTrack(userId: string, trackId: string): Promise<CrehanaApiResponse<void>> {
-    return this.request<CrehanaApiResponse<void>>(
-      'POST',
-      `/users/${userId}/tracks/${trackId}/enroll`,
-    );
-  }
-
-  /**
-   * Asignar curso a un usuario
-   */
-  async assignCourseToUser(userId: string, courseId: string): Promise<CrehanaApiResponse<void>> {
-    return this.request<CrehanaApiResponse<void>>(
-      'POST',
-      `/users/${userId}/courses/${courseId}/assign`,
-    );
-  }
-
-  // =====================================================
-  // PROGRESO
-  // =====================================================
-
-  /**
-   * Obtener progreso de todos los usuarios
-   */
-  async getAllUsersProgress(): Promise<CrehanaApiResponse<CrehanaProgress[]>> {
-    return this.request<CrehanaApiResponse<CrehanaProgress[]>>(
-      'GET',
-      '/progress',
-    );
-  }
-
-  /**
-   * Obtener progreso de un usuario específico
-   */
-  async getUserProgress(userId: string): Promise<CrehanaApiResponse<CrehanaProgress>> {
-    return this.request<CrehanaApiResponse<CrehanaProgress>>(
-      'GET',
-      `/users/${userId}/progress`,
-    );
+  async *iteratePerformanceReport(
+    pageSize = 100,
+  ): AsyncGenerator<CrehanaPerformanceReportRow> {
+    let offset = 0;
+    while (true) {
+      // Por consistencia con users, omitimos offset=0 para la primera página.
+      const page = await this.listPerformanceReport({
+        limit: pageSize,
+        offset: offset > 0 ? offset : undefined,
+      });
+      for (const row of page.results) yield row;
+      offset += page.results.length;
+      if (offset >= page.total || page.results.length === 0) break;
+    }
   }
 
   // =====================================================
@@ -248,14 +253,28 @@ export class CrehanaClient {
   // =====================================================
 
   /**
-   * Verificar conexión con la API
+   * Verifica que las credenciales y el slug funcionen.
+   * Devuelve el total de usuarios + total de inscripciones detectadas.
+   *
+   * Las llamadas se hacen en SECUENCIA (no en paralelo) para que la primera
+   * establezca la conexión TLS/HTTP-keepalive y la segunda la reuse.
+   * Algunas redes/proxys tienen problemas con dos conexiones nuevas
+   * abriéndose al mismo host simultáneamente.
    */
-  async testConnection(): Promise<boolean> {
-    try {
-      const response = await this.getOrganizationInfo();
-      return response.success;
-    } catch {
-      return false;
-    }
+  async testConnection(): Promise<{
+    success: boolean;
+    organization_slug: string;
+    users_total: number;
+    enrollments_total: number;
+  }> {
+    this.ensureConfigured();
+    const users = await this.listUsers({ limit: 1 });
+    const general = await this.listGeneralReport({ limit: 1 });
+    return {
+      success: true,
+      organization_slug: this.config!.organization_slug,
+      users_total: users.total,
+      enrollments_total: general.total,
+    };
   }
 }

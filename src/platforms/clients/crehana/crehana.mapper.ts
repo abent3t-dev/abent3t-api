@@ -1,150 +1,130 @@
 import {
-  CrehanaCourse,
-  CrehanaUser,
-  CrehanaCourseProgress,
-  CrehanaProgress,
+  CrehanaCatalogContent,
+  CrehanaGeneralReportRow,
+  CrehanaUserOrganization,
 } from './crehana.types';
 
 /**
- * Mapper para convertir datos de Crehana al formato interno de ABENT
+ * Transformaciones desde los schemas reales de Crehana v5
+ * hacia el formato de las tablas internas de ABENT.
+ *
+ * Sólo lectura: ABENT consume estos datos para mostrarlos.
  */
 export class CrehanaMapper {
   /**
-   * Convertir curso de Crehana a platform_courses
+   * Curso (a partir de una fila del reporte general).
+   * Usamos el reporte como fuente porque sólo nos interesan los cursos
+   * donde hay colaboradores inscritos.
    */
-  static toPlatformCourse(
-    course: CrehanaCourse,
+  static courseFromReportRow(
+    row: CrehanaGeneralReportRow,
     integrationId: string,
   ): Record<string, unknown> {
     return {
       platform_integration_id: integrationId,
-      external_course_id: course.id,
-      external_track_id: course.track_id || null,
-      name: course.title,
-      description: course.description || null,
-      instructor: course.instructor || null,
-      language: course.language || 'es',
-      total_hours: course.duration_hours || 0,
-      total_modules: course.modules_count || 0,
-      total_lessons: course.lessons_count || 0,
-      course_url: course.course_url || null,
-      thumbnail_url: course.thumbnail_url || null,
+      external_course_id: row.course_id,
+      external_track_id: row.track_id ?? null,
+      name: row.course_name,
+      description: null,
+      instructor: null,
+      language: 'es',
+      total_hours: Number(row.course_duration_hours) || 0,
+      total_modules: 0,
+      total_lessons: 0,
+      course_url: null,
+      thumbnail_url: null,
       is_active: true,
       last_synced_at: new Date().toISOString(),
     };
   }
 
   /**
-   * Convertir usuario de Crehana a platform_user_mappings
+   * Curso (a partir de un nodo del catálogo).
+   * Disponible si en algún momento se decide enriquecer con descripción/módulos.
    */
-  static toUserMapping(
-    user: CrehanaUser,
+  static courseFromCatalogNode(
+    node: CrehanaCatalogContent,
     integrationId: string,
-    profileId: string,
   ): Record<string, unknown> {
+    const course = node.course;
+    const totalLessons = course.modules.reduce(
+      (acc, m) => acc + (m.videos?.length ?? 0),
+      0,
+    );
     return {
       platform_integration_id: integrationId,
-      profile_id: profileId,
-      external_user_id: user.id,
-      external_email: user.email,
-      external_username: user.username || null,
-      is_active: user.is_active,
+      external_course_id: course.id,
+      external_track_id: null,
+      name: course.title,
+      description: course.description ?? null,
+      instructor: null,
+      language: 'es',
+      total_hours: 0,
+      total_modules: course.modules.length,
+      total_lessons: totalLessons,
+      course_url: node.learning_absolute_url ?? node.learning_url ?? null,
+      thumbnail_url: course.image_url ?? course.image ?? null,
+      is_active: true,
       last_synced_at: new Date().toISOString(),
     };
   }
 
   /**
-   * Convertir progreso de curso a platform_enrollments
+   * Mapeo de usuario Crehana → ABENT. profileId es null si no hay match por email.
    */
-  static toPlatformEnrollment(
-    progress: CrehanaCourseProgress,
-    platformCourseId: string,
-    profileId: string,
-    externalUserId: string,
+  static userMapping(
+    user: CrehanaUserOrganization,
+    integrationId: string,
+    profileId: string | null,
   ): Record<string, unknown> {
-    // Mapear estado de Crehana a nuestro enum
-    const statusMap: Record<string, string> = {
-      not_started: 'not_started',
-      in_progress: 'in_progress',
-      completed: 'completed',
+    return {
+      platform_integration_id: integrationId,
+      profile_id: profileId,
+      external_user_id: user.user.id,
+      external_email: user.user.email,
+      external_username:
+        [user.user.first_name, user.user.last_name].filter(Boolean).join(' ').trim() || null,
+      is_active: user.status !== 'INACTIVE',
+      last_synced_at: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Inscripción / progreso (desde una fila del reporte general).
+   * platformCourseId es el ID interno de ABENT (UUID), no el de Crehana.
+   * profileId es null si no hay match por email.
+   */
+  static enrollmentFromReportRow(
+    row: CrehanaGeneralReportRow,
+    platformCourseId: string,
+    profileId: string | null,
+  ): Record<string, unknown> {
+    let status: 'not_started' | 'in_progress' | 'completed' = 'not_started';
+    if (row.course_is_completed) {
+      status = 'completed';
+    } else if (Number(row.course_progress) > 0) {
+      status = 'in_progress';
+    }
 
     return {
       platform_course_id: platformCourseId,
       profile_id: profileId,
-      external_enrollment_id: `${externalUserId}_${progress.course_id}`,
-      external_user_id: externalUserId,
-      progress_percentage: progress.progress_percentage || 0,
-      status: statusMap[progress.status] || 'not_started',
-      enrolled_at: progress.started_at || null,
-      started_at: progress.started_at || null,
-      completed_at: progress.completed_at || null,
-      last_activity_at: progress.last_activity_at || null,
-      hours_completed: progress.hours_completed || 0,
-      modules_completed: progress.modules_completed || 0,
-      lessons_completed: progress.lessons_completed || 0,
-      certificate_url: progress.certificate_url || null,
-      certificate_issued_at: progress.completed_at || null,
+      external_enrollment_id: `${row.user_id}_${row.course_id}`,
+      external_user_id: row.user_id,
+      external_user_email: row.user_email ?? null,
+      progress_percentage: Number(row.course_progress) || 0,
+      status,
+      enrolled_at: row.course_enroll_date ?? null,
+      started_at: row.course_start_date ?? null,
+      completed_at: row.course_complete_date ?? null,
+      last_activity_at: row.course_last_action_date ?? null,
+      hours_completed: Number(row.course_progress_hours) || 0,
+      modules_completed: 0,
+      lessons_completed: 0,
+      certificate_url: row.course_certificated_url ?? null,
+      certificate_issued_at: row.course_certificated_date ?? null,
       last_synced_at: new Date().toISOString(),
-      is_active: true,
+      is_active: row.is_enroll_active,
     };
-  }
-
-  /**
-   * Convertir datos de perfil interno a formato de registro en Crehana
-   */
-  static toRegisterUserDto(profile: {
-    email: string;
-    full_name?: string;
-  }): Record<string, string> {
-    const nameParts = (profile.full_name || '').split(' ');
-    const firstName = nameParts[0] || '';
-    const lastName = nameParts.slice(1).join(' ') || '';
-
-    return {
-      email: profile.email,
-      first_name: firstName,
-      last_name: lastName,
-      username: profile.email.split('@')[0],
-    };
-  }
-
-  /**
-   * Calcular estadísticas de progreso
-   */
-  static calculateProgressStats(enrollments: CrehanaCourseProgress[]): {
-    total_courses: number;
-    completed_courses: number;
-    in_progress_courses: number;
-    total_hours_completed: number;
-    average_progress: number;
-  } {
-    const stats = {
-      total_courses: enrollments.length,
-      completed_courses: 0,
-      in_progress_courses: 0,
-      total_hours_completed: 0,
-      average_progress: 0,
-    };
-
-    let totalProgress = 0;
-
-    for (const enrollment of enrollments) {
-      if (enrollment.status === 'completed') {
-        stats.completed_courses++;
-      } else if (enrollment.status === 'in_progress') {
-        stats.in_progress_courses++;
-      }
-
-      stats.total_hours_completed += enrollment.hours_completed || 0;
-      totalProgress += enrollment.progress_percentage || 0;
-    }
-
-    stats.average_progress =
-      enrollments.length > 0
-        ? Math.round(totalProgress / enrollments.length)
-        : 0;
-
-    return stats;
   }
 }
