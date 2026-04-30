@@ -24,6 +24,26 @@ export class CoursesService extends BaseCrudService<CreateCourseDto, UpdateCours
     await Promise.all(checks);
   }
 
+  /**
+   * Override findAll para incluir el conteo de ediciones activas por curso.
+   * Permite al frontend identificar cursos sin ediciones (no solicitables).
+   */
+  async findAll(): Promise<any[]> {
+    const { data, error } = await this.supabase.db
+      .from(this.tableName)
+      .select(`${this.selectFields}, course_editions(id, is_active)`)
+      .order(this.orderField);
+
+    if (error) throw error;
+
+    return (data ?? []).map((c: any) => {
+      const editions = c.course_editions ?? [];
+      const active_editions_count = editions.filter((e: any) => e.is_active).length;
+      const { course_editions: _omit, ...rest } = c;
+      return { ...rest, active_editions_count };
+    });
+  }
+
   async create(dto: CreateCourseDto) {
     await this.validateFKs(dto);
     return super.create(dto);
