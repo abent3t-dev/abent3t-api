@@ -105,6 +105,37 @@ export class ProposalsService {
   }
 
   /**
+   * Get proposals from all members of a department (for jefe_area)
+   * Includes proposals where the proposer OR the beneficiary belongs to the department
+   */
+  async findByDepartment(departmentId: string) {
+    // 1. Get all active profiles in this department
+    const { data: profiles, error: profErr } = await this.supabase.db
+      .from('profiles')
+      .select('id')
+      .eq('department_id', departmentId)
+      .eq('is_active', true);
+
+    if (profErr) throw profErr;
+
+    const profileIds = (profiles || []).map((p) => p.id);
+    if (profileIds.length === 0) return [];
+
+    const idsList = profileIds.join(',');
+
+    // 2. Get proposals where proposer or beneficiary is in this department
+    const { data, error } = await this.supabase.db
+      .from('course_proposals')
+      .select(PROPOSAL_SELECT)
+      .or(`proposed_by.in.(${idsList}),profile_id.in.(${idsList})`)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data;
+  }
+
+  /**
    * Get a single proposal by ID
    */
   async findOne(id: string) {

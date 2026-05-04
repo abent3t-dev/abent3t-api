@@ -60,6 +60,17 @@ export class ProposalsController {
   }
 
   /**
+   * Get proposals of my team (jefe_area / director)
+   * Returns proposals where the proposer or beneficiary is in the user's department
+   */
+  @Roles('jefe_area', 'director')
+  @Get('my-team')
+  findMyTeam(@CurrentUser() user: AuthUser) {
+    if (!user.department_id) return [];
+    return this.service.findByDepartment(user.department_id);
+  }
+
+  /**
    * Get a single proposal
    */
   @Get(':id')
