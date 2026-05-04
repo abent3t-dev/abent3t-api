@@ -1,4 +1,6 @@
-import { IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsUUID } from 'class-validator';
+import { PERSONNEL_ROLES } from './create-personnel.dto';
+import type { PersonnelRole } from './create-personnel.dto';
 
 export class UpdatePersonnelDto {
   @IsString()
@@ -12,4 +14,8 @@ export class UpdatePersonnelDto {
   @IsUUID()
   @IsOptional()
   department_id?: string;
+
+  @IsIn(PERSONNEL_ROLES)
+  @IsOptional()
+  role?: PersonnelRole;
 }

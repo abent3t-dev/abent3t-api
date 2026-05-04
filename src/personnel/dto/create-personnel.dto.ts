@@ -1,4 +1,7 @@
-import { IsEmail, IsNotEmpty, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
+
+export const PERSONNEL_ROLES = ['colaborador', 'jefe_area'] as const;
+export type PersonnelRole = (typeof PERSONNEL_ROLES)[number];
 
 export class CreatePersonnelDto {
   @IsEmail()
@@ -20,4 +23,8 @@ export class CreatePersonnelDto {
   @IsUUID()
   @IsOptional()
   department_id?: string;
+
+  @IsIn(PERSONNEL_ROLES)
+  @IsOptional()
+  role?: PersonnelRole;
 }

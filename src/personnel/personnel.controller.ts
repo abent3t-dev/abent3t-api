@@ -32,11 +32,13 @@ export class PersonnelController {
     @Query('department_id') departmentId?: string,
     @Query('is_active') isActive?: string,
     @Query('search') search?: string,
+    @Query('role') role?: string,
   ) {
     return this.service.findAll({
       department_id: departmentId,
       is_active: isActive !== undefined ? isActive === 'true' : undefined,
       search,
+      role,
     });
   }
 
