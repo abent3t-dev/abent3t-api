@@ -10,7 +10,10 @@ import {
   ParseUUIDPipe,
   ParseIntPipe,
   DefaultValuePipe,
+  UseInterceptors,
+  UploadedFile,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ProposalsService } from './proposals.service';
 import { CreateProposalDto } from './dto/create-proposal.dto';
 import { ReviewProposalDto } from './dto/review-proposal.dto';
@@ -198,5 +201,51 @@ export class ProposalsController {
     });
 
     return result;
+  }
+
+  // =====================================================
+  // ATTACHMENTS
+  // =====================================================
+
+  /**
+   * Lista archivos adjuntos de una propuesta
+   */
+  @Get(':id/attachments')
+  listAttachments(@Param('id', ParseUUIDPipe) id: string) {
+    return this.service.listAttachments(id);
+  }
+
+  /**
+   * Sube un archivo adjunto a la propuesta (solo proponente o admin_rh)
+   */
+  @Post(':id/attachments')
+  @UseInterceptors(FileInterceptor('file'))
+  uploadAttachment(
+    @Param('id', ParseUUIDPipe) id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.uploadAttachment(id, file, user.id, user.role);
+  }
+
+  /**
+   * Genera URL firmada de descarga para un archivo adjunto
+   */
+  @Get('attachments/:attachmentId/download')
+  downloadAttachment(
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+  ) {
+    return this.service.getAttachmentDownloadUrl(attachmentId);
+  }
+
+  /**
+   * Elimina (soft delete) un archivo adjunto
+   */
+  @Delete('attachments/:attachmentId')
+  removeAttachment(
+    @Param('attachmentId', ParseUUIDPipe) attachmentId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.removeAttachment(attachmentId, user.id, user.role);
   }
 }

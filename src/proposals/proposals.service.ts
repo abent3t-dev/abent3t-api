@@ -20,12 +20,26 @@ const PROPOSAL_SELECT = `
   reviewer:profiles!course_proposals_reviewed_by_fkey(id, full_name),
   courses(id, name),
   course_editions(id, start_date, end_date),
-  course_enrollments(id, status)
+  course_enrollments(id, status),
+  attachments:proposal_attachments(id, file_name, file_size, file_type, uploaded_at, uploaded_by, is_active)
 `;
+
+const ALLOWED_ATTACHMENT_MIME = [
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
+
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024; // 10MB
 
 @Injectable()
 export class ProposalsService {
   private readonly logger = new Logger(ProposalsService.name);
+  private readonly attachmentsBucket = 'proposal-attachments';
 
   constructor(
     private readonly supabase: SupabaseService,
@@ -222,14 +236,14 @@ export class ProposalsService {
         proposed_by: proposedBy,
         profile_id: profileId,
         course_name: dto.course_name,
-        institution_name: dto.institution_name,
-        course_url: dto.course_url,
+        institution_name: dto.institution_name || null,
+        course_url: dto.course_url ? dto.course_url : null,
         estimated_cost: dto.estimated_cost || 0,
         estimated_hours: dto.estimated_hours || 0,
-        modality: dto.modality,
-        start_date: dto.start_date,
-        end_date: dto.end_date,
-        justification: dto.justification,
+        modality: dto.modality || null,
+        start_date: dto.start_date || null,
+        end_date: dto.end_date || null,
+        justification: dto.justification || null,
         status: 'pendiente',
       })
       .select(PROPOSAL_SELECT)
@@ -472,6 +486,175 @@ export class ProposalsService {
     if (error) throw error;
 
     return { message: 'Propuesta cancelada' };
+  }
+
+  /**
+   * Lista archivos adjuntos activos de una propuesta
+   */
+  async listAttachments(proposalId: string) {
+    await this.findOne(proposalId);
+    const { data, error } = await this.supabase.db
+      .from('proposal_attachments')
+      .select('*')
+      .eq('proposal_id', proposalId)
+      .eq('is_active', true)
+      .order('uploaded_at', { ascending: true });
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  /**
+   * Sube un archivo adjunto a una propuesta.
+   * Solo el proponente puede subir adjuntos mientras la propuesta esté
+   * en estado pendiente o en_investigacion.
+   */
+  async uploadAttachment(
+    proposalId: string,
+    file: Express.Multer.File,
+    uploadedBy: string,
+    userRole: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('Archivo requerido');
+    }
+    if (!ALLOWED_ATTACHMENT_MIME.includes(file.mimetype)) {
+      throw new BadRequestException(
+        'Tipo de archivo no permitido. Formatos válidos: PDF, imágenes (JPG, PNG), Excel, Word',
+      );
+    }
+    if (file.size > MAX_ATTACHMENT_SIZE) {
+      throw new BadRequestException(
+        'El archivo excede el tamaño máximo de 10MB',
+      );
+    }
+
+    const proposal = await this.findOne(proposalId);
+    const isAdmin = userRole === 'admin_rh' || userRole === 'super_admin';
+
+    if (!isAdmin && proposal.proposed_by !== uploadedBy) {
+      throw new ForbiddenException(
+        'Solo el proponente puede subir archivos a esta propuesta',
+      );
+    }
+
+    if (!isAdmin && !['pendiente', 'en_investigacion'].includes(proposal.status)) {
+      throw new BadRequestException(
+        `No se pueden agregar archivos a una propuesta ${proposal.status}`,
+      );
+    }
+
+    const timestamp = Date.now();
+    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const filePath = `${proposalId}/${timestamp}_${sanitizedName}`;
+
+    const { error: uploadError } = await this.supabase.db.storage
+      .from(this.attachmentsBucket)
+      .upload(filePath, file.buffer, {
+        contentType: file.mimetype,
+        upsert: false,
+      });
+
+    if (uploadError) {
+      this.logger.error('Error uploading proposal attachment', uploadError);
+      throw new BadRequestException('Error al subir el archivo');
+    }
+
+    const { data, error } = await this.supabase.db
+      .from('proposal_attachments')
+      .insert({
+        proposal_id: proposalId,
+        file_name: file.originalname,
+        file_path: filePath,
+        file_size: file.size,
+        file_type: file.mimetype,
+        uploaded_by: uploadedBy,
+      })
+      .select('*')
+      .single();
+
+    if (error) {
+      await this.supabase.db.storage
+        .from(this.attachmentsBucket)
+        .remove([filePath]);
+      throw error;
+    }
+
+    this.logger.log(
+      `Attachment uploaded: ${data.id} for proposal ${proposalId}`,
+    );
+    return data;
+  }
+
+  /**
+   * Genera URL firmada para descargar un adjunto
+   */
+  async getAttachmentDownloadUrl(attachmentId: string) {
+    const { data: attachment, error } = await this.supabase.db
+      .from('proposal_attachments')
+      .select('*')
+      .eq('id', attachmentId)
+      .eq('is_active', true)
+      .single();
+
+    if (error || !attachment) {
+      throw new NotFoundException('Archivo no encontrado');
+    }
+
+    const { data, error: signError } = await this.supabase.db.storage
+      .from(this.attachmentsBucket)
+      .createSignedUrl(attachment.file_path, 3600);
+
+    if (signError || !data) {
+      throw new BadRequestException('Error al generar URL de descarga');
+    }
+
+    return { url: data.signedUrl, fileName: attachment.file_name };
+  }
+
+  /**
+   * Elimina (soft delete) un archivo adjunto.
+   * Solo el proponente puede borrar mientras la propuesta esté pendiente
+   * o en investigación. admin_rh siempre puede.
+   */
+  async removeAttachment(
+    attachmentId: string,
+    userId: string,
+    userRole: string,
+  ) {
+    const { data: attachment, error } = await this.supabase.db
+      .from('proposal_attachments')
+      .select('*, course_proposals(proposed_by, status)')
+      .eq('id', attachmentId)
+      .single();
+
+    if (error || !attachment) {
+      throw new NotFoundException('Archivo no encontrado');
+    }
+
+    const isAdmin = userRole === 'admin_rh' || userRole === 'super_admin';
+    const proposal = attachment.course_proposals;
+
+    if (!isAdmin && proposal.proposed_by !== userId) {
+      throw new ForbiddenException('Solo el proponente puede eliminar el archivo');
+    }
+    if (
+      !isAdmin &&
+      !['pendiente', 'en_investigacion'].includes(proposal.status)
+    ) {
+      throw new BadRequestException(
+        `No se pueden eliminar archivos de una propuesta ${proposal.status}`,
+      );
+    }
+
+    const { error: updateError } = await this.supabase.db
+      .from('proposal_attachments')
+      .update({ is_active: false })
+      .eq('id', attachmentId);
+
+    if (updateError) throw updateError;
+
+    return { message: 'Archivo eliminado' };
   }
 
   /**

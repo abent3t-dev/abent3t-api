@@ -8,6 +8,7 @@ import {
   IsDateString,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 export class CreateProposalDto {
@@ -35,10 +36,13 @@ export class CreateProposalDto {
   institution_name?: string;
 
   /**
-   * URL del curso (página web, plataforma, etc.)
+   * URL del curso (página web, plataforma, etc.).
+   * Es opcional. Si se proporciona, debe tener formato de URL válido
+   * (http/https). Strings vacíos se ignoran.
    */
-  @IsUrl()
   @IsOptional()
+  @ValidateIf((o) => o.course_url !== null && o.course_url !== '')
+  @IsUrl({ require_protocol: true })
   course_url?: string;
 
   /**
