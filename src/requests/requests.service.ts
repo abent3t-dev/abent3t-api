@@ -18,7 +18,7 @@ const REQUEST_SELECT = `
   requester:profiles!training_requests_requested_by_fkey(id, full_name, email),
   reviewer:profiles!training_requests_reviewed_by_fkey(id, full_name),
   course_editions(
-    id, start_date, end_date, location, instructor,
+    id, start_date, end_date, location, instructor, cost_override,
     courses(id, name, cost, total_hours, institutions(name), modalities(name))
   )
 `;
