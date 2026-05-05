@@ -20,6 +20,7 @@ import { ReportsModule } from './reports/reports.module';
 import { AuditModule } from './audit/audit.module';
 import { PersonnelModule } from './personnel/personnel.module';
 import { ProposalsModule } from './proposals/proposals.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { SocketModule } from './socket/socket.module';
 // Modulos de Compras
 import { SuppliersModule } from './suppliers/suppliers.module';
@@ -57,6 +58,7 @@ import { RolesGuard } from './common/guards/roles.guard';
     AuditModule,
     PersonnelModule,
     ProposalsModule,
+    NotificationsModule,
     SocketModule,
     // Modulos de Compras
     SuppliersModule,
