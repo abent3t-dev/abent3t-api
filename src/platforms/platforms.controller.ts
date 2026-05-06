@@ -39,6 +39,12 @@ export class PlatformsController {
     return this.platformsService.findCrehanaCourses();
   }
 
+  @Get('crehana/courses/:externalCourseId')
+  @Roles('super_admin', 'admin_rh', 'executive')
+  findCrehanaCourseDetail(@Param('externalCourseId') externalCourseId: string) {
+    return this.platformsService.findCrehanaCourseDetail(externalCourseId);
+  }
+
   @Get('crehana/users')
   @Roles('super_admin', 'admin_rh', 'executive')
   findCrehanaUsers() {

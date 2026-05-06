@@ -806,6 +806,128 @@ export class PlatformsService implements OnModuleInit {
   }
 
   /**
+   * Detalle de un curso: datos del curso + stats agregadas + lista de inscritos
+   * con su progreso individual.
+   */
+  async findCrehanaCourseDetail(externalCourseId: string) {
+    const integration = await this.findCrehanaIntegration();
+    if (!integration) {
+      throw new NotFoundException('No hay integración activa con Crehana');
+    }
+
+    // Curso
+    const { data: course } = await this.supabase.db
+      .from('platform_courses')
+      .select('id, external_course_id, name, total_hours, course_url, thumbnail_url, last_synced_at, description, instructor, total_modules, total_lessons')
+      .eq('platform_integration_id', integration.id)
+      .eq('external_course_id', externalCourseId)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (!course) {
+      throw new NotFoundException('Curso de Crehana no encontrado');
+    }
+
+    // Inscripciones del curso
+    const { data: enrollments } = await this.supabase.db
+      .from('platform_enrollments')
+      .select('*')
+      .eq('platform_course_id', course.id)
+      .eq('is_active', true)
+      .order('progress_percentage', { ascending: false })
+      .limit(10000);
+
+    const enrollList = enrollments ?? [];
+
+    // Resolver info de cada usuario por email (recordar: external_user_id NO
+    // coincide con el id del mapping, debemos joinear por email).
+    const emails = enrollList
+      .map((e) => (e.external_user_email as string | null)?.toLowerCase())
+      .filter((e): e is string => !!e);
+
+    const { data: mappings } = emails.length > 0
+      ? await this.supabase.db
+          .from('platform_user_mappings')
+          .select(`
+            external_user_id, external_email, external_username, profile_id,
+            profiles:profile_id(id, full_name, email, departments(id, name))
+          `)
+          .eq('platform_integration_id', integration.id)
+          .eq('is_active', true)
+      : { data: [] as any[] };
+
+    const mappingByEmail = new Map<string, any>();
+    for (const m of mappings ?? []) {
+      if (m.external_email) {
+        mappingByEmail.set(m.external_email.toLowerCase(), m);
+      }
+    }
+
+    // Stats agregadas
+    let completed = 0;
+    let inProgress = 0;
+    let notStarted = 0;
+    let totalHours = 0;
+    let certificates = 0;
+    let totalProgress = 0;
+
+    const enrichedEnrollments = enrollList.map((e) => {
+      if (e.status === 'completed') completed++;
+      else if (e.status === 'in_progress') inProgress++;
+      else notStarted++;
+      totalHours += Number(e.hours_completed) || 0;
+      if (e.certificate_url) certificates++;
+      totalProgress += Number(e.progress_percentage) || 0;
+
+      const email = (e.external_user_email as string | null)?.toLowerCase();
+      const m = email ? mappingByEmail.get(email) : null;
+
+      return {
+        id: e.id,
+        status: e.status,
+        progress_percentage: e.progress_percentage,
+        hours_completed: e.hours_completed,
+        enrolled_at: e.enrolled_at,
+        started_at: e.started_at,
+        completed_at: e.completed_at,
+        last_activity_at: e.last_activity_at,
+        certificate_url: e.certificate_url,
+        certificate_issued_at: e.certificate_issued_at,
+        user: m
+          ? {
+              external_user_id: m.external_user_id,
+              external_email: m.external_email,
+              external_username: m.external_username,
+              is_linked: !!m.profile_id,
+              profile: m.profiles ?? null,
+            }
+          : {
+              external_user_id: null,
+              external_email: e.external_user_email,
+              external_username: null,
+              is_linked: false,
+              profile: null,
+            },
+      };
+    });
+
+    return {
+      course,
+      stats: {
+        total_enrollments: enrollList.length,
+        completed,
+        in_progress: inProgress,
+        not_started: notStarted,
+        average_progress:
+          enrollList.length > 0 ? Math.round(totalProgress / enrollList.length) : 0,
+        total_hours_studied: Math.round(totalHours * 10) / 10,
+        certificates_issued: certificates,
+      },
+      enrollments: enrichedEnrollments,
+    };
+  }
+
+  /**
    * Detalle de un usuario: sus datos + todas sus inscripciones con info del curso.
    */
   async findCrehanaUserDetail(externalUserId: string) {
