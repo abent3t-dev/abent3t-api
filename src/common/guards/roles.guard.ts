@@ -32,12 +32,20 @@ export class RolesGuard implements CanActivate {
       );
     }
 
-    // super_admin always has access to everything
-    if (user.role === 'super_admin') {
+    // Conjunto de roles efectivos del usuario: combina el rol primario
+    // (profiles.role) con los asignados por módulo (user_roles).
+    const userRoles = new Set<string>([
+      ...(user.roles ?? []),
+      ...(user.role ? [user.role] : []),
+    ]);
+
+    // super_admin bypassa todo
+    if (userRoles.has('super_admin')) {
       return true;
     }
 
-    if (!requiredRoles.includes(user.role)) {
+    const hasRequired = requiredRoles.some((r) => userRoles.has(r));
+    if (!hasRequired) {
       throw new ForbiddenException(
         'No tienes permisos para realizar esta acción',
       );

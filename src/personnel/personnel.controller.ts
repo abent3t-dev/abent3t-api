@@ -66,7 +66,7 @@ export class PersonnelController {
   @Roles('admin_rh')
   @Post()
   async create(@Body() dto: CreatePersonnelDto, @CurrentUser() user: AuthUser) {
-    const result = await this.service.create(dto);
+    const result = await this.service.create(dto, user.id);
     await this.audit.log({
       action: 'create',
       entity_type: 'user',
@@ -96,7 +96,7 @@ export class PersonnelController {
     @CurrentUser() user: AuthUser,
   ) {
     const oldData = await this.service.findOne(id);
-    const result = await this.service.update(id, dto);
+    const result = await this.service.update(id, dto, user.id);
     await this.audit.log({
       action: 'update',
       entity_type: 'user',

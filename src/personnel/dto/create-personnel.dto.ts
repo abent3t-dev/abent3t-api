@@ -3,18 +3,27 @@ import { IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, IsUUID, MinLength } fr
 export const PERSONNEL_ROLES = ['colaborador', 'jefe_area'] as const;
 export type PersonnelRole = (typeof PERSONNEL_ROLES)[number];
 
+/**
+ * password y full_name son OPCIONALES a nivel del DTO porque el endpoint
+ * acepta dos modos:
+ *  - Email nuevo → el service valida que ambos estén presentes y password
+ *    cumpla la longitud mínima (validación condicional en el service).
+ *  - Email ya registrado → solo se agrega el rol al usuario existente,
+ *    no se modifican datos sensibles (password, nombre).
+ */
 export class CreatePersonnelDto {
   @IsEmail()
   @IsNotEmpty()
   email: string;
 
   @IsString()
+  @IsOptional()
   @MinLength(6)
-  password: string;
+  password?: string;
 
   @IsString()
-  @IsNotEmpty()
-  full_name: string;
+  @IsOptional()
+  full_name?: string;
 
   @IsString()
   @IsOptional()

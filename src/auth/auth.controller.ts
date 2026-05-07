@@ -35,6 +35,17 @@ export class AuthController {
     return this.service.getMyTeam(user.department_id, user.id);
   }
 
+  /**
+   * Buscar usuario por email (super_admin y admin_rh).
+   * Usado por la UI de alta para detectar emails ya registrados antes del submit.
+   */
+  @Get('lookup-email')
+  @UseGuards(RolesGuard)
+  @Roles('super_admin', 'admin_rh')
+  lookupEmail(@Query('email') email: string) {
+    return this.service.lookupByEmail(email || '');
+  }
+
   /** List all users (Super Admin and admin_rh) */
   @Get('users')
   @UseGuards(RolesGuard)
@@ -58,8 +69,9 @@ export class AuthController {
   updateRole(
     @Param('id', ParseUUIDPipe) id: string,
     @Body('role') role: string,
+    @CurrentUser() current: AuthUser,
   ) {
-    return this.service.updateRole(id, role);
+    return this.service.updateRole(id, role, current.id);
   }
 
   /** Assign department to user (Super Admin only) */
@@ -102,7 +114,44 @@ export class AuthController {
       role?: string;
       department_id?: string;
     },
+    @CurrentUser() current: AuthUser,
   ) {
-    return this.service.createUser(body);
+    return this.service.createUser(body, current.id);
+  }
+
+  // =====================================================
+  // GESTIÓN DE ROLES POR MÓDULO
+  // =====================================================
+
+  /** Listar asignaciones de rol por módulo de un usuario (super_admin) */
+  @Get('users/:id/roles')
+  @UseGuards(RolesGuard)
+  @Roles('super_admin')
+  listUserRoles(@Param('id', ParseUUIDPipe) id: string) {
+    return this.service.listUserRoles(id);
+  }
+
+  /** Asignar un rol a un usuario en un módulo (super_admin) */
+  @Post('users/:id/roles')
+  @UseGuards(RolesGuard)
+  @Roles('super_admin')
+  assignUserRole(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { module: string; role: string },
+    @CurrentUser() current: AuthUser,
+  ) {
+    return this.service.assignUserRole(id, body.module, body.role, current.id);
+  }
+
+  /** Revocar una asignación de rol (super_admin) */
+  @Put('users/:id/roles/:roleId/revoke')
+  @UseGuards(RolesGuard)
+  @Roles('super_admin')
+  revokeUserRole(
+    @Param('id', ParseUUIDPipe) _id: string,
+    @Param('roleId', ParseUUIDPipe) roleId: string,
+    @CurrentUser() current: AuthUser,
+  ) {
+    return this.service.revokeUserRole(roleId, current.id);
   }
 }

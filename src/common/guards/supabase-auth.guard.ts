@@ -57,8 +57,31 @@ export class SupabaseAuthGuard implements CanActivate {
       throw new UnauthorizedException('Usuario desactivado');
     }
 
+    // Cargar roles adicionales por módulo (tabla user_roles).
+    // Si la tabla no existe todavía o falla, degradamos al rol primario.
+    let assignments: { module: string; role: string }[] = [];
+    try {
+      const { data: rolesData } = await this.supabase.db
+        .from('user_roles')
+        .select('module, role')
+        .eq('profile_id', user.id)
+        .eq('is_active', true);
+      assignments = rolesData ?? [];
+    } catch {
+      assignments = [];
+    }
+
+    // Lista deduplicada de roles efectivos: rol primario + roles asignados.
+    const allRoles = new Set<string>();
+    if (profile.role) allRoles.add(profile.role);
+    for (const a of assignments) allRoles.add(a.role);
+
     // Attach user to request
-    request.user = profile as AuthUser;
+    request.user = {
+      ...profile,
+      roles: Array.from(allRoles),
+      role_assignments: assignments,
+    } as AuthUser;
 
     return true;
   }
