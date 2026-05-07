@@ -123,35 +123,60 @@ export class AuthController {
   // GESTIÓN DE ROLES POR MÓDULO
   // =====================================================
 
-  /** Listar asignaciones de rol por módulo de un usuario (super_admin) */
+  /**
+   * Listar asignaciones de rol por módulo de un usuario.
+   * super_admin ve todas; admin_rh también ve todas (de solo lectura) para
+   * que pueda gestionar las de capacitación con contexto.
+   */
   @Get('users/:id/roles')
   @UseGuards(RolesGuard)
-  @Roles('super_admin')
+  @Roles('super_admin', 'admin_rh')
   listUserRoles(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.listUserRoles(id);
   }
 
-  /** Asignar un rol a un usuario en un módulo (super_admin) */
+  /**
+   * Asignar un rol a un usuario en un módulo.
+   * super_admin puede asignar cualquier rol en cualquier módulo.
+   * admin_rh solo puede asignar Colaborador o Jefe de Área en Capacitación.
+   */
   @Post('users/:id/roles')
   @UseGuards(RolesGuard)
-  @Roles('super_admin')
+  @Roles('super_admin', 'admin_rh')
   assignUserRole(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { module: string; role: string },
     @CurrentUser() current: AuthUser,
   ) {
-    return this.service.assignUserRole(id, body.module, body.role, current.id);
+    const isSuper = current.roles?.includes('super_admin');
+    const allowedModules = isSuper ? undefined : ['capacitacion'];
+    const allowedRoles = isSuper ? undefined : ['colaborador', 'jefe_area'];
+    return this.service.assignUserRole(
+      id,
+      body.module,
+      body.role,
+      current.id,
+      allowedModules,
+      allowedRoles,
+    );
   }
 
-  /** Revocar una asignación de rol (super_admin) */
+  /**
+   * Revocar una asignación de rol.
+   * super_admin puede revocar cualquier rol.
+   * admin_rh solo puede revocar Colaborador o Jefe de Área en Capacitación.
+   */
   @Put('users/:id/roles/:roleId/revoke')
   @UseGuards(RolesGuard)
-  @Roles('super_admin')
+  @Roles('super_admin', 'admin_rh')
   revokeUserRole(
     @Param('id', ParseUUIDPipe) _id: string,
     @Param('roleId', ParseUUIDPipe) roleId: string,
     @CurrentUser() current: AuthUser,
   ) {
-    return this.service.revokeUserRole(roleId, current.id);
+    const isSuper = current.roles?.includes('super_admin');
+    const allowedModules = isSuper ? undefined : ['capacitacion'];
+    const allowedRoles = isSuper ? undefined : ['colaborador', 'jefe_area'];
+    return this.service.revokeUserRole(roleId, current.id, allowedModules, allowedRoles);
   }
 }

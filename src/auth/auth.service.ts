@@ -1,9 +1,15 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import {
   upsertUserRole,
   revokeUserRole,
   getModuleForRole,
+  getDisplayRole,
 } from '../common/services/user-roles.helper';
 
 interface CreateUserDto {
@@ -69,8 +75,8 @@ export class AuthService {
 
     if (error || !data) throw new NotFoundException('Perfil no encontrado');
 
-    // Cargar roles por módulo (tabla user_roles). Si la tabla aún no existe,
-    // devolvemos solo el rol primario.
+    // user_roles es la fuente única. Si la tabla aún no existe (entornos
+    // pre-migración), degrada gracilmente con array vacío.
     let assignments: { module: string; role: string }[] = [];
     try {
       const { data: rolesData } = await this.supabase.db
@@ -83,60 +89,63 @@ export class AuthService {
       assignments = [];
     }
 
-    const rolesSet = new Set<string>();
-    if (data.role) rolesSet.add(data.role);
-    for (const a of assignments) rolesSet.add(a.role);
+    const roles = Array.from(new Set(assignments.map((a) => a.role)));
+    // Display role: el rol "principal" para mostrar como badge único o
+    // decidir HOME_ROUTES post-login.
+    const displayRole = getDisplayRole(roles) ?? data.role;
 
     return {
       ...data,
-      roles: Array.from(rolesSet),
+      role: displayRole, // sobrescribe la columna huérfana profiles.role
+      roles,
       role_assignments: assignments,
     };
   }
 
   /**
-   * Actualiza el rol primario del usuario y mantiene `user_roles` sincronizado:
-   *  - Revoca la entrada vieja en user_roles del módulo correspondiente al rol
-   *    primario anterior (si lo había)
-   *  - Asigna/reactiva la entrada nueva con el rol nuevo
+   * Asigna un rol al usuario en el módulo correspondiente al rol.
+   * Si ya tiene OTROS roles activos en el mismo módulo, los revoca para
+   * que solo quede el rol nuevo (semántica de "cambiar el rol del módulo").
    *
-   * Las asignaciones en OTROS módulos quedan intactas.
+   * Notas:
+   *  - profiles.role NO se actualiza — es columna huérfana.
+   *  - Roles en OTROS módulos no se ven afectados.
+   *  - Para gestión más fina (varios roles dentro del mismo módulo),
+   *    usar /auth/users/:id/roles directamente.
    */
   async updateRole(userId: string, role: string, performedBy?: string) {
-    // 1. Obtener el rol primario actual para saber qué revocar
-    const { data: existing } = await this.supabase.db
-      .from('profiles')
-      .select('role')
-      .eq('id', userId)
-      .single();
-
-    const oldRole = existing?.role;
-
-    // 2. Actualizar rol primario en profiles
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .update({ role })
-      .eq('id', userId)
-      .select()
-      .single();
-
-    if (error || !data) throw new NotFoundException('Perfil no encontrado');
-
-    // 3. Sincronizar user_roles
-    if (oldRole && oldRole !== role) {
-      await revokeUserRole(this.supabase.db, {
-        profileId: userId,
-        role: oldRole,
-        revokedBy: performedBy ?? null,
-      });
+    const targetModule = getModuleForRole(role);
+    if (!targetModule) {
+      throw new BadRequestException(`Rol desconocido: ${role}`);
     }
+
+    // Revocar otros roles activos en el mismo módulo
+    const { data: existingRoles } = await this.supabase.db
+      .from('user_roles')
+      .select('role')
+      .eq('profile_id', userId)
+      .eq('module', targetModule)
+      .eq('is_active', true);
+
+    for (const r of existingRoles ?? []) {
+      if (r.role !== role) {
+        await revokeUserRole(this.supabase.db, {
+          profileId: userId,
+          role: r.role,
+          revokedBy: performedBy ?? null,
+        });
+      }
+    }
+
+    // Asignar (o reactivar) el rol nuevo
     await upsertUserRole(this.supabase.db, {
       profileId: userId,
       role,
       grantedBy: performedBy ?? null,
     });
 
-    return data;
+    // Devolver perfil enriquecido (con roles[] actualizados)
+    return this.getProfile(userId);
   }
 
   async assignDepartment(userId: string, departmentId: string) {
@@ -181,13 +190,11 @@ export class AuthService {
   /**
    * Alta de usuario.
    *
-   * Lógica multi-módulo:
-   *  - Si el email NO existe en profiles: crea auth.users + profile y asigna
-   *    el rol indicado tanto en profiles.role (primario) como en user_roles.
-   *  - Si el email YA existe: NO crea nada nuevo. Simplemente agrega el rol
-   *    como adicional en user_roles del usuario existente y devuelve el
-   *    perfil enriquecido con un flag `existing_user_added_role: true`
-   *    para que el frontend pueda mostrar un mensaje claro al super_admin.
+   *  - Si el email NO existe: crea auth.users + profile (sin role) y registra
+   *    el rol indicado en user_roles (única fuente de roles).
+   *  - Si el email YA existe: agrega el rol al user existente en user_roles.
+   *    Devuelve flag `existing_user_added_role: true` para que el frontend
+   *    muestre el mensaje específico.
    */
   async createUser(dto: CreateUserDto, performedBy?: string) {
     if (!dto.email) {
@@ -200,17 +207,16 @@ export class AuthService {
     // 1. ¿Ya existe un usuario con ese email? (case-insensitive)
     const { data: existing } = await this.supabase.db
       .from('profiles')
-      .select('id, email, full_name, role, is_active')
+      .select('id, email, full_name, is_active')
       .ilike('email', normalizedEmail)
       .maybeSingle();
 
     if (existing) {
       if (!existing.is_active) {
         throw new BadRequestException(
-          `Ya existe un usuario con este email pero está desactivado. Reactívalo desde la lista en lugar de crear uno nuevo.`,
+          'Ya existe un usuario con este email pero está desactivado. Reactívalo desde la lista en lugar de crear uno nuevo.',
         );
       }
-      // Agregar el rol como adicional en user_roles del usuario existente
       await upsertUserRole(this.supabase.db, {
         profileId: existing.id,
         role: targetRole,
@@ -254,13 +260,12 @@ export class AuthService {
 
     const userId = authData.user.id;
 
-    // 3. Actualizar/insertar profile
+    // 3. Actualizar/insertar profile (sin role — el rol va a user_roles)
     const { data: profile, error: profileError } = await this.supabase.db
       .from('profiles')
       .update({
         full_name: dto.full_name,
         position: dto.position || null,
-        role: targetRole,
         department_id: dto.department_id || null,
       })
       .eq('id', userId)
@@ -277,7 +282,6 @@ export class AuthService {
           email: dto.email,
           full_name: dto.full_name,
           position: dto.position || null,
-          role: targetRole,
           department_id: dto.department_id || null,
         })
         .select('*, departments(id, name)')
@@ -289,7 +293,7 @@ export class AuthService {
       finalProfile = newProfile;
     }
 
-    // 4. Sincronizar user_roles para que el rol primario esté también ahí
+    // 4. Asignar el rol vía user_roles (única fuente)
     await upsertUserRole(this.supabase.db, {
       profileId: userId,
       role: targetRole,
@@ -331,14 +335,36 @@ export class AuthService {
     return data ?? [];
   }
 
-  /** Asigna un rol nuevo a un usuario en un módulo. Reactiva si ya existía revocado. */
+  /**
+   * Asigna un rol al usuario en un módulo.
+   *
+   * Regla de negocio: **un usuario solo puede tener UN rol activo por módulo**.
+   * Si ya tiene OTRO rol activo en el mismo módulo, se revoca antes de asignar
+   * el nuevo. Si ya tiene exactamente ese rol activo, no hace nada.
+   * Si el rol existió pero estaba revocado, se reactiva.
+   *
+   * Si el caller pasa `allowedModules`, valida que el módulo destino esté
+   * permitido (usado para que admin_rh solo pueda tocar capacitación).
+   */
   async assignUserRole(
     userId: string,
     module: string,
     role: string,
     grantedBy: string,
+    allowedModules?: string[],
+    allowedRoles?: string[],
   ) {
-    // Verificar usuario
+    if (allowedModules && !allowedModules.includes(module)) {
+      throw new ForbiddenException(
+        `No tienes permiso para gestionar roles del módulo "${module}".`,
+      );
+    }
+    if (allowedRoles && !allowedRoles.includes(role)) {
+      throw new ForbiddenException(
+        `No tienes permiso para asignar el rol "${role}".`,
+      );
+    }
+
     const { data: target } = await this.supabase.db
       .from('profiles')
       .select('id, is_active')
@@ -350,7 +376,28 @@ export class AuthService {
       throw new BadRequestException('No se pueden asignar roles a un usuario desactivado');
     }
 
-    // Si ya existe una fila (activa o revocada), reactivarla
+    // Revocar otros roles activos en el mismo módulo (regla "1 rol por módulo")
+    const { data: othersInModule } = await this.supabase.db
+      .from('user_roles')
+      .select('id, role')
+      .eq('profile_id', userId)
+      .eq('module', module)
+      .eq('is_active', true);
+
+    for (const other of othersInModule ?? []) {
+      if (other.role !== role) {
+        await this.supabase.db
+          .from('user_roles')
+          .update({
+            is_active: false,
+            revoked_at: new Date().toISOString(),
+            revoked_by: grantedBy,
+          })
+          .eq('id', other.id);
+      }
+    }
+
+    // Si ya existe una fila exacta (activa o revocada), reactivarla
     const { data: existing } = await this.supabase.db
       .from('user_roles')
       .select('id, is_active')
@@ -360,9 +407,7 @@ export class AuthService {
       .maybeSingle();
 
     if (existing) {
-      if (existing.is_active) {
-        return existing; // ya está asignado, no hacer nada
-      }
+      if (existing.is_active) return existing;
       const { data: reactivated, error: reactivateError } = await this.supabase.db
         .from('user_roles')
         .update({
@@ -379,7 +424,6 @@ export class AuthService {
       return reactivated;
     }
 
-    // Crear nueva asignación
     const { data: created, error: createError } = await this.supabase.db
       .from('user_roles')
       .insert({
@@ -395,8 +439,38 @@ export class AuthService {
     return created;
   }
 
-  /** Revoca una asignación de rol (soft delete: is_active=false + revoked_at). */
-  async revokeUserRole(roleId: string, revokedBy: string) {
+  /**
+   * Revoca una asignación de rol (soft delete: is_active=false + revoked_at).
+   * Si se pasa `allowedModules`, valida que el rol revocado esté en uno de
+   * ellos (usado para limitar admin_rh a capacitación).
+   */
+  async revokeUserRole(
+    roleId: string,
+    revokedBy: string,
+    allowedModules?: string[],
+    allowedRoles?: string[],
+  ) {
+    if (allowedModules || allowedRoles) {
+      const { data: existing } = await this.supabase.db
+        .from('user_roles')
+        .select('module, role')
+        .eq('id', roleId)
+        .maybeSingle();
+      if (!existing) {
+        throw new NotFoundException('Asignación de rol no encontrada');
+      }
+      if (allowedModules && !allowedModules.includes(existing.module)) {
+        throw new ForbiddenException(
+          `No tienes permiso para revocar roles del módulo "${existing.module}".`,
+        );
+      }
+      if (allowedRoles && !allowedRoles.includes(existing.role)) {
+        throw new ForbiddenException(
+          `No tienes permiso para revocar el rol "${existing.role}".`,
+        );
+      }
+    }
+
     const { data, error } = await this.supabase.db
       .from('user_roles')
       .update({

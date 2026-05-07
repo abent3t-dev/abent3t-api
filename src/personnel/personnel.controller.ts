@@ -124,7 +124,7 @@ export class PersonnelController {
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
   ) {
-    const result = await this.service.deactivate(id);
+    const result = await this.service.deactivate(id, user.id);
     await this.audit.log({
       action: 'delete',
       entity_type: 'user',
@@ -147,7 +147,7 @@ export class PersonnelController {
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: AuthUser,
   ) {
-    const result = await this.service.reactivate(id);
+    const result = await this.service.reactivate(id, user.id);
     await this.audit.log({
       action: 'update',
       entity_type: 'user',

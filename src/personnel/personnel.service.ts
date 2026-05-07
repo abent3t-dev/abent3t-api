@@ -26,55 +26,50 @@ export class PersonnelService {
   /**
    * Lista de personal de capacitación.
    *
-   * Incluye:
-   *  - Usuarios cuyo rol primario (profiles.role) es de personnel
-   *    (colaborador, collaborator, jefe_area, director).
-   *  - Usuarios "compartidos": tienen rol primario de OTRO módulo
-   *    (ej. aprobador_nivel_3 en Compras) pero también tienen un rol
-   *    de personnel en el módulo capacitacion vía user_roles.
+   * Modelo: user_roles es la fuente única. Un usuario aparece aquí si
+   * tiene al menos un rol de personnel (`colaborador`, `jefe_area`, etc.)
+   * en el módulo `capacitacion` — activo o inactivo.
    *
-   * Para los compartidos, sobreescribimos el campo `role` con el rol
-   * efectivo en este módulo y agregamos un flag `is_shared_user`
-   * para que el frontend pueda mostrar un indicador visual.
+   * El campo `is_active` en cada item refleja si su rol DE CAPACITACIÓN
+   * está activo (no si su cuenta global está activa).
+   *
+   * Cada item tiene además un campo `role` con el rol efectivo en este
+   * módulo (priorizado: jefe_area > director > colaborador > collaborator).
    */
   async findAll(filters?: PersonnelFilters) {
-    // 1) Usuarios con rol primario de personnel
-    const { data: byPrimary, error: primaryErr } = await this.supabase.db
+    // 1) user_roles del módulo capacitación con roles de personnel.
+    //    Incluye activos e inactivos para soportar la lista de "bajas".
+    const { data: roleRows, error: rolesErr } = await this.supabase.db
+      .from('user_roles')
+      .select('profile_id, role, is_active')
+      .eq('module', 'capacitacion')
+      .in('role', PERSONNEL_ROLES_FILTER);
+    if (rolesErr) throw rolesErr;
+
+    if (!roleRows || roleRows.length === 0) return [];
+
+    // Agrupar por profile_id: roles activos vs inactivos
+    const activeByProfile = new Map<string, Set<string>>();
+    const inactiveByProfile = new Map<string, Set<string>>();
+    for (const r of roleRows) {
+      const map = r.is_active ? activeByProfile : inactiveByProfile;
+      if (!map.has(r.profile_id)) map.set(r.profile_id, new Set());
+      map.get(r.profile_id)!.add(r.role);
+    }
+
+    const profileIds = Array.from(
+      new Set([
+        ...activeByProfile.keys(),
+        ...inactiveByProfile.keys(),
+      ]),
+    );
+
+    // 2) Traer profiles
+    const { data: profiles } = await this.supabase.db
       .from('profiles')
       .select('*, departments(id, name)')
-      .in('role', PERSONNEL_ROLES_FILTER);
-    if (primaryErr) throw primaryErr;
+      .in('id', profileIds);
 
-    // 2) Asignaciones de personnel en user_roles (módulo capacitación, activas)
-    const { data: extraRoles } = await this.supabase.db
-      .from('user_roles')
-      .select('profile_id, role')
-      .eq('module', 'capacitacion')
-      .in('role', PERSONNEL_ROLES_FILTER)
-      .eq('is_active', true);
-
-    // Map profile_id → set de roles de personnel en user_roles
-    const userRolesByProfile = new Map<string, Set<string>>();
-    for (const r of extraRoles ?? []) {
-      if (!userRolesByProfile.has(r.profile_id)) {
-        userRolesByProfile.set(r.profile_id, new Set());
-      }
-      userRolesByProfile.get(r.profile_id)!.add(r.role);
-    }
-
-    // 3) Traer perfiles que están en user_roles pero NO en byPrimary
-    const profilesById = new Map<string, any>();
-    for (const p of byPrimary ?? []) profilesById.set(p.id, p);
-    const missingIds = [...userRolesByProfile.keys()].filter((id) => !profilesById.has(id));
-    if (missingIds.length > 0) {
-      const { data: extras } = await this.supabase.db
-        .from('profiles')
-        .select('*, departments(id, name)')
-        .in('id', missingIds);
-      for (const p of extras ?? []) profilesById.set(p.id, p);
-    }
-
-    // 4) Enriquecer cada perfil con el rol "efectivo en capacitación" y flag de compartido
     const priority = ['jefe_area', 'director', 'colaborador', 'collaborator'];
     const pickEffective = (roles: Set<string> | undefined): string | null => {
       if (!roles) return null;
@@ -82,18 +77,21 @@ export class PersonnelService {
       return null;
     };
 
-    let result = Array.from(profilesById.values()).map((p) => {
-      const isShared = !PERSONNEL_ROLES_FILTER.includes(p.role);
-      const effectiveRole = isShared ? pickEffective(userRolesByProfile.get(p.id)) : p.role;
+    // 3) Enriquecer cada profile con role efectivo y is_active de capacitación
+    let result = (profiles ?? []).map((p) => {
+      const active = activeByProfile.get(p.id);
+      const inactive = inactiveByProfile.get(p.id);
+      const hasActiveRole = !!active && active.size > 0;
+      const effective = pickEffective(active) ?? pickEffective(inactive) ?? 'colaborador';
       return {
         ...p,
-        role: effectiveRole ?? p.role,
-        primary_role: p.role,
-        is_shared_user: isShared,
+        role: effective,
+        // is_active: combina el de la cuenta global y el del rol en capacitación
+        is_active: p.is_active && hasActiveRole,
       };
     });
 
-    // 5) Filtros JS (más simple que armar OR complejos en Postgrest)
+    // 4) Filtros
     if (filters?.department_id) {
       result = result.filter((p) => p.department_id === filters.department_id);
     }
@@ -101,15 +99,15 @@ export class PersonnelService {
       result = result.filter((p) => p.is_active === filters.is_active);
     }
     if (filters?.role && PERSONNEL_ROLES_FILTER.includes(filters.role)) {
-      // Filtro por rol: aplica sobre el rol "efectivo" en capacitación
       result = result.filter((p) => p.role === filters.role);
     }
     if (filters?.search) {
       const q = filters.search.toLowerCase();
-      result = result.filter((p) =>
-        (p.full_name?.toLowerCase().includes(q)) ||
-        (p.email?.toLowerCase().includes(q)) ||
-        (p.position?.toLowerCase().includes(q)),
+      result = result.filter(
+        (p) =>
+          p.full_name?.toLowerCase().includes(q) ||
+          p.email?.toLowerCase().includes(q) ||
+          p.position?.toLowerCase().includes(q),
       );
     }
 
@@ -118,8 +116,8 @@ export class PersonnelService {
   }
 
   /**
-   * Get a single personnel record. Igual que findAll, soporta usuarios
-   * "compartidos" — devuelve el rol efectivo en capacitación.
+   * Get a single personnel record.
+   * Devuelve el perfil con el rol efectivo en capacitación.
    */
   async findOne(id: string) {
     const { data, error } = await this.supabase.db
@@ -130,33 +128,28 @@ export class PersonnelService {
 
     if (error || !data) throw new NotFoundException('Colaborador no encontrado');
 
-    const isShared = !PERSONNEL_ROLES_FILTER.includes(data.role);
-    if (!isShared) return data;
-
-    // Es un usuario compartido — buscar su rol efectivo de capacitación
-    const { data: extraRoles } = await this.supabase.db
+    const { data: roleRows } = await this.supabase.db
       .from('user_roles')
-      .select('role')
+      .select('role, is_active')
       .eq('profile_id', id)
       .eq('module', 'capacitacion')
-      .in('role', PERSONNEL_ROLES_FILTER)
-      .eq('is_active', true);
+      .in('role', PERSONNEL_ROLES_FILTER);
 
-    const roles = new Set((extraRoles ?? []).map((r) => r.role));
+    const active = new Set((roleRows ?? []).filter((r) => r.is_active).map((r) => r.role));
+    const inactive = new Set((roleRows ?? []).filter((r) => !r.is_active).map((r) => r.role));
     const priority = ['jefe_area', 'director', 'colaborador', 'collaborator'];
-    let effectiveRole: string | null = null;
+    let effective: string = 'colaborador';
     for (const r of priority) {
-      if (roles.has(r)) {
-        effectiveRole = r;
+      if (active.has(r) || inactive.has(r)) {
+        effective = r;
         break;
       }
     }
 
     return {
       ...data,
-      role: effectiveRole ?? data.role,
-      primary_role: data.role,
-      is_shared_user: true,
+      role: effective,
+      is_active: data.is_active && active.size > 0,
     };
   }
 
@@ -259,13 +252,12 @@ export class PersonnelService {
 
     const userId = authData.user.id;
 
-    // 3. Actualizar/insertar profile
+    // 3. Actualizar/insertar profile (sin role — se asigna en user_roles)
     const { data: profile, error: profileError } = await this.supabase.db
       .from('profiles')
       .update({
         full_name: dto.full_name,
         position: dto.position || null,
-        role,
         department_id: dto.department_id || null,
       })
       .eq('id', userId)
@@ -281,7 +273,6 @@ export class PersonnelService {
           email: dto.email,
           full_name: dto.full_name,
           position: dto.position || null,
-          role,
           department_id: dto.department_id || null,
         })
         .select('*, departments(id, name)')
@@ -293,7 +284,7 @@ export class PersonnelService {
       finalProfile = newProfile;
     }
 
-    // 4. Sincronizar user_roles
+    // 4. Asignar el rol vía user_roles (única fuente)
     await upsertUserRole(this.supabase.db, {
       profileId: userId,
       role,
@@ -306,14 +297,9 @@ export class PersonnelService {
   /**
    * Update collaborator data.
    *
-   * Distingue dos casos:
-   *  - Usuario puro de capacitación (primary_role ∈ PERSONNEL_ROLES_FILTER):
-   *    se actualiza profiles (nombre, posición, depto, rol) + user_roles si
-   *    cambió el rol.
-   *  - Usuario compartido (primary_role en otro módulo): SOLO se permite
-   *    cambiar el rol de capacitación en user_roles. Los demás campos
-   *    (nombre, posición, depto) se ignoran porque no son responsabilidad
-   *    de admin_rh — pertenecen al módulo "dueño" del rol primario.
+   * Atributos del PERSONA (nombre, posición, departamento) siempre editables.
+   * El rol se gestiona en user_roles del módulo capacitación: si se pasa un
+   * rol nuevo, se revocan los demás de personnel en cap. y se asigna el nuevo.
    */
   async update(id: string, dto: UpdatePersonnelDto, performedBy?: string) {
     const existing = await this.findOne(id);
@@ -323,51 +309,41 @@ export class PersonnelService {
       throw new BadRequestException('Rol no permitido en este módulo');
     }
 
-    const isShared = !!existing.is_shared_user;
-    const oldEffectiveRole = existing.role; // ya enriquecido por findOne
+    // Atributos del usuario (sin role — el rol va en user_roles)
+    const updatePayload: Record<string, unknown> = {};
+    if (dto.full_name !== undefined) updatePayload.full_name = dto.full_name;
+    if (dto.position !== undefined) updatePayload.position = dto.position;
+    if (dto.department_id !== undefined) updatePayload.department_id = dto.department_id;
 
-    if (isShared) {
-      // Solo manejar user_roles del módulo capacitación
-      if (dto.role && dto.role !== oldEffectiveRole) {
-        await revokeUserRole(this.supabase.db, {
-          profileId: id,
-          role: oldEffectiveRole,
-          revokedBy: performedBy ?? null,
-        });
-        await upsertUserRole(this.supabase.db, {
-          profileId: id,
-          role: dto.role,
-          grantedBy: performedBy ?? null,
-        });
-      }
-      // Recargar para devolver el perfil con el nuevo rol efectivo
-      return this.findOne(id);
+    if (Object.keys(updatePayload).length > 0) {
+      const { error } = await this.supabase.db
+        .from('profiles')
+        .update(updatePayload)
+        .eq('id', id);
+      if (error) throw new BadRequestException('Error al actualizar: ' + error.message);
     }
 
-    // Usuario puro de capacitación: comportamiento estándar
-    const updatePayload: Record<string, unknown> = {
-      full_name: dto.full_name,
-      position: dto.position,
-      department_id: dto.department_id,
-    };
-    if (dto.role) updatePayload.role = dto.role;
+    // Cambio de rol: revocar otros roles de personnel en módulo capacitación
+    // y asignar el nuevo. Roles en otros módulos no se ven afectados.
+    if (dto.role && dto.role !== existing.role) {
+      const { data: existingCapRoles } = await this.supabase.db
+        .from('user_roles')
+        .select('role')
+        .eq('profile_id', id)
+        .eq('module', 'capacitacion')
+        .in('role', PERSONNEL_ROLES_FILTER)
+        .eq('is_active', true);
 
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .update(updatePayload)
-      .eq('id', id)
-      .select('*, departments(id, name)')
-      .single();
+      for (const r of existingCapRoles ?? []) {
+        if (r.role !== dto.role) {
+          await revokeUserRole(this.supabase.db, {
+            profileId: id,
+            role: r.role,
+            revokedBy: performedBy ?? null,
+          });
+        }
+      }
 
-    if (error) throw new BadRequestException('Error al actualizar: ' + error.message);
-
-    // Sincronizar user_roles si cambió el rol primario
-    if (dto.role && dto.role !== oldEffectiveRole) {
-      await revokeUserRole(this.supabase.db, {
-        profileId: id,
-        role: oldEffectiveRole,
-        revokedBy: performedBy ?? null,
-      });
       await upsertUserRole(this.supabase.db, {
         profileId: id,
         role: dto.role,
@@ -375,58 +351,60 @@ export class PersonnelService {
       });
     }
 
-    return data;
+    return this.findOne(id);
   }
 
   /**
-   * Soft delete - deactivate collaborator.
+   * "Dar de baja" desde /personal:
+   *   Revoca TODOS los roles de personnel del usuario en módulo capacitación.
+   *   La cuenta global (profiles.is_active) NO se toca — si el usuario tiene
+   *   roles en otros módulos, ahí sigue funcionando.
    *
-   * Si el usuario es "compartido" (rol primario en otro módulo), se BLOQUEA
-   * la operación porque desactivar profiles.is_active afectaría también su
-   * acceso al otro módulo. El admin debe ir a /admin/users (super_admin) y
-   * revocar específicamente el rol de capacitación desde el modal de roles.
+   *   Para desactivar globalmente al usuario (cerrar la cuenta), usar
+   *   /admin/users (super_admin).
    */
-  async deactivate(id: string) {
-    const existing = await this.findOne(id);
-    if (existing.is_shared_user) {
-      throw new BadRequestException(
-        'Este usuario también tiene rol primario en otro módulo. No se puede desactivar desde aquí. Pide a un super_admin que revoque su rol de capacitación desde Admin → Usuarios.',
-      );
+  async deactivate(id: string, performedBy?: string) {
+    const { data: roles } = await this.supabase.db
+      .from('user_roles')
+      .select('role')
+      .eq('profile_id', id)
+      .eq('module', 'capacitacion')
+      .in('role', PERSONNEL_ROLES_FILTER)
+      .eq('is_active', true);
+
+    for (const r of roles ?? []) {
+      await revokeUserRole(this.supabase.db, {
+        profileId: id,
+        role: r.role,
+        revokedBy: performedBy ?? null,
+      });
     }
 
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .update({ is_active: false, deactivated_at: new Date().toISOString() })
-      .eq('id', id)
-      .select('*, departments(id, name)')
-      .single();
-
-    if (error || !data) throw new NotFoundException('Colaborador no encontrado');
-    return data;
+    return this.findOne(id);
   }
 
   /**
-   * Reactivate collaborator.
-   * Mismo principio: si es compartido, no debería estar desactivado, así que
-   * tampoco se reactiva desde aquí.
+   * Reactivar: vuelve a activar los user_roles previamente revocados del
+   * usuario en módulo capacitación. Si nunca tuvo roles, no hace nada.
    */
-  async reactivate(id: string) {
-    const existing = await this.findOne(id);
-    if (existing.is_shared_user) {
-      throw new BadRequestException(
-        'Este usuario también tiene rol primario en otro módulo y debe gestionarse desde Admin → Usuarios.',
-      );
+  async reactivate(id: string, performedBy?: string) {
+    const { data: roles } = await this.supabase.db
+      .from('user_roles')
+      .select('role')
+      .eq('profile_id', id)
+      .eq('module', 'capacitacion')
+      .in('role', PERSONNEL_ROLES_FILTER)
+      .eq('is_active', false);
+
+    for (const r of roles ?? []) {
+      await upsertUserRole(this.supabase.db, {
+        profileId: id,
+        role: r.role,
+        grantedBy: performedBy ?? null,
+      });
     }
 
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .update({ is_active: true, deactivated_at: null })
-      .eq('id', id)
-      .select('*, departments(id, name)')
-      .single();
-
-    if (error || !data) throw new NotFoundException('Colaborador no encontrado');
-    return data;
+    return this.findOne(id);
   }
 
   /**

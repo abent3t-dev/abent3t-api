@@ -53,6 +53,52 @@ export function getModuleForRole(role: string | null | undefined): UserModule | 
 }
 
 /**
+ * Prioridad de roles para "elegir uno como representativo del usuario".
+ *
+ * Ordenado de mayor a menor importancia. Se usa para:
+ *  - HOME_ROUTES post-login (a qué pantalla redirigir)
+ *  - Display de un solo badge cuando el usuario tiene varios roles
+ *
+ * Regla: super_admin manda. Después roles de dirección/admin. Después
+ * roles operativos por módulo. Por último colaborador/empleado.
+ */
+export const ROLE_PRIORITY: string[] = [
+  'super_admin',
+  'director_general',
+  'director_financiero',
+  'lider_procura',
+  'admin_rh',
+  'director',
+  'coordinador_compras',
+  'accionista',
+  'fiscal',
+  'contabilidad',
+  'jefe_area',
+  'aprobador_nivel_3',
+  'aprobador_nivel_2',
+  'aprobador_nivel_1',
+  'comprador',
+  'solicitante',
+  'executive',
+  'colaborador',
+  'collaborator',
+];
+
+/**
+ * Dado el conjunto de roles activos de un usuario, devuelve el "rol principal"
+ * para fines de display y redirección. Si el usuario no tiene ningún rol
+ * conocido, devuelve null (la UI debe manejar ese caso edge).
+ */
+export function getDisplayRole(roles: string[] | undefined | null): string | null {
+  if (!roles || roles.length === 0) return null;
+  const set = new Set(roles);
+  for (const r of ROLE_PRIORITY) {
+    if (set.has(r)) return r;
+  }
+  return roles[0]; // fallback: primero del array si ninguno está en la prioridad
+}
+
+/**
  * Asigna (o reactiva) una entrada (profile_id, module, role) en user_roles.
  * Idempotente: si ya estaba activa, no hace nada; si estaba revocada, la
  * reactiva con nuevo granted_by/granted_at; si no existía, la crea.

@@ -8,6 +8,7 @@ import { Reflector } from '@nestjs/core';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { AuthUser } from '../decorators/current-user.decorator';
+import { getDisplayRole } from '../services/user-roles.helper';
 
 @Injectable()
 export class SupabaseAuthGuard implements CanActivate {
@@ -42,10 +43,10 @@ export class SupabaseAuthGuard implements CanActivate {
       throw new UnauthorizedException('Token inválido o expirado');
     }
 
-    // Get profile with role and department
+    // Get profile (sin role — el rol viene siempre de user_roles)
     const { data: profile, error: profileError } = await this.supabase.db
       .from('profiles')
-      .select('id, email, full_name, role, department_id, is_active')
+      .select('id, email, full_name, department_id, is_active')
       .eq('id', user.id)
       .single();
 
@@ -57,8 +58,8 @@ export class SupabaseAuthGuard implements CanActivate {
       throw new UnauthorizedException('Usuario desactivado');
     }
 
-    // Cargar roles adicionales por módulo (tabla user_roles).
-    // Si la tabla no existe todavía o falla, degradamos al rol primario.
+    // user_roles es la fuente única de roles. profiles.role queda como
+    // columna huérfana (no se lee).
     let assignments: { module: string; role: string }[] = [];
     try {
       const { data: rolesData } = await this.supabase.db
@@ -71,15 +72,14 @@ export class SupabaseAuthGuard implements CanActivate {
       assignments = [];
     }
 
-    // Lista deduplicada de roles efectivos: rol primario + roles asignados.
-    const allRoles = new Set<string>();
-    if (profile.role) allRoles.add(profile.role);
-    for (const a of assignments) allRoles.add(a.role);
+    const roles = Array.from(new Set(assignments.map((a) => a.role)));
+    // Display role para retrocompatibilidad con código que lee user.role
+    const displayRole = getDisplayRole(roles) ?? '';
 
-    // Attach user to request
     request.user = {
       ...profile,
-      roles: Array.from(allRoles),
+      role: displayRole,
+      roles,
       role_assignments: assignments,
     } as AuthUser;
 
