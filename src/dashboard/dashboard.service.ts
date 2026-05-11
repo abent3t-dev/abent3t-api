@@ -71,18 +71,33 @@ export class DashboardService {
 
   // ── KPI calculators ──────────────────────────────────────
 
-  private async calculateBudgetExecution(periodId: string): Promise<KpiValue> {
-    const { data: budgets } = await this.supabase.db
-      .from('budgets')
-      .select('assigned_amount, consumed_amount')
-      .eq('period_id', periodId)
-      .eq('is_active', true);
-
+  /**
+   * Calcula la ejecución presupuestal del periodo.
+   *
+   * `totalAssigned` viene de `budgets.assigned_amount` (lo que admin_rh dejó
+   * configurado). `totalConsumed` se calcula a partir de los costos vigentes
+   * de las inscripciones, NO de `budgets.consumed_amount`.
+   *
+   * Por qué: `consumed_amount` se actualiza transaccionalmente al inscribir /
+   * cancelar, pero puede divergir del costo real cuando cambia el costo del
+   * curso o cuando el prorrateo no se recalcula. Si se usa la fuente
+   * almacenada, la card "Ejecución" y la columna "Gastado" del desglose por
+   * área dejan de cuadrar — el cliente reportó exactamente ese síntoma. Al
+   * calcular siempre desde las inscripciones, todos los números del dashboard
+   * usan la misma fuente de verdad y cuadran entre sí.
+   */
+  private calculateBudgetExecution(
+    enrollments: any[],
+    budgets: any[],
+  ): KpiValue {
     let totalAssigned = 0;
-    let totalConsumed = 0;
-    for (const b of (budgets ?? []) as any[]) {
+    for (const b of budgets) {
       totalAssigned += Number(b.assigned_amount) || 0;
-      totalConsumed += Number(b.consumed_amount) || 0;
+    }
+    let totalConsumed = 0;
+    for (const e of enrollments) {
+      if (e.status === 'cancelado') continue;
+      totalConsumed += Number(e.course_editions?.courses?.cost) || 0;
     }
 
     const pct = this.pct(totalConsumed, totalAssigned);
@@ -204,11 +219,15 @@ export class DashboardService {
     }
 
     const enrollments = await this.getEnrollmentsForPeriod(period);
+    const { data: budgetsRaw } = await this.supabase.db
+      .from('budgets')
+      .select('assigned_amount')
+      .eq('period_id', period.id)
+      .eq('is_active', true);
+    const budgets = (budgetsRaw ?? []) as any[];
 
-    const [budgetExecution, coverageRate] = await Promise.all([
-      this.calculateBudgetExecution(period.id),
-      this.calculateCoverageRate(enrollments),
-    ]);
+    const coverageRate = await this.calculateCoverageRate(enrollments);
+    const budgetExecution = this.calculateBudgetExecution(enrollments, budgets);
 
     return {
       period: {
@@ -233,9 +252,13 @@ export class DashboardService {
 
     const enrollments = await this.getEnrollmentsForPeriod(period);
 
+    // `consumed_amount` ya no se lee aquí — el "Disponible" se calcula como
+    // `assigned_amount - totalSpent` (con totalSpent agregado de las
+    // inscripciones del periodo), garantizando que las columnas Gastado y
+    // Disponible siempre cuadren entre sí.
     const { data: budgets } = await this.supabase.db
       .from('budgets')
-      .select('department_id, assigned_amount, consumed_amount, departments(name)')
+      .select('department_id, assigned_amount, departments(name)')
       .eq('period_id', period.id)
       .eq('is_active', true);
 
@@ -289,7 +312,13 @@ export class DashboardService {
       }
       stats[deptId].department_name = b.departments?.name || stats[deptId].department_name || 'Sin Área';
       stats[deptId].budgetAssigned += Number(b.assigned_amount) || 0;
-      stats[deptId].budgetRemaining += (Number(b.assigned_amount) || 0) - (Number(b.consumed_amount) || 0);
+    }
+
+    // Disponible = asignado - gastado (con gastado calculado desde inscripciones).
+    // Hacerlo en una segunda pasada deja el cálculo independiente del orden
+    // en que se procesen budgets vs enrollments arriba.
+    for (const s of Object.values(stats)) {
+      s.budgetRemaining = s.budgetAssigned - s.totalSpent;
     }
 
     // Fill missing department names from enrollments
