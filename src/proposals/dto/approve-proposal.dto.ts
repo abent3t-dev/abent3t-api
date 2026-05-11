@@ -2,7 +2,6 @@ import {
   IsUUID,
   IsOptional,
   IsNumber,
-  IsInt,
   IsString,
   IsDateString,
   MaxLength,
@@ -47,9 +46,10 @@ export class ApproveProposalDto {
   cost: number;
 
   /**
-   * Horas totales del curso
+   * Horas totales del curso. Permite decimales (mismas razones que
+   * `estimated_hours` en CreateProposalDto).
    */
-  @IsInt()
+  @IsNumber()
   @Min(0)
   total_hours: number;
 

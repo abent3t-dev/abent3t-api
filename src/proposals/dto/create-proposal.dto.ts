@@ -3,7 +3,6 @@ import {
   IsOptional,
   IsUUID,
   IsNumber,
-  IsInt,
   IsUrl,
   IsDateString,
   MaxLength,
@@ -54,9 +53,10 @@ export class CreateProposalDto {
   estimated_cost?: number;
 
   /**
-   * Horas estimadas del curso
+   * Horas estimadas del curso. Permite decimales (ej. 0.5h para
+   * micro-cursos de plataformas tipo Crehana/Udemy).
    */
-  @IsInt()
+  @IsNumber()
   @IsOptional()
   @Min(0)
   estimated_hours?: number;
