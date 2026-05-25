@@ -138,7 +138,12 @@ export class BudgetsController {
 
   @Roles('admin_rh')
   @Post('import')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    // Límite Multer 10MB: defensa contra DoS por archivos gigantes antes
+    // de que llegue al handler. La validación de extensión y contenido
+    // sigue ocurriendo dentro del método.
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
   async importBudgets(
     @UploadedFile() file: Express.Multer.File,
     @CurrentUser() user: AuthUser,

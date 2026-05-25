@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
@@ -10,6 +11,8 @@ import { UpdateEvidenceDto } from './dto/update-evidence.dto';
 import { VerifyEvidenceDto } from './dto/verify-evidence.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
+import { AuthUser } from '../common/decorators/current-user.decorator';
+import { isAdmin, isManager } from '../common/utils/roles.util';
 
 export interface EvidenceRow {
   id: string;
@@ -117,8 +120,11 @@ export class EvidencesService {
 
   /**
    * Busca evidencias por inscripción
+   * Verifica que el usuario tenga acceso a la inscripción.
    */
-  async findByEnrollment(enrollmentId: string) {
+  async findByEnrollment(enrollmentId: string, user: AuthUser) {
+    await this.assertCanAccessEnrollment(enrollmentId, user);
+
     const { data, error } = await this.supabase.db
       .from('enrollment_evidences')
       .select(EVIDENCE_SELECT)
@@ -128,6 +134,85 @@ export class EvidencesService {
 
     if (error) throw error;
     return data;
+  }
+
+  /**
+   * Verifica que el usuario tenga acceso a una inscripción.
+   * - admin_rh / super_admin: acceso total
+   * - dueño de la inscripción: acceso a la suya
+   * - jefe_area / director: acceso a inscripciones de colaboradores de su departamento
+   */
+  private async assertCanAccessEnrollment(
+    enrollmentId: string,
+    user: AuthUser,
+  ): Promise<void> {
+    if (isAdmin(user)) return;
+
+    const { data, error } = await this.supabase.db
+      .from('course_enrollments')
+      .select('profile_id, profiles(department_id)')
+      .eq('id', enrollmentId)
+      .single();
+
+    if (error || !data) {
+      throw new NotFoundException('Inscripción no encontrada');
+    }
+
+    if (data.profile_id === user.id) return;
+
+    if (isManager(user)) {
+      const ownerDept = (data.profiles as { department_id?: string } | null)
+        ?.department_id;
+      if (ownerDept && user.department_id && ownerDept === user.department_id) {
+        return;
+      }
+    }
+
+    throw new ForbiddenException(
+      'No tienes permiso para acceder a esta inscripción',
+    );
+  }
+
+  /**
+   * Verifica que el usuario tenga acceso a una evidencia.
+   * Lanza NotFound si no existe, Forbidden si no tiene permiso.
+   */
+  private async assertCanAccessEvidence(
+    evidenceId: string,
+    user: AuthUser,
+  ): Promise<void> {
+    if (isAdmin(user)) return;
+
+    const { data, error } = await this.supabase.db
+      .from('enrollment_evidences')
+      .select(
+        'uploaded_by, course_enrollments!enrollment_id(profile_id, profiles(department_id))',
+      )
+      .eq('id', evidenceId)
+      .single();
+
+    if (error || !data) {
+      throw new NotFoundException('Evidencia no encontrada');
+    }
+
+    if (data.uploaded_by === user.id) return;
+
+    const enrollment = data.course_enrollments as
+      | { profile_id?: string; profiles?: { department_id?: string } | null }
+      | null;
+
+    if (enrollment?.profile_id === user.id) return;
+
+    if (isManager(user)) {
+      const ownerDept = enrollment?.profiles?.department_id;
+      if (ownerDept && user.department_id && ownerDept === user.department_id) {
+        return;
+      }
+    }
+
+    throw new ForbiddenException(
+      'No tienes permiso para acceder a esta evidencia',
+    );
   }
 
   /**
@@ -215,9 +300,16 @@ export class EvidencesService {
   }
 
   /**
-   * Obtiene una evidencia por ID
+   * Obtiene una evidencia por ID.
+   * Si se pasa `user`, valida ownership. Si se omite (uso interno),
+   * solo devuelve el registro — los callers internos deben ya haber
+   * verificado permisos.
    */
-  async findOne(id: string) {
+  async findOne(id: string, user?: AuthUser) {
+    if (user) {
+      await this.assertCanAccessEvidence(id, user);
+    }
+
     const { data, error } = await this.supabase.db
       .from('enrollment_evidences')
       .select(EVIDENCE_SELECT)
@@ -229,18 +321,25 @@ export class EvidencesService {
   }
 
   /**
-   * Sube un archivo y crea el registro de evidencia
+   * Sube un archivo y crea el registro de evidencia.
+   * Valida ownership: solo admin_rh/super_admin, dueño de la inscripción,
+   * o jefe_area/director del mismo departamento pueden subir.
    */
   async upload(
     file: Express.Multer.File,
     dto: CreateEvidenceDto,
-    uploadedBy: string,
+    user: AuthUser,
   ) {
     // Validar archivo
     this.validateFile(file);
 
+    // Validar permiso sobre la inscripción (lanza Forbidden/NotFound)
+    await this.assertCanAccessEnrollment(dto.enrollment_id, user);
+
     // Validar que la inscripción existe y está activa
     await this.validateEnrollment(dto.enrollment_id);
+
+    const uploadedBy = user.id;
 
     // Generar path único para el archivo
     const timestamp = Date.now();
@@ -362,10 +461,11 @@ export class EvidencesService {
   }
 
   /**
-   * Obtiene URL firmada para descargar archivo
+   * Obtiene URL firmada para descargar archivo.
+   * Valida ownership antes de generar la signed URL.
    */
-  async getDownloadUrl(id: string) {
-    const evidence = await this.findOne(id);
+  async getDownloadUrl(id: string, user: AuthUser) {
+    const evidence = await this.findOne(id, user);
 
     const { data, error } = await this.supabase.db.storage
       .from(this.bucketName)

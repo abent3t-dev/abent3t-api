@@ -64,42 +64,58 @@ export class EvidencesController {
   }
 
   /**
-   * Lista evidencias de una inscripción específica
+   * Lista evidencias de una inscripción específica.
+   * Solo accesible si el usuario es admin, dueño de la inscripción,
+   * o jefe/director del mismo departamento (validado en service).
    */
   @Get('enrollment/:enrollmentId')
-  findByEnrollment(@Param('enrollmentId', ParseUUIDPipe) enrollmentId: string) {
-    return this.service.findByEnrollment(enrollmentId);
+  findByEnrollment(
+    @Param('enrollmentId', ParseUUIDPipe) enrollmentId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.findByEnrollment(enrollmentId, user);
   }
 
   /**
-   * Obtiene una evidencia por ID
+   * Obtiene una evidencia por ID. Valida ownership en el service.
    */
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.service.findOne(id);
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.findOne(id, user);
   }
 
   /**
-   * Obtiene URL de descarga de archivo
+   * Obtiene URL de descarga de archivo. Valida ownership en el service.
    */
   @Get(':id/download')
-  getDownloadUrl(@Param('id', ParseUUIDPipe) id: string) {
-    return this.service.getDownloadUrl(id);
+  getDownloadUrl(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.getDownloadUrl(id, user);
   }
 
   /**
-   * Sube una nueva evidencia
-   * - admin_rh puede subir para cualquier inscripción
-   * - colaborador puede subir solo para sus inscripciones (validado en service)
+   * Sube una nueva evidencia.
+   * - admin_rh / super_admin puede subir para cualquier inscripción
+   * - colaborador solo para inscripciones propias
+   * - jefe_area / director para inscripciones de su departamento
+   * Validación de ownership en el service.
+   * Límite de tamaño 10MB enforzado por Multer (defensa en profundidad).
    */
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
   upload(
     @UploadedFile() file: Express.Multer.File,
     @Body() dto: CreateEvidenceDto,
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: AuthUser,
   ) {
-    return this.service.upload(file, dto, userId);
+    return this.service.upload(file, dto, user);
   }
 
   /**

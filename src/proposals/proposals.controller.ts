@@ -216,10 +216,13 @@ export class ProposalsController {
   }
 
   /**
-   * Sube un archivo adjunto a la propuesta (solo proponente o admin_rh)
+   * Sube un archivo adjunto a la propuesta (solo proponente o admin_rh).
+   * Límite Multer 10MB: defensa contra DoS por archivos gigantes.
    */
   @Post(':id/attachments')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
   uploadAttachment(
     @Param('id', ParseUUIDPipe) id: string,
     @UploadedFile() file: Express.Multer.File,
