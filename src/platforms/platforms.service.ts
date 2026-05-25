@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   OnModuleInit,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
@@ -12,6 +13,8 @@ import { UpdateIntegrationDto } from './dto/update-integration.dto';
 import { SyncOptionsDto, SyncType } from './dto/sync-options.dto';
 import { CrehanaClient } from './clients/crehana';
 import { PlatformSyncService } from './sync/platform-sync.service';
+import { AuthUser } from '../common/decorators/current-user.decorator';
+import { isAdmin, isManager } from '../common/utils/roles.util';
 import * as crypto from 'crypto';
 
 // Selects para queries
@@ -371,7 +374,39 @@ export class PlatformsService implements OnModuleInit {
   // INSCRIPCIONES/PROGRESO
   // =====================================================
 
-  async findEnrollmentsByProfile(profileId: string) {
+  async findEnrollmentsByProfile(profileId: string, user: AuthUser) {
+    // Validar ownership:
+    // - admin_rh / super_admin: cualquier perfil
+    // - colaborador: solo el suyo
+    // - jefe_area / director: solo colaboradores de su mismo departamento
+    if (!isAdmin(user)) {
+      if (user.id !== profileId) {
+        if (!isManager(user)) {
+          throw new ForbiddenException(
+            'Solo puedes ver tu propio progreso',
+          );
+        }
+
+        const { data: target } = await this.supabase.db
+          .from('profiles')
+          .select('department_id')
+          .eq('id', profileId)
+          .single();
+
+        if (!target) {
+          throw new NotFoundException('Colaborador no encontrado');
+        }
+        if (
+          !user.department_id ||
+          target.department_id !== user.department_id
+        ) {
+          throw new ForbiddenException(
+            'Solo puedes ver colaboradores de tu área',
+          );
+        }
+      }
+    }
+
     const { data, error } = await this.supabase.db
       .from('platform_enrollments')
       .select(ENROLLMENT_SELECT)

@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   ParseUUIDPipe,
+  UseGuards,
 } from '@nestjs/common';
 import { PlatformsService } from './platforms.service';
 import { CreateIntegrationDto } from './dto/create-integration.dto';
@@ -15,6 +16,8 @@ import { UpdateIntegrationDto } from './dto/update-integration.dto';
 import { SyncOptionsDto } from './dto/sync-options.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { DepartmentGuard } from '../common/guards/department.guard';
 
 @Controller('platforms')
 export class PlatformsController {
@@ -207,19 +210,26 @@ export class PlatformsController {
   }
 
   /**
-   * Obtener progreso de un colaborador en plataformas
+   * Obtener progreso de un colaborador en plataformas.
+   * El service valida ownership: colaborador solo el suyo, jefe/director solo
+   * los de su departamento.
    */
   @Get('enrollments/profile/:profileId')
   @Roles('super_admin', 'admin_rh', 'jefe_area', 'director', 'colaborador', 'collaborator')
-  findEnrollmentsByProfile(@Param('profileId', ParseUUIDPipe) profileId: string) {
-    return this.platformsService.findEnrollmentsByProfile(profileId);
+  findEnrollmentsByProfile(
+    @Param('profileId', ParseUUIDPipe) profileId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.platformsService.findEnrollmentsByProfile(profileId, user);
   }
 
   /**
-   * Obtener progreso de un departamento en plataformas
+   * Obtener progreso de un departamento en plataformas.
+   * `DepartmentGuard` valida que jefe_area/director solo accedan al suyo.
    */
   @Get('enrollments/department/:departmentId')
   @Roles('super_admin', 'admin_rh', 'jefe_area', 'director')
+  @UseGuards(DepartmentGuard)
   findEnrollmentsByDepartment(
     @Param('departmentId', ParseUUIDPipe) departmentId: string,
   ) {

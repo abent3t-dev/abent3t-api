@@ -50,13 +50,19 @@ export class DashboardService {
   /**
    * Returns all active enrollments whose edition start_date falls inside the
    * given period range.  Joins profiles, course_editions→courses for metrics.
+   *
+   * Si `scopeDeptId` se provee, filtra al departamento dado (usado para
+   * scopear las vistas de jefe_area / director a su propia área).
    */
-  private async getEnrollmentsForPeriod(period: Period) {
+  private async getEnrollmentsForPeriod(
+    period: Period,
+    scopeDeptId?: string,
+  ) {
     const { data } = await this.supabase.db
       .from('course_enrollments')
       .select(`
         id, status, enrolled_at, completed_at, profile_id,
-        profiles(id, department_id),
+        profiles!inner(id, department_id),
         course_editions!inner(
           id, start_date,
           courses(id, total_hours, cost)
@@ -66,7 +72,9 @@ export class DashboardService {
       .gte('course_editions.start_date', period.start_date)
       .lte('course_editions.start_date', period.end_date);
 
-    return (data ?? []) as any[];
+    const all = (data ?? []) as any[];
+    if (!scopeDeptId) return all;
+    return all.filter((e) => e.profiles?.department_id === scopeDeptId);
   }
 
   // ── KPI calculators ──────────────────────────────────────
@@ -156,6 +164,7 @@ export class DashboardService {
 
   private async calculateCoverageRate(
     enrollments: any[],
+    scopeDeptId?: string,
   ): Promise<KpiValue> {
     // Unique profiles with at least 1 non-cancelled enrollment in period
     const enrolledProfiles = new Set<string>();
@@ -163,11 +172,13 @@ export class DashboardService {
       if (e.status !== 'cancelado') enrolledProfiles.add(e.profile_id);
     }
 
-    // Total active employees
-    const { count: totalActive } = await this.supabase.db
+    // Total active employees (filtrado por departamento si está scoped)
+    let q = this.supabase.db
       .from('profiles')
       .select('id', { count: 'exact', head: true })
       .eq('is_active', true);
+    if (scopeDeptId) q = q.eq('department_id', scopeDeptId);
+    const { count: totalActive } = await q;
 
     const total = totalActive ?? 0;
     const enrolled = enrolledProfiles.size;
@@ -201,7 +212,7 @@ export class DashboardService {
 
   // ── public endpoints ─────────────────────────────────────
 
-  async getSummary() {
+  async getSummary(scopeDeptId?: string) {
     const period = await this.getCurrentPeriod();
 
     if (!period) {
@@ -218,15 +229,21 @@ export class DashboardService {
       };
     }
 
-    const enrollments = await this.getEnrollmentsForPeriod(period);
-    const { data: budgetsRaw } = await this.supabase.db
+    const enrollments = await this.getEnrollmentsForPeriod(period, scopeDeptId);
+
+    let budgetsQ = this.supabase.db
       .from('budgets')
       .select('assigned_amount')
       .eq('period_id', period.id)
       .eq('is_active', true);
+    if (scopeDeptId) budgetsQ = budgetsQ.eq('department_id', scopeDeptId);
+    const { data: budgetsRaw } = await budgetsQ;
     const budgets = (budgetsRaw ?? []) as any[];
 
-    const coverageRate = await this.calculateCoverageRate(enrollments);
+    const coverageRate = await this.calculateCoverageRate(
+      enrollments,
+      scopeDeptId,
+    );
     const budgetExecution = this.calculateBudgetExecution(enrollments, budgets);
 
     return {
@@ -246,21 +263,23 @@ export class DashboardService {
     };
   }
 
-  async getByDepartment() {
+  async getByDepartment(scopeDeptId?: string) {
     const period = await this.getCurrentPeriod();
     if (!period) return [];
 
-    const enrollments = await this.getEnrollmentsForPeriod(period);
+    const enrollments = await this.getEnrollmentsForPeriod(period, scopeDeptId);
 
     // `consumed_amount` ya no se lee aquí — el "Disponible" se calcula como
     // `assigned_amount - totalSpent` (con totalSpent agregado de las
     // inscripciones del periodo), garantizando que las columnas Gastado y
     // Disponible siempre cuadren entre sí.
-    const { data: budgets } = await this.supabase.db
+    let budgetsQ = this.supabase.db
       .from('budgets')
       .select('department_id, assigned_amount, departments(name)')
       .eq('period_id', period.id)
       .eq('is_active', true);
+    if (scopeDeptId) budgetsQ = budgetsQ.eq('department_id', scopeDeptId);
+    const { data: budgets } = await budgetsQ;
 
     // Group enrollments by department
     const stats: Record<string, {
