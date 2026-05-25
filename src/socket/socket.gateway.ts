@@ -25,9 +25,18 @@ interface AuthenticatedSocket extends Socket {
   };
 }
 
+// Lee los mismos orígenes permitidos que el HTTP CORS de main.ts.
+// `origin: '*'` con `credentials: true` viola la especificación CORS y deja
+// los sockets abiertos a clientes fuera del navegador.
+const SOCKET_ALLOWED_ORIGINS = (process.env.FRONTEND_URL?.trim() ||
+  'http://localhost:3000')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: SOCKET_ALLOWED_ORIGINS,
     credentials: true,
   },
   namespace: '/',

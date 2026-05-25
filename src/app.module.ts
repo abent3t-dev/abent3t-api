@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { SupabaseModule } from './supabase/supabase.module';
@@ -41,6 +42,14 @@ import { RolesGuard } from './common/guards/roles.guard';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env.local', '.env'] }),
+    // Rate limiting global. Defaults razonables: 100 requests por IP por
+    // minuto. Configurable vía THROTTLE_TTL_MS y THROTTLE_LIMIT.
+    ThrottlerModule.forRoot([
+      {
+        ttl: Number(process.env.THROTTLE_TTL_MS) || 60_000,
+        limit: Number(process.env.THROTTLE_LIMIT) || 100,
+      },
+    ]),
     SupabaseModule,
     AuthModule,
     DepartmentsModule,
@@ -77,6 +86,11 @@ import { RolesGuard } from './common/guards/roles.guard';
   controllers: [AppController],
   providers: [
     AppService,
+    // Orden de guards globales (se evalúan en el orden listado):
+    // 1) Throttler primero para no gastar ciclos de auth en abuso de IP
+    // 2) Autenticación
+    // 3) Autorización por rol
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: SupabaseAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
