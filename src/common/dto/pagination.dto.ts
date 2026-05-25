@@ -1,4 +1,4 @@
-import { IsOptional, IsInt, Min, Max, IsString } from 'class-validator';
+import { IsOptional, IsInt, Min, Max, IsString, MaxLength } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class PaginationDto {
@@ -17,5 +17,6 @@ export class PaginationDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(100)
   search?: string;
 }

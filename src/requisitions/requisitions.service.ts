@@ -4,6 +4,7 @@ import { CreateRequisitionDto } from './dto/create-requisition.dto';
 import { UpdateRequisitionDto } from './dto/update-requisition.dto';
 import { FilterRequisitionDto } from './dto/filter-requisition.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { buildIlikeOrFilter } from '../common/utils/postgrest.util';
 
 // Estados validos de requisicion (segun DB enum)
 export type RequisitionStatus =
@@ -76,11 +77,13 @@ export class RequisitionsService {
       query = query.lte('created_date', filters.date_to);
     }
 
-    // Busqueda por texto
-    if (pagination.search) {
-      query = query.or(
-        `rq_number.ilike.%${pagination.search}%,description.ilike.%${pagination.search}%`,
-      );
+    // Busqueda por texto (sanitizada para evitar inyección PostgREST)
+    const orFilter = buildIlikeOrFilter(pagination.search, [
+      'rq_number',
+      'description',
+    ]);
+    if (orFilter) {
+      query = query.or(orFilter);
     }
 
     query = query.order('created_at', { ascending: false }).range(offset, offset + limit - 1);

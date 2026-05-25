@@ -2,6 +2,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { PaginationDto } from '../dto/pagination.dto';
 import { PaginatedResponse } from '../interfaces/paginated-response.interface';
+import { buildIlikeOrFilter } from '../utils/postgrest.util';
 
 export abstract class BaseCrudService<CreateDto, UpdateDto> {
   protected abstract readonly tableName: string;
@@ -32,11 +33,9 @@ export abstract class BaseCrudService<CreateDto, UpdateDto> {
       .from(this.tableName)
       .select(this.selectFields, { count: 'exact' });
 
-    if (pagination.search && this.searchFields.length > 0) {
-      const filter = this.searchFields
-        .map((f) => `${f}.ilike.%${pagination.search}%`)
-        .join(',');
-      query = query.or(filter);
+    const orFilter = buildIlikeOrFilter(pagination.search, this.searchFields);
+    if (orFilter) {
+      query = query.or(orFilter);
     }
 
     query = query

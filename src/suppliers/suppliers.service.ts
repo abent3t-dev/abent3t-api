@@ -4,6 +4,7 @@ import { BaseCrudService } from '../common/services/base-crud.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { buildIlikeOrFilter } from '../common/utils/postgrest.util';
 
 @Injectable()
 export class SuppliersService extends BaseCrudService<CreateSupplierDto, UpdateSupplierDto> {
@@ -45,12 +46,10 @@ export class SuppliersService extends BaseCrudService<CreateSupplierDto, UpdateS
       query = query.gte('performance_score', filters.min_score);
     }
 
-    // Busqueda por texto
-    if (pagination.search && this.searchFields.length > 0) {
-      const filter = this.searchFields
-        .map((f) => `${f}.ilike.%${pagination.search}%`)
-        .join(',');
-      query = query.or(filter);
+    // Busqueda por texto (sanitizada para evitar inyección PostgREST)
+    const orFilter = buildIlikeOrFilter(pagination.search, this.searchFields);
+    if (orFilter) {
+      query = query.or(orFilter);
     }
 
     query = query.order(this.orderField).range(offset, offset + limit - 1);

@@ -3,6 +3,7 @@ import { SupabaseService } from '../supabase/supabase.service';
 import { CreatePurchaseOrderDto } from './dto/create-purchase-order.dto';
 import { UpdatePurchaseOrderDto } from './dto/update-purchase-order.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { buildIlikeOrFilter } from '../common/utils/postgrest.util';
 
 // Estados de PO
 export type POStatus = 'emitida' | 'en_transito' | 'entregada_parcial' | 'entregada_completa' | 'cancelada';
@@ -70,9 +71,10 @@ export class PurchaseOrdersService {
       query = query.lte('created_at', filters.date_to);
     }
 
-    // Busqueda por texto
-    if (pagination.search) {
-      query = query.or(`po_number.ilike.%${pagination.search}%`);
+    // Busqueda por texto (sanitizada para evitar inyección PostgREST)
+    const orFilter = buildIlikeOrFilter(pagination.search, ['po_number']);
+    if (orFilter) {
+      query = query.or(orFilter);
     }
 
     query = query.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
