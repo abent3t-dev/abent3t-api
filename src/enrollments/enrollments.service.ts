@@ -295,7 +295,7 @@ export class EnrollmentsService {
       .insert({
         course_edition_id: dto.course_edition_id,
         profile_id: dto.profile_id,
-        status: dto.status || 'inscrito',
+        status: 'inscrito',
         notes: dto.notes,
       })
       .select(ENROLLMENT_SELECT)

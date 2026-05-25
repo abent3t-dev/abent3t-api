@@ -1,4 +1,4 @@
-import { IsUUID, IsNotEmpty, IsOptional, IsIn, IsString } from 'class-validator';
+import { IsUUID, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 
 export class CreateEnrollmentDto {
   @IsUUID()
@@ -8,10 +8,6 @@ export class CreateEnrollmentDto {
   @IsUUID()
   @IsNotEmpty()
   profile_id: string;
-
-  @IsOptional()
-  @IsIn(['inscrito', 'en_curso', 'completo', 'pendiente_evidencia', 'cancelado'])
-  status?: string;
 
   @IsOptional()
   @IsString()
