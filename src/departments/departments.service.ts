@@ -1,29 +1,30 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
-import { BaseCrudService } from '../common/services/base-crud.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { BaseCrudPrismaService } from '../common/services/base-crud-prisma.service';
 import { CreateDepartmentDto } from './dto/create-department.dto';
 import { UpdateDepartmentDto } from './dto/update-department.dto';
 
 @Injectable()
-export class DepartmentsService extends BaseCrudService<CreateDepartmentDto, UpdateDepartmentDto> {
-  protected readonly tableName = 'departments';
-  protected readonly selectFields = '*';
+export class DepartmentsService extends BaseCrudPrismaService<
+  CreateDepartmentDto,
+  UpdateDepartmentDto
+> {
+  protected get model() {
+    return this.prisma.departments;
+  }
   protected readonly orderField = 'name';
   protected readonly searchFields = ['name'];
   private readonly logger = new Logger(DepartmentsService.name);
 
-  constructor(supabase: SupabaseService) {
-    super(supabase);
+  constructor(prisma: PrismaService) {
+    super(prisma);
   }
 
   async remove(id: string) {
-    const { count } = await this.supabase.db
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .eq('department_id', id)
-      .eq('is_active', true);
-
-    if (count && count > 0) {
+    const count = await this.prisma.profiles.count({
+      where: { department_id: id, is_active: true },
+    });
+    if (count > 0) {
       this.logger.warn(
         `Deactivating department ${id} which has ${count} active profiles — profiles NOT cascade-deactivated`,
       );

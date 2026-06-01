@@ -7,7 +7,7 @@ import {
   ForbiddenException,
   OnModuleInit,
 } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { CreateIntegrationDto, PlatformType } from './dto/create-integration.dto';
 import { UpdateIntegrationDto } from './dto/update-integration.dto';
 import { SyncOptionsDto, SyncType } from './dto/sync-options.dto';
@@ -17,27 +17,50 @@ import { AuthUser } from '../common/decorators/current-user.decorator';
 import { isAdmin, isManager } from '../common/utils/roles.util';
 import * as crypto from 'crypto';
 
-// Selects para queries
-const INTEGRATION_SELECT = `
-  *,
-  institutions(id, name, type, platform_url, annual_cost)
-`;
+// Includes (equivalentes Prisma a los antiguos SELECTS de PostgREST)
+const INTEGRATION_INCLUDE = {
+  institutions: {
+    select: { id: true, name: true, type: true, platform_url: true, annual_cost: true },
+  },
+} as const;
 
-const COURSE_SELECT = `
-  *,
-  platform_integrations(id, platform_type, institutions(id, name)),
-  course_types(id, name),
-  modalities(id, name)
-`;
+const COURSE_INCLUDE = {
+  platform_integrations: {
+    select: {
+      id: true,
+      platform_type: true,
+      institutions: { select: { id: true, name: true } },
+    },
+  },
+  course_types: { select: { id: true, name: true } },
+  modalities: { select: { id: true, name: true } },
+} as const;
 
-const ENROLLMENT_SELECT = `
-  *,
-  platform_courses(
-    id, name, external_course_id, total_hours,
-    platform_integrations(id, platform_type, institutions(id, name))
-  ),
-  profiles(id, full_name, email, departments(id, name))
-`;
+const ENROLLMENT_INCLUDE = {
+  platform_courses: {
+    select: {
+      id: true,
+      name: true,
+      external_course_id: true,
+      total_hours: true,
+      platform_integrations: {
+        select: {
+          id: true,
+          platform_type: true,
+          institutions: { select: { id: true, name: true } },
+        },
+      },
+    },
+  },
+  profiles: {
+    select: {
+      id: true,
+      full_name: true,
+      email: true,
+      departments: { select: { id: true, name: true } },
+    },
+  },
+} as const;
 
 @Injectable()
 export class PlatformsService implements OnModuleInit {
@@ -51,7 +74,7 @@ export class PlatformsService implements OnModuleInit {
   private readonly STALE_SYNC_THRESHOLD_MS = 30 * 60 * 1000;
 
   constructor(
-    private readonly supabase: SupabaseService,
+    private readonly prisma: PrismaService,
     private readonly crehanaClient: CrehanaClient,
     private readonly syncService: PlatformSyncService,
   ) {}
@@ -70,41 +93,45 @@ export class PlatformsService implements OnModuleInit {
   }
 
   private async cleanupStaleSyncs(): Promise<void> {
-    const cutoff = new Date(Date.now() - this.STALE_SYNC_THRESHOLD_MS).toISOString();
+    const cutoff = new Date(Date.now() - this.STALE_SYNC_THRESHOLD_MS);
 
     // Sync logs huérfanos: 'in_progress' iniciados antes del corte.
-    const { data: staleLogs } = await this.supabase.db
-      .from('platform_sync_logs')
-      .select('id, platform_integration_id')
-      .eq('status', 'in_progress')
-      .lt('started_at', cutoff);
+    const staleLogs = await this.prisma.platform_sync_logs.findMany({
+      where: {
+        status: 'in_progress' as any,
+        started_at: { lt: cutoff },
+      },
+      select: { id: true, platform_integration_id: true },
+    });
 
     if (staleLogs && staleLogs.length > 0) {
       const logIds = staleLogs.map((l) => l.id);
       const errMsg = 'Marcado como fallido al reiniciar el servidor (zombie cleanup)';
 
-      await this.supabase.db
-        .from('platform_sync_logs')
-        .update({
-          status: 'failed',
-          completed_at: new Date().toISOString(),
+      await this.prisma.platform_sync_logs.updateMany({
+        where: { id: { in: logIds } },
+        data: {
+          status: 'failed' as any,
+          completed_at: new Date(),
           errors_count: 1,
-          error_details: { message: errMsg },
-        })
-        .in('id', logIds);
+          error_details: { message: errMsg } as any,
+        },
+      });
 
       // Y marcar las integraciones cuyas integraciones estén también en 'in_progress'.
       const integrationIds = [...new Set(staleLogs.map((l) => l.platform_integration_id))];
 
-      await this.supabase.db
-        .from('platform_integrations')
-        .update({
-          last_sync_status: 'failed',
+      await this.prisma.platform_integrations.updateMany({
+        where: {
+          id: { in: integrationIds },
+          last_sync_status: 'in_progress' as any,
+        },
+        data: {
+          last_sync_status: 'failed' as any,
           last_sync_error: errMsg,
-          last_sync_at: new Date().toISOString(),
-        })
-        .in('id', integrationIds)
-        .eq('last_sync_status', 'in_progress');
+          last_sync_at: new Date(),
+        },
+      });
 
       this.logger.warn(
         `Cleaned up ${staleLogs.length} stale sync log(s) on startup (older than ${this.STALE_SYNC_THRESHOLD_MS / 60000} min)`,
@@ -117,26 +144,23 @@ export class PlatformsService implements OnModuleInit {
   // =====================================================
 
   async findAllIntegrations() {
-    const { data, error } = await this.supabase.db
-      .from('platform_integrations')
-      .select(INTEGRATION_SELECT)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
+    const data = await this.prisma.platform_integrations.findMany({
+      where: { is_active: true },
+      include: INTEGRATION_INCLUDE,
+      orderBy: { created_at: 'desc' },
+    });
 
     // No devolver la clave privada
-    return data?.map(this.sanitizeIntegration) ?? [];
+    return data.map((d) => this.sanitizeIntegration(d));
   }
 
   async findIntegrationById(id: string) {
-    const { data, error } = await this.supabase.db
-      .from('platform_integrations')
-      .select(INTEGRATION_SELECT)
-      .eq('id', id)
-      .single();
+    const data = await this.prisma.platform_integrations.findUnique({
+      where: { id },
+      include: INTEGRATION_INCLUDE,
+    });
 
-    if (error || !data) {
+    if (!data) {
       throw new NotFoundException('Integración no encontrada');
     }
 
@@ -144,14 +168,12 @@ export class PlatformsService implements OnModuleInit {
   }
 
   async findIntegrationByInstitution(institutionId: string) {
-    const { data, error } = await this.supabase.db
-      .from('platform_integrations')
-      .select(INTEGRATION_SELECT)
-      .eq('institution_id', institutionId)
-      .eq('is_active', true)
-      .single();
+    const data = await this.prisma.platform_integrations.findFirst({
+      where: { institution_id: institutionId, is_active: true },
+      include: INTEGRATION_INCLUDE,
+    });
 
-    if (error || !data) {
+    if (!data) {
       return null;
     }
 
@@ -160,11 +182,10 @@ export class PlatformsService implements OnModuleInit {
 
   async createIntegration(dto: CreateIntegrationDto, userId: string) {
     // Validar que la institución existe y es tipo 'platform'
-    const { data: institution } = await this.supabase.db
-      .from('institutions')
-      .select('id, type, is_active')
-      .eq('id', dto.institution_id)
-      .single();
+    const institution = await this.prisma.institutions.findUnique({
+      where: { id: dto.institution_id },
+      select: { id: true, type: true, is_active: true },
+    });
 
     if (!institution) {
       throw new BadRequestException('Institución no encontrada');
@@ -207,21 +228,22 @@ export class PlatformsService implements OnModuleInit {
       insertData.private_key_encrypted = this.encryptKey(dto.private_key);
     }
 
-    const { data, error } = await this.supabase.db
-      .from('platform_integrations')
-      .insert(insertData)
-      .select(INTEGRATION_SELECT)
-      .single();
+    try {
+      const data = await this.prisma.platform_integrations.create({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data: insertData as any,
+        include: INTEGRATION_INCLUDE,
+      });
 
-    if (error) {
-      if (error.code === '23505') {
+      this.logger.log(`Integration created for institution ${dto.institution_id}`);
+      return this.sanitizeIntegration(data);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
         throw new ConflictException('Ya existe una integración para esta institución');
       }
       throw error;
     }
-
-    this.logger.log(`Integration created for institution ${dto.institution_id}`);
-    return this.sanitizeIntegration(data);
   }
 
   async updateIntegration(id: string, dto: UpdateIntegrationDto) {
@@ -239,26 +261,22 @@ export class PlatformsService implements OnModuleInit {
     // No permitir cambiar institution_id
     delete updateData.institution_id;
 
-    const { data, error } = await this.supabase.db
-      .from('platform_integrations')
-      .update(updateData)
-      .eq('id', id)
-      .select(INTEGRATION_SELECT)
-      .single();
-
-    if (error) throw error;
+    const data = await this.prisma.platform_integrations.update({
+      where: { id },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: updateData as any,
+      include: INTEGRATION_INCLUDE,
+    });
 
     this.logger.log(`Integration ${id} updated`);
     return this.sanitizeIntegration(data);
   }
 
   async removeIntegration(id: string) {
-    const { error } = await this.supabase.db
-      .from('platform_integrations')
-      .update({ is_active: false })
-      .eq('id', id);
-
-    if (error) throw error;
+    await this.prisma.platform_integrations.update({
+      where: { id },
+      data: { is_active: false },
+    });
 
     this.logger.log(`Integration ${id} deactivated`);
     return { message: 'Integración desactivada correctamente' };
@@ -298,6 +316,7 @@ export class PlatformsService implements OnModuleInit {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async testCrehanaConnection(integration: any): Promise<{ success: boolean; message: string; details?: unknown }> {
     if (!integration.organization_slug) {
       return {
@@ -335,36 +354,32 @@ export class PlatformsService implements OnModuleInit {
   // =====================================================
 
   async findCoursesByIntegration(integrationId: string) {
-    const { data, error } = await this.supabase.db
-      .from('platform_courses')
-      .select(COURSE_SELECT)
-      .eq('platform_integration_id', integrationId)
-      .eq('is_active', true)
-      .order('name');
+    const data = await this.prisma.platform_courses.findMany({
+      where: { platform_integration_id: integrationId, is_active: true },
+      include: COURSE_INCLUDE,
+      orderBy: { name: 'asc' },
+    });
 
-    if (error) throw error;
     return data ?? [];
   }
 
   async findAllPlatformCourses() {
-    const { data, error } = await this.supabase.db
-      .from('platform_courses')
-      .select(COURSE_SELECT)
-      .eq('is_active', true)
-      .order('name');
+    const data = await this.prisma.platform_courses.findMany({
+      where: { is_active: true },
+      include: COURSE_INCLUDE,
+      orderBy: { name: 'asc' },
+    });
 
-    if (error) throw error;
     return data ?? [];
   }
 
   async findPlatformCourseById(courseId: string) {
-    const { data, error } = await this.supabase.db
-      .from('platform_courses')
-      .select(COURSE_SELECT)
-      .eq('id', courseId)
-      .single();
+    const data = await this.prisma.platform_courses.findUnique({
+      where: { id: courseId },
+      include: COURSE_INCLUDE,
+    });
 
-    if (error || !data) {
+    if (!data) {
       throw new NotFoundException('Curso de plataforma no encontrado');
     }
     return data;
@@ -387,11 +402,10 @@ export class PlatformsService implements OnModuleInit {
           );
         }
 
-        const { data: target } = await this.supabase.db
-          .from('profiles')
-          .select('department_id')
-          .eq('id', profileId)
-          .single();
+        const target = await this.prisma.profiles.findUnique({
+          where: { id: profileId },
+          select: { department_id: true },
+        });
 
         if (!target) {
           throw new NotFoundException('Colaborador no encontrado');
@@ -407,56 +421,51 @@ export class PlatformsService implements OnModuleInit {
       }
     }
 
-    const { data, error } = await this.supabase.db
-      .from('platform_enrollments')
-      .select(ENROLLMENT_SELECT)
-      .eq('profile_id', profileId)
-      .eq('is_active', true)
-      .order('last_activity_at', { ascending: false });
+    const data = await this.prisma.platform_enrollments.findMany({
+      where: { profile_id: profileId, is_active: true },
+      include: ENROLLMENT_INCLUDE,
+      orderBy: { last_activity_at: 'desc' },
+    });
 
-    if (error) throw error;
     return data ?? [];
   }
 
   async findEnrollmentsByDepartment(departmentId: string) {
     // Primero obtener perfiles del departamento
-    const { data: profiles } = await this.supabase.db
-      .from('profiles')
-      .select('id')
-      .eq('department_id', departmentId)
-      .eq('is_active', true);
+    const profiles = await this.prisma.profiles.findMany({
+      where: { department_id: departmentId, is_active: true },
+      select: { id: true },
+    });
 
     if (!profiles || profiles.length === 0) return [];
 
     const profileIds = profiles.map((p) => p.id);
 
-    const { data, error } = await this.supabase.db
-      .from('platform_enrollments')
-      .select(ENROLLMENT_SELECT)
-      .in('profile_id', profileIds)
-      .eq('is_active', true)
-      .order('last_activity_at', { ascending: false });
+    const data = await this.prisma.platform_enrollments.findMany({
+      where: { profile_id: { in: profileIds }, is_active: true },
+      include: ENROLLMENT_INCLUDE,
+      orderBy: { last_activity_at: 'desc' },
+    });
 
-    if (error) throw error;
     return data ?? [];
   }
 
   async getEnrollmentsSummary() {
     // Resumen general de progreso en plataformas
-    const { data: enrollments, error } = await this.supabase.db
-      .from('platform_enrollments')
-      .select(`
-        id,
-        status,
-        progress_percentage,
-        hours_completed,
-        platform_courses(
-          platform_integrations(platform_type)
-        )
-      `)
-      .eq('is_active', true);
-
-    if (error) throw error;
+    const enrollments = await this.prisma.platform_enrollments.findMany({
+      where: { is_active: true },
+      select: {
+        id: true,
+        status: true,
+        progress_percentage: true,
+        hours_completed: true,
+        platform_courses: {
+          select: {
+            platform_integrations: { select: { platform_type: true } },
+          },
+        },
+      },
+    });
 
     const summary = {
       total_enrollments: enrollments?.length ?? 0,
@@ -476,7 +485,7 @@ export class PlatformsService implements OnModuleInit {
 
       for (const e of enrollments) {
         // Por estado
-        summary.by_status[e.status as keyof typeof summary.by_status]++;
+        summary.by_status[e.status as unknown as keyof typeof summary.by_status]++;
 
         // Horas totales
         summary.total_hours_completed += Number(e.hours_completed) || 0;
@@ -485,6 +494,7 @@ export class PlatformsService implements OnModuleInit {
         totalProgress += Number(e.progress_percentage) || 0;
 
         // Por plataforma
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const platform = (e.platform_courses as any)?.platform_integrations?.platform_type;
         if (platform) {
           summary.by_platform[platform] = (summary.by_platform[platform] || 0) + 1;
@@ -533,27 +543,23 @@ export class PlatformsService implements OnModuleInit {
     const syncType = options.sync_type || SyncType.FULL;
 
     // Crear log de sincronización
-    const { data: syncLog, error: logError } = await this.supabase.db
-      .from('platform_sync_logs')
-      .insert({
+    const syncLog = await this.prisma.platform_sync_logs.create({
+      data: {
         platform_integration_id: integrationId,
         sync_type: syncType,
-        status: 'in_progress',
+        status: 'in_progress' as any,
         triggered_by: userId,
-      })
-      .select()
-      .single();
-
-    if (logError) throw logError;
+      },
+    });
 
     // Marcar la integración como 'in_progress' para que el frontend pueda detectarlo.
-    await this.supabase.db
-      .from('platform_integrations')
-      .update({
-        last_sync_status: 'in_progress',
+    await this.prisma.platform_integrations.update({
+      where: { id: integrationId },
+      data: {
+        last_sync_status: 'in_progress' as any,
         last_sync_error: null,
-      })
-      .eq('id', integrationId);
+      },
+    });
 
     // Disparar el sync en background (sin await).
     // Cualquier error se captura y se persiste en el log + integración.
@@ -575,6 +581,7 @@ export class PlatformsService implements OnModuleInit {
    * Se invoca SIN await desde triggerSync.
    */
   private async runSyncInBackground(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     integration: any,
     syncType: SyncType,
     syncLogId: string,
@@ -587,28 +594,28 @@ export class PlatformsService implements OnModuleInit {
         throw new Error(result.errors[0] || 'La sincronización falló');
       }
 
-      await this.supabase.db
-        .from('platform_sync_logs')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
+      await this.prisma.platform_sync_logs.update({
+        where: { id: syncLogId },
+        data: {
+          status: 'completed' as any,
+          completed_at: new Date(),
           courses_synced: result.courses_synced,
           enrollments_synced: result.enrollments_synced,
           users_synced: result.users_synced,
           errors_count: result.errors.length,
-          error_details: result.errors.length ? { errors: result.errors } : null,
-          sync_summary: result.summary,
-        })
-        .eq('id', syncLogId);
+          error_details: result.errors.length ? ({ errors: result.errors } as any) : (null as any),
+          sync_summary: result.summary as any,
+        },
+      });
 
-      await this.supabase.db
-        .from('platform_integrations')
-        .update({
-          last_sync_at: new Date().toISOString(),
-          last_sync_status: 'completed',
+      await this.prisma.platform_integrations.update({
+        where: { id: integrationId },
+        data: {
+          last_sync_at: new Date(),
+          last_sync_status: 'completed' as any,
           last_sync_error: null,
-        })
-        .eq('id', integrationId);
+        },
+      });
 
       this.logger.log(
         `Sync completed for integration ${integrationId}: ${result.users_synced} users, ${result.courses_synced} courses, ${result.enrollments_synced} enrollments`,
@@ -617,24 +624,24 @@ export class PlatformsService implements OnModuleInit {
       const errorMessage = error instanceof Error ? error.message : 'Error desconocido';
       this.logger.error(`Sync failed for integration ${integrationId}: ${errorMessage}`);
 
-      await this.supabase.db
-        .from('platform_sync_logs')
-        .update({
-          status: 'failed',
-          completed_at: new Date().toISOString(),
+      await this.prisma.platform_sync_logs.update({
+        where: { id: syncLogId },
+        data: {
+          status: 'failed' as any,
+          completed_at: new Date(),
           errors_count: 1,
-          error_details: { message: errorMessage },
-        })
-        .eq('id', syncLogId);
+          error_details: { message: errorMessage } as any,
+        },
+      });
 
-      await this.supabase.db
-        .from('platform_integrations')
-        .update({
-          last_sync_at: new Date().toISOString(),
-          last_sync_status: 'failed',
+      await this.prisma.platform_integrations.update({
+        where: { id: integrationId },
+        data: {
+          last_sync_at: new Date(),
+          last_sync_status: 'failed' as any,
           last_sync_error: errorMessage,
-        })
-        .eq('id', integrationId);
+        },
+      });
     }
   }
 
@@ -649,12 +656,10 @@ export class PlatformsService implements OnModuleInit {
 
   /** Devuelve la integración activa de Crehana, o null si no existe. */
   private async findCrehanaIntegration() {
-    const { data } = await this.supabase.db
-      .from('platform_integrations')
-      .select('id, last_sync_at, last_sync_status')
-      .eq('platform_type', 'crehana')
-      .eq('is_active', true)
-      .maybeSingle();
+    const data = await this.prisma.platform_integrations.findFirst({
+      where: { platform_type: 'crehana' as any, is_active: true },
+      select: { id: true, last_sync_at: true, last_sync_status: true },
+    });
     return data;
   }
 
@@ -681,22 +686,17 @@ export class PlatformsService implements OnModuleInit {
       };
     }
 
-    const [usersResult, coursesResult, enrollList] = await Promise.all([
-      this.supabase.db
-        .from('platform_user_mappings')
-        .select('id, profile_id')
-        .eq('platform_integration_id', integration.id)
-        .eq('is_active', true),
-      this.supabase.db
-        .from('platform_courses')
-        .select('id')
-        .eq('platform_integration_id', integration.id)
-        .eq('is_active', true),
+    const [usersList, courses, enrollList] = await Promise.all([
+      this.prisma.platform_user_mappings.findMany({
+        where: { platform_integration_id: integration.id, is_active: true },
+        select: { id: true, profile_id: true },
+      }),
+      this.prisma.platform_courses.findMany({
+        where: { platform_integration_id: integration.id, is_active: true },
+        select: { id: true },
+      }),
       this.getEnrollmentsForIntegration(integration.id),
     ]);
-
-    const usersList = usersResult.data ?? [];
-    const courses = coursesResult.data ?? [];
 
     let completed = 0;
     let inProgress = 0;
@@ -739,22 +739,28 @@ export class PlatformsService implements OnModuleInit {
     const integration = await this.findCrehanaIntegration();
     if (!integration) return [];
 
-    const { data: courses } = await this.supabase.db
-      .from('platform_courses')
-      .select('id, external_course_id, name, total_hours, course_url, thumbnail_url, last_synced_at')
-      .eq('platform_integration_id', integration.id)
-      .eq('is_active', true)
-      .order('name');
+    const courses = await this.prisma.platform_courses.findMany({
+      where: { platform_integration_id: integration.id, is_active: true },
+      select: {
+        id: true,
+        external_course_id: true,
+        name: true,
+        total_hours: true,
+        course_url: true,
+        thumbnail_url: true,
+        last_synced_at: true,
+      },
+      orderBy: { name: 'asc' },
+    });
 
     if (!courses || courses.length === 0) return [];
 
     const courseIds = courses.map((c) => c.id);
-    const { data: enrollments } = await this.supabase.db
-      .from('platform_enrollments')
-      .select('platform_course_id, status, progress_percentage')
-      .in('platform_course_id', courseIds)
-      .eq('is_active', true)
-      .limit(10000);
+    const enrollments = await this.prisma.platform_enrollments.findMany({
+      where: { platform_course_id: { in: courseIds }, is_active: true },
+      select: { platform_course_id: true, status: true, progress_percentage: true },
+      take: 10000,
+    });
 
     const statsByCourse = new Map<string, { total: number; completed: number; in_progress: number; avg_progress: number; sum: number }>();
     for (const e of enrollments ?? []) {
@@ -786,14 +792,29 @@ export class PlatformsService implements OnModuleInit {
     const integration = await this.findCrehanaIntegration();
     if (!integration) return [];
 
-    const { data: mappings } = await this.supabase.db
-      .from('platform_user_mappings')
-      .select(`
-        id, external_user_id, external_email, external_username, profile_id, last_synced_at,
-        profiles:profile_id(id, full_name, email, departments(id, name))
-      `)
-      .eq('platform_integration_id', integration.id)
-      .eq('is_active', true);
+    const mappingsRaw = await this.prisma.platform_user_mappings.findMany({
+      where: { platform_integration_id: integration.id, is_active: true },
+      select: {
+        id: true,
+        external_user_id: true,
+        external_email: true,
+        external_username: true,
+        profile_id: true,
+        last_synced_at: true,
+        profiles: {
+          select: {
+            id: true,
+            full_name: true,
+            email: true,
+            departments: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+
+    // Mantener forma original (campo `profiles` -> el frontend espera `profiles`)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mappings = mappingsRaw as any[];
 
     if (!mappings || mappings.length === 0) return [];
 
@@ -814,8 +835,11 @@ export class PlatformsService implements OnModuleInit {
       s.hours += Number(e.hours_completed) || 0;
       if (e.certificate_url) s.certificates++;
       s.sum += Number(e.progress_percentage) || 0;
-      if (e.last_activity_at && (!s.lastActivity || e.last_activity_at > s.lastActivity)) {
-        s.lastActivity = e.last_activity_at;
+      const lastAct: string | null = e.last_activity_at
+        ? (e.last_activity_at instanceof Date ? e.last_activity_at.toISOString() : String(e.last_activity_at))
+        : null;
+      if (lastAct && (!s.lastActivity || lastAct > s.lastActivity)) {
+        s.lastActivity = lastAct;
       }
       statsByEmail.set(email, s);
     }
@@ -851,26 +875,37 @@ export class PlatformsService implements OnModuleInit {
     }
 
     // Curso
-    const { data: course } = await this.supabase.db
-      .from('platform_courses')
-      .select('id, external_course_id, name, total_hours, course_url, thumbnail_url, last_synced_at, description, instructor, total_modules, total_lessons')
-      .eq('platform_integration_id', integration.id)
-      .eq('external_course_id', externalCourseId)
-      .eq('is_active', true)
-      .maybeSingle();
+    const course = await this.prisma.platform_courses.findFirst({
+      where: {
+        platform_integration_id: integration.id,
+        external_course_id: externalCourseId,
+        is_active: true,
+      },
+      select: {
+        id: true,
+        external_course_id: true,
+        name: true,
+        total_hours: true,
+        course_url: true,
+        thumbnail_url: true,
+        last_synced_at: true,
+        description: true,
+        instructor: true,
+        total_modules: true,
+        total_lessons: true,
+      },
+    });
 
     if (!course) {
       throw new NotFoundException('Curso de Crehana no encontrado');
     }
 
     // Inscripciones del curso
-    const { data: enrollments } = await this.supabase.db
-      .from('platform_enrollments')
-      .select('*')
-      .eq('platform_course_id', course.id)
-      .eq('is_active', true)
-      .order('progress_percentage', { ascending: false })
-      .limit(10000);
+    const enrollments = await this.prisma.platform_enrollments.findMany({
+      where: { platform_course_id: course.id, is_active: true },
+      orderBy: { progress_percentage: 'desc' },
+      take: 10000,
+    });
 
     const enrollList = enrollments ?? [];
 
@@ -880,17 +915,28 @@ export class PlatformsService implements OnModuleInit {
       .map((e) => (e.external_user_email as string | null)?.toLowerCase())
       .filter((e): e is string => !!e);
 
-    const { data: mappings } = emails.length > 0
-      ? await this.supabase.db
-          .from('platform_user_mappings')
-          .select(`
-            external_user_id, external_email, external_username, profile_id,
-            profiles:profile_id(id, full_name, email, departments(id, name))
-          `)
-          .eq('platform_integration_id', integration.id)
-          .eq('is_active', true)
-      : { data: [] as any[] };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const mappings: any[] = emails.length > 0
+      ? await this.prisma.platform_user_mappings.findMany({
+          where: { platform_integration_id: integration.id, is_active: true },
+          select: {
+            external_user_id: true,
+            external_email: true,
+            external_username: true,
+            profile_id: true,
+            profiles: {
+              select: {
+                id: true,
+                full_name: true,
+                email: true,
+                departments: { select: { id: true, name: true } },
+              },
+            },
+          },
+        })
+      : [];
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mappingByEmail = new Map<string, any>();
     for (const m of mappings ?? []) {
       if (m.external_email) {
@@ -971,41 +1017,61 @@ export class PlatformsService implements OnModuleInit {
       throw new NotFoundException('No hay integración activa con Crehana');
     }
 
-    const { data: mapping } = await this.supabase.db
-      .from('platform_user_mappings')
-      .select(`
-        external_user_id, external_email, external_username, profile_id, last_synced_at,
-        profiles:profile_id(id, full_name, email, position, departments(id, name))
-      `)
-      .eq('platform_integration_id', integration.id)
-      .eq('external_user_id', externalUserId)
-      .maybeSingle();
+    const mapping = await this.prisma.platform_user_mappings.findFirst({
+      where: {
+        platform_integration_id: integration.id,
+        external_user_id: externalUserId,
+      },
+      select: {
+        external_user_id: true,
+        external_email: true,
+        external_username: true,
+        profile_id: true,
+        last_synced_at: true,
+        profiles: {
+          select: {
+            id: true,
+            full_name: true,
+            email: true,
+            position: true,
+            departments: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
 
     if (!mapping) {
       throw new NotFoundException('Usuario de Crehana no encontrado');
     }
 
     // Cursos de la integración para resolver el platform_course_id → datos del curso
-    const { data: courses } = await this.supabase.db
-      .from('platform_courses')
-      .select('id, external_course_id, name, total_hours, course_url, thumbnail_url')
-      .eq('platform_integration_id', integration.id)
-      .eq('is_active', true);
+    const courses = await this.prisma.platform_courses.findMany({
+      where: { platform_integration_id: integration.id, is_active: true },
+      select: {
+        id: true,
+        external_course_id: true,
+        name: true,
+        total_hours: true,
+        course_url: true,
+        thumbnail_url: true,
+      },
+    });
 
     const courseById = new Map((courses ?? []).map((c) => [c.id, c]));
 
     // Emparejamos por email (los IDs entre módulos de Crehana no coinciden).
     const userEmail = mapping.external_email;
-    const { data: enrollments } = userEmail
-      ? await this.supabase.db
-          .from('platform_enrollments')
-          .select('*')
-          .ilike('external_user_email', userEmail)
-          .in('platform_course_id', Array.from(courseById.keys()))
-          .eq('is_active', true)
-          .order('last_activity_at', { ascending: false, nullsFirst: false })
-          .limit(10000)
-      : { data: [] as any[] };
+    const enrollments = userEmail
+      ? await this.prisma.platform_enrollments.findMany({
+          where: {
+            external_user_email: { equals: userEmail, mode: 'insensitive' },
+            platform_course_id: { in: Array.from(courseById.keys()) },
+            is_active: true,
+          },
+          orderBy: { last_activity_at: { sort: 'desc', nulls: 'last' } },
+          take: 10000,
+        })
+      : [];
 
     const enrichedEnrollments = (enrollments ?? []).map((e) => ({
       ...e,
@@ -1027,19 +1093,21 @@ export class PlatformsService implements OnModuleInit {
    * y ya tenemos ~950 enrollments — un crecimiento natural lo rompería.
    */
   private async getEnrollmentsForIntegration(integrationId: string) {
-    const { data, error } = await this.supabase.db
-      .from('platform_enrollments')
-      .select('*, platform_courses!inner(platform_integration_id)')
-      .eq('platform_courses.platform_integration_id', integrationId)
-      .eq('is_active', true)
-      .limit(10000);
+    try {
+      const data = await this.prisma.platform_enrollments.findMany({
+        where: {
+          is_active: true,
+          platform_courses: { platform_integration_id: integrationId },
+        },
+        take: 10000,
+      });
 
-    if (error) {
-      this.logger.error(`getEnrollmentsForIntegration failed: ${error.message}`);
+      return data ?? [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      this.logger.error(`getEnrollmentsForIntegration failed: ${error?.message ?? error}`);
       throw error;
     }
-
-    return data ?? [];
   }
 
   // =====================================================
@@ -1047,17 +1115,15 @@ export class PlatformsService implements OnModuleInit {
   // =====================================================
 
   async findSyncLogs(integrationId: string, limit = 20) {
-    const { data, error } = await this.supabase.db
-      .from('platform_sync_logs')
-      .select(`
-        *,
-        profiles:triggered_by(id, full_name)
-      `)
-      .eq('platform_integration_id', integrationId)
-      .order('created_at', { ascending: false })
-      .limit(limit);
+    const data = await this.prisma.platform_sync_logs.findMany({
+      where: { platform_integration_id: integrationId },
+      include: {
+        profiles: { select: { id: true, full_name: true } },
+      },
+      orderBy: { created_at: 'desc' },
+      take: limit,
+    });
 
-    if (error) throw error;
     return data ?? [];
   }
 
@@ -1065,6 +1131,7 @@ export class PlatformsService implements OnModuleInit {
   // HELPERS PRIVADOS
   // =====================================================
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sanitizeIntegration(integration: any) {
     // Remover clave privada de la respuesta
     const { private_key_encrypted, ...safe } = integration;
@@ -1075,13 +1142,11 @@ export class PlatformsService implements OnModuleInit {
   }
 
   private async getIntegrationWithCredentials(id: string) {
-    const { data, error } = await this.supabase.db
-      .from('platform_integrations')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const data = await this.prisma.platform_integrations.findUnique({
+      where: { id },
+    });
 
-    if (error || !data) {
+    if (!data) {
       throw new NotFoundException('Integración no encontrada');
     }
 

@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { SupabaseService } from '../../supabase/supabase.service';
-import { BaseCrudService } from '../../common/services/base-crud.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { BaseCrudPrismaService } from '../../common/services/base-crud-prisma.service';
 import { CreateOkrDto, OkrType } from './dto/create-okr.dto';
 import { UpdateOkrDto, OkrStatus } from './dto/update-okr.dto';
 
@@ -34,60 +34,59 @@ export interface OkrStats {
 }
 
 @Injectable()
-export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
-  protected readonly tableName = 'accounting_okrs';
-  protected readonly selectFields = '*, profiles:created_by(id, full_name)';
+export class OkrsService extends BaseCrudPrismaService<CreateOkrDto, UpdateOkrDto> {
+  protected get model() {
+    return this.prisma.accounting_okrs;
+  }
   protected readonly orderField = 'created_at';
+  protected readonly include = {
+    profiles: { select: { id: true, full_name: true } },
+  };
 
-  constructor(supabase: SupabaseService) {
-    super(supabase);
+  constructor(prisma: PrismaService) {
+    super(prisma);
   }
 
   /**
    * Obtiene todos los OKRs de un período con estructura jerárquica
    */
   async findByPeriodo(periodo: string): Promise<OkrRow[]> {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('periodo', periodo)
-      .eq('is_active', true)
-      .order('created_at', { ascending: true });
-
-    if (error) throw error;
+    const data = await this.prisma.accounting_okrs.findMany({
+      where: { periodo, is_active: true },
+      include: this.include,
+      orderBy: { created_at: 'asc' },
+    });
 
     // Estructurar jerárquicamente
-    return this.buildHierarchy(data as OkrRow[]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.buildHierarchy(data as any as OkrRow[]);
   }
 
   /**
    * Obtiene todos los OKRs activos (flat)
    */
   async findAll(): Promise<OkrRow[]> {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('is_active', true)
-      .order('periodo', { ascending: false })
-      .order('created_at', { ascending: true });
-
-    if (error) throw error;
-    return data as OkrRow[];
+    const data = await this.prisma.accounting_okrs.findMany({
+      where: { is_active: true },
+      include: this.include,
+      orderBy: [{ periodo: 'desc' }, { created_at: 'asc' }],
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return data as any as OkrRow[];
   }
 
   /**
    * Obtiene un OKR por ID
    */
   async findOne(id: string): Promise<OkrRow> {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('id', id)
-      .eq('is_active', true)
-      .single();
+    const data = await this.prisma.accounting_okrs.findFirst({
+      where: { id, is_active: true },
+      include: this.include,
+    });
 
-    if (error || !data) throw new NotFoundException('OKR no encontrado');
-    return data as OkrRow;
+    if (!data) throw new NotFoundException('OKR no encontrado');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return data as any as OkrRow;
   }
 
   /**
@@ -121,20 +120,20 @@ export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
       created_by: userId || null,
     };
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .insert(insertData as any)
-      .select(this.selectFields)
-      .single();
-
-    if (error) throw error;
-    return data as OkrRow;
+    const data = await this.prisma.accounting_okrs.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: insertData as any,
+      include: this.include,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return data as any as OkrRow;
   }
 
   /**
    * Actualiza un OKR
    */
   async update(id: string, dto: UpdateOkrDto): Promise<OkrRow> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateData: any = {};
 
     // Solo incluir campos que vienen en el DTO
@@ -150,8 +149,8 @@ export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
     // Auto-actualizar status basado en current_value vs target_value
     if (dto.current_value !== undefined && !dto.status) {
       const existing = await this.findOne(id);
-      const targetValue = dto.target_value ?? existing.target_value ?? 0;
-      const currentValue = dto.current_value;
+      const targetValue = Number(dto.target_value ?? existing.target_value ?? 0);
+      const currentValue = Number(dto.current_value);
 
       if (targetValue > 0) {
         const percentage = (currentValue / targetValue) * 100;
@@ -167,17 +166,23 @@ export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
       }
     }
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .update(updateData)
-      .eq('id', id)
-      .select(this.selectFields)
-      .single();
-
-    if (error || !data) throw new NotFoundException('OKR no encontrado');
+    let data;
+    try {
+      data = await this.prisma.accounting_okrs.update({
+        where: { id },
+        data: updateData,
+        include: this.include,
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('OKR no encontrado');
+      }
+      throw err;
+    }
 
     // Actualizar status del objetivo padre si es key_result
-    const okr = data as OkrRow;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const okr = data as any as OkrRow;
     if (okr.parent_okr_id) {
       await this.updateParentStatus(okr.parent_okr_id);
     }
@@ -189,12 +194,14 @@ export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
    * Actualiza el status de un objetivo basado en sus key results
    */
   private async updateParentStatus(parentId: string): Promise<void> {
-    const { data: keyResults } = await this.supabase.db
-      .from(this.tableName)
-      .select('current_value, target_value, status')
-      .eq('parent_okr_id', parentId)
-      .eq('is_active', true)
-      .eq('tipo', 'key_result');
+    const keyResults = await this.prisma.accounting_okrs.findMany({
+      where: {
+        parent_okr_id: parentId,
+        is_active: true,
+        tipo: 'key_result',
+      },
+      select: { current_value: true, target_value: true, status: true },
+    });
 
     if (!keyResults || keyResults.length === 0) return;
 
@@ -203,8 +210,9 @@ export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
     let countWithProgress = 0;
 
     keyResults.forEach((kr) => {
-      if (kr.target_value && kr.target_value > 0) {
-        totalProgress += ((kr.current_value || 0) / kr.target_value) * 100;
+      const target = Number(kr.target_value);
+      if (kr.target_value && target > 0) {
+        totalProgress += (Number(kr.current_value || 0) / target) * 100;
         countWithProgress++;
       }
     });
@@ -222,29 +230,37 @@ export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
       status = 'behind';
     }
 
-    await this.supabase.db
-      .from(this.tableName)
-      .update({ status } as any)
-      .eq('id', parentId);
+    await this.prisma.accounting_okrs.update({
+      where: { id: parentId },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: { status } as any,
+    });
   }
 
   /**
    * Obtiene estadísticas de OKRs
    */
   async getStats(periodo?: string): Promise<OkrStats> {
-    let query = this.supabase.db
-      .from(this.tableName)
-      .select('tipo, status, current_value, target_value')
-      .eq('is_active', true);
+    const data = await this.prisma.accounting_okrs.findMany({
+      where: {
+        is_active: true,
+        ...(periodo ? { periodo } : {}),
+      },
+      select: {
+        tipo: true,
+        status: true,
+        current_value: true,
+        target_value: true,
+      },
+    });
 
-    if (periodo) {
-      query = query.eq('periodo', periodo);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-
-    const okrs = data as { tipo: string; status: string; current_value: number | null; target_value: number | null }[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const okrs = data as any as {
+      tipo: string;
+      status: string;
+      current_value: number | null;
+      target_value: number | null;
+    }[];
 
     const objectives = okrs.filter((o) => o.tipo === 'objective');
     const keyResults = okrs.filter((o) => o.tipo === 'key_result');
@@ -258,8 +274,9 @@ export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
     let totalProgress = 0;
     let countWithProgress = 0;
     okrs.forEach((o) => {
-      if (o.target_value && o.target_value > 0) {
-        totalProgress += ((o.current_value || 0) / o.target_value) * 100;
+      const target = Number(o.target_value);
+      if (o.target_value && target > 0) {
+        totalProgress += (Number(o.current_value || 0) / target) * 100;
         countWithProgress++;
       }
     });
@@ -291,14 +308,12 @@ export class OkrsService extends BaseCrudService<CreateOkrDto, UpdateOkrDto> {
    * Obtiene períodos disponibles
    */
   async getPeriodos(): Promise<string[]> {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select('periodo')
-      .eq('is_active', true);
+    const data = await this.prisma.accounting_okrs.findMany({
+      where: { is_active: true },
+      select: { periodo: true },
+    });
 
-    if (error) throw error;
-
-    const uniquePeriodos = [...new Set((data as { periodo: string }[]).map((d) => d.periodo))];
+    const uniquePeriodos = [...new Set(data.map((d) => d.periodo))];
     return uniquePeriodos.sort().reverse();
   }
 }

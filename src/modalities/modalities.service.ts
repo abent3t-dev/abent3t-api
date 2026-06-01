@@ -1,17 +1,21 @@
 import { Injectable } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
-import { BaseCrudService } from '../common/services/base-crud.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { BaseCrudPrismaService } from '../common/services/base-crud-prisma.service';
 import { CreateModalityDto } from './dto/create-modality.dto';
 import { UpdateModalityDto } from './dto/update-modality.dto';
 
 @Injectable()
-export class ModalitiesService extends BaseCrudService<CreateModalityDto, UpdateModalityDto> {
-  protected readonly tableName = 'modalities';
-  protected readonly selectFields = '*';
+export class ModalitiesService extends BaseCrudPrismaService<
+  CreateModalityDto,
+  UpdateModalityDto
+> {
+  protected get model() {
+    return this.prisma.modalities;
+  }
   protected readonly orderField = 'name';
   protected readonly searchFields = ['name', 'key'];
 
-  constructor(supabase: SupabaseService) {
-    super(supabase);
+  constructor(prisma: PrismaService) {
+    super(prisma);
   }
 }

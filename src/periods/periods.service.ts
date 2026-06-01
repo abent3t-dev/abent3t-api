@@ -1,40 +1,38 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
-import { BaseCrudService } from '../common/services/base-crud.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { BaseCrudPrismaService } from '../common/services/base-crud-prisma.service';
 import { CreatePeriodDto } from './dto/create-period.dto';
 import { UpdatePeriodDto } from './dto/update-period.dto';
 
 @Injectable()
-export class PeriodsService extends BaseCrudService<CreatePeriodDto, UpdatePeriodDto> {
-  protected readonly tableName = 'periods';
-  protected readonly selectFields = '*';
+export class PeriodsService extends BaseCrudPrismaService<
+  CreatePeriodDto,
+  UpdatePeriodDto
+> {
+  protected get model() {
+    return this.prisma.periods;
+  }
   protected readonly orderField = 'year';
   protected readonly searchFields = ['label'];
   private readonly logger = new Logger(PeriodsService.name);
 
-  constructor(supabase: SupabaseService) {
-    super(supabase);
+  constructor(prisma: PrismaService) {
+    super(prisma);
   }
 
+  // Override: el orden histórico es year DESC, semester ASC (el más reciente
+  // primero, luego semestres del mismo año en orden).
   async findAll() {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .order('year', { ascending: false })
-      .order('semester', { ascending: true });
-
-    if (error) throw error;
-    return data;
+    return this.prisma.periods.findMany({
+      orderBy: [{ year: 'desc' }, { semester: 'asc' }],
+    });
   }
 
   async remove(id: string) {
-    const { count } = await this.supabase.db
-      .from('budgets')
-      .select('id', { count: 'exact', head: true })
-      .eq('period_id', id)
-      .eq('is_active', true);
-
-    if (count && count > 0) {
+    const count = await this.prisma.budgets.count({
+      where: { period_id: id, is_active: true },
+    });
+    if (count > 0) {
       this.logger.warn(
         `Deactivating period ${id} which has ${count} active budgets — budgets NOT cascade-deactivated`,
       );

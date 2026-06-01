@@ -1,5 +1,10 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { LocalAuthService } from '../auth/services/local-auth.service';
 import { CreatePersonnelDto } from './dto/create-personnel.dto';
 import { UpdatePersonnelDto } from './dto/update-personnel.dto';
 import {
@@ -10,7 +15,12 @@ import {
 
 // Roles administrables desde el módulo de personal por admin_rh.
 // Incluye 'collaborator' (legacy) para mantener compatibilidad de lectura.
-const PERSONNEL_ROLES_FILTER = ['colaborador', 'collaborator', 'jefe_area', 'director'];
+const PERSONNEL_ROLES_FILTER = [
+  'colaborador',
+  'collaborator',
+  'jefe_area',
+  'director',
+];
 
 interface PersonnelFilters {
   department_id?: string;
@@ -21,34 +31,31 @@ interface PersonnelFilters {
 
 @Injectable()
 export class PersonnelService {
-  constructor(private readonly supabase: SupabaseService) {}
+  /**
+   * Fase 2: el alta ya NO crea cuenta en Supabase Auth. Solo registra el
+   * profile en PG local con `pending_first_login=true`. Si `ALLOW_LOCAL_LOGIN=true`
+   * y se pasa password, también se crea `local_credentials`.
+   */
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly local: LocalAuthService,
+  ) {}
 
   /**
-   * Lista de personal de capacitación.
-   *
-   * Modelo: user_roles es la fuente única. Un usuario aparece aquí si
-   * tiene al menos un rol de personnel (`colaborador`, `jefe_area`, etc.)
-   * en el módulo `capacitacion` — activo o inactivo.
-   *
-   * El campo `is_active` en cada item refleja si su rol DE CAPACITACIÓN
-   * está activo (no si su cuenta global está activa).
-   *
-   * Cada item tiene además un campo `role` con el rol efectivo en este
-   * módulo (priorizado: jefe_area > director > colaborador > collaborator).
+   * Lista de personal de capacitación. user_roles es la fuente única.
    */
   async findAll(filters?: PersonnelFilters) {
-    // 1) user_roles del módulo capacitación con roles de personnel.
-    //    Incluye activos e inactivos para soportar la lista de "bajas".
-    const { data: roleRows, error: rolesErr } = await this.supabase.db
-      .from('user_roles')
-      .select('profile_id, role, is_active')
-      .eq('module', 'capacitacion')
-      .in('role', PERSONNEL_ROLES_FILTER);
-    if (rolesErr) throw rolesErr;
+    // 1) user_roles del módulo capacitación con roles de personnel
+    const roleRows = await this.prisma.user_roles.findMany({
+      where: {
+        module: 'capacitacion',
+        role: { in: PERSONNEL_ROLES_FILTER as never[] },
+      },
+      select: { profile_id: true, role: true, is_active: true },
+    });
 
-    if (!roleRows || roleRows.length === 0) return [];
+    if (roleRows.length === 0) return [];
 
-    // Agrupar por profile_id: roles activos vs inactivos
     const activeByProfile = new Map<string, Set<string>>();
     const inactiveByProfile = new Map<string, Set<string>>();
     for (const r of roleRows) {
@@ -58,17 +65,14 @@ export class PersonnelService {
     }
 
     const profileIds = Array.from(
-      new Set([
-        ...activeByProfile.keys(),
-        ...inactiveByProfile.keys(),
-      ]),
+      new Set([...activeByProfile.keys(), ...inactiveByProfile.keys()]),
     );
 
     // 2) Traer profiles
-    const { data: profiles } = await this.supabase.db
-      .from('profiles')
-      .select('*, departments(id, name)')
-      .in('id', profileIds);
+    const profiles = await this.prisma.profiles.findMany({
+      where: { id: { in: profileIds } },
+      include: { departments: { select: { id: true, name: true } } },
+    });
 
     const priority = ['jefe_area', 'director', 'colaborador', 'collaborator'];
     const pickEffective = (roles: Set<string> | undefined): string | null => {
@@ -77,16 +81,16 @@ export class PersonnelService {
       return null;
     };
 
-    // 3) Enriquecer cada profile con role efectivo y is_active de capacitación
-    let result = (profiles ?? []).map((p) => {
+    // 3) Enriquecer
+    let result = profiles.map((p) => {
       const active = activeByProfile.get(p.id);
       const inactive = inactiveByProfile.get(p.id);
       const hasActiveRole = !!active && active.size > 0;
-      const effective = pickEffective(active) ?? pickEffective(inactive) ?? 'colaborador';
+      const effective =
+        pickEffective(active) ?? pickEffective(inactive) ?? 'colaborador';
       return {
         ...p,
         role: effective,
-        // is_active: combina el de la cuenta global y el del rol en capacitación
         is_active: p.is_active && hasActiveRole,
       };
     });
@@ -111,34 +115,36 @@ export class PersonnelService {
       );
     }
 
-    result.sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
+    result.sort((a, b) =>
+      (a.full_name || '').localeCompare(b.full_name || ''),
+    );
     return result;
   }
 
-  /**
-   * Get a single personnel record.
-   * Devuelve el perfil con el rol efectivo en capacitación.
-   */
   async findOne(id: string) {
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .select('*, departments(id, name)')
-      .eq('id', id)
-      .single();
+    const data = await this.prisma.profiles.findUnique({
+      where: { id },
+      include: { departments: { select: { id: true, name: true } } },
+    });
+    if (!data) throw new NotFoundException('Colaborador no encontrado');
 
-    if (error || !data) throw new NotFoundException('Colaborador no encontrado');
+    const roleRows = await this.prisma.user_roles.findMany({
+      where: {
+        profile_id: id,
+        module: 'capacitacion',
+        role: { in: PERSONNEL_ROLES_FILTER as never[] },
+      },
+      select: { role: true, is_active: true },
+    });
 
-    const { data: roleRows } = await this.supabase.db
-      .from('user_roles')
-      .select('role, is_active')
-      .eq('profile_id', id)
-      .eq('module', 'capacitacion')
-      .in('role', PERSONNEL_ROLES_FILTER);
-
-    const active = new Set((roleRows ?? []).filter((r) => r.is_active).map((r) => r.role));
-    const inactive = new Set((roleRows ?? []).filter((r) => !r.is_active).map((r) => r.role));
+    const active = new Set<string>(
+      roleRows.filter((r) => r.is_active).map((r) => r.role as string),
+    );
+    const inactive = new Set<string>(
+      roleRows.filter((r) => !r.is_active).map((r) => r.role as string),
+    );
     const priority = ['jefe_area', 'director', 'colaborador', 'collaborator'];
-    let effective: string = 'colaborador';
+    let effective = 'colaborador';
     for (const r of priority) {
       if (active.has(r) || inactive.has(r)) {
         effective = r;
@@ -154,24 +160,25 @@ export class PersonnelService {
   }
 
   /**
-   * Alta de colaborador (admin_rh).
-   *
-   * Lógica multi-módulo: si el email ya existe (porque está dado de alta
-   * en otro módulo, p.ej. Compras), NO crea duplicado — solo le suma el rol
-   * de capacitación en user_roles. Si el email es nuevo, crea todo.
+   * Alta de colaborador (admin_rh) — modelo K-7.
+   * Si el email existe, agrega el rol al user existente. Si es nuevo, crea
+   * el profile en PG local con `pending_first_login=true` y, si se pasó
+   * password con login local habilitado, también la credencial local.
    */
   async create(dto: CreatePersonnelDto, performedBy?: string) {
     const role = dto.role || 'colaborador';
     const normalizedEmail = dto.email.trim().toLowerCase();
 
-    // 1. ¿Existe ya el email? (case-insensitive — auth.users normaliza a
-    //    lowercase, pero profiles.email puede tener variaciones de capitalización
-    //    según cómo se haya creado el registro)
-    const { data: existing } = await this.supabase.db
-      .from('profiles')
-      .select('id, email, full_name, role, is_active')
-      .ilike('email', normalizedEmail)
-      .maybeSingle();
+    const existing = await this.prisma.profiles.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+      select: {
+        id: true,
+        email: true,
+        full_name: true,
+        role: true,
+        is_active: true,
+      },
+    });
 
     if (existing) {
       if (!existing.is_active) {
@@ -179,18 +186,23 @@ export class PersonnelService {
           'Ya existe un usuario con este email pero está desactivado. Reactívalo desde la lista en lugar de crear uno nuevo.',
         );
       }
-      // Solo agregar el rol de capacitación al usuario existente
-      await upsertUserRole(this.supabase.db, {
+      await upsertUserRole(this.prisma, {
         profileId: existing.id,
         role,
         grantedBy: performedBy ?? null,
       });
 
-      const { data: enriched } = await this.supabase.db
-        .from('profiles')
-        .select('*, departments(id, name)')
-        .eq('id', existing.id)
-        .single();
+      if (dto.password && this.local.isEnabled()) {
+        await this.local.setPassword(existing.id, dto.password, {
+          mustChangePassword: true,
+          performedBy,
+        });
+      }
+
+      const enriched = await this.prisma.profiles.findUnique({
+        where: { id: existing.id },
+        include: { departments: { select: { id: true, name: true } } },
+      });
 
       return {
         ...enriched,
@@ -200,106 +212,45 @@ export class PersonnelService {
       };
     }
 
-    // 2. Email nuevo — para crear cuenta nueva sí necesitamos password y nombre
-    if (!dto.password || dto.password.length < 6) {
-      throw new BadRequestException(
-        'La contraseña es requerida y debe tener al menos 6 caracteres',
-      );
-    }
     if (!dto.full_name?.trim()) {
       throw new BadRequestException('El nombre completo es requerido');
     }
-
-    const { data: authData, error: authError } =
-      await this.supabase.db.auth.admin.createUser({
-        email: dto.email,
-        password: dto.password,
-        email_confirm: true,
-        user_metadata: { full_name: dto.full_name },
-      });
-
-    if (authError) {
-      if (authError.message.includes('already been registered')) {
-        // race condition: alguien lo creó entre nuestro check y este insert.
-        // Reintenta como "agregar rol al existente".
-        const { data: late } = await this.supabase.db
-          .from('profiles')
-          .select('id, is_active')
-          .ilike('email', normalizedEmail)
-          .maybeSingle();
-        if (late?.id) {
-          await upsertUserRole(this.supabase.db, {
-            profileId: late.id,
-            role,
-            grantedBy: performedBy ?? null,
-          });
-          const { data: enriched } = await this.supabase.db
-            .from('profiles')
-            .select('*, departments(id, name)')
-            .eq('id', late.id)
-            .single();
-          return {
-            ...enriched,
-            existing_user_added_role: true,
-            added_role: role,
-            added_module: getModuleForRole(role),
-          };
-        }
-        throw new BadRequestException('El correo electrónico ya está registrado');
-      }
-      throw new BadRequestException(authError.message);
+    if (dto.password && dto.password.length < 6) {
+      throw new BadRequestException(
+        'La contraseña debe tener al menos 6 caracteres',
+      );
     }
 
-    const userId = authData.user.id;
-
-    // 3. Actualizar/insertar profile (sin role — se asigna en user_roles)
-    const { data: profile, error: profileError } = await this.supabase.db
-      .from('profiles')
-      .update({
+    const profile = await this.prisma.profiles.create({
+      data: {
+        email: dto.email,
         full_name: dto.full_name,
         position: dto.position || null,
         department_id: dto.department_id || null,
-      })
-      .eq('id', userId)
-      .select('*, departments(id, name)')
-      .single();
+      },
+      include: { departments: { select: { id: true, name: true } } },
+    });
 
-    let finalProfile = profile;
-    if (profileError) {
-      const { data: newProfile, error: createError } = await this.supabase.db
-        .from('profiles')
-        .insert({
-          id: userId,
-          email: dto.email,
-          full_name: dto.full_name,
-          position: dto.position || null,
-          department_id: dto.department_id || null,
-        })
-        .select('*, departments(id, name)')
-        .single();
-
-      if (createError) {
-        throw new BadRequestException('Error al crear perfil: ' + createError.message);
-      }
-      finalProfile = newProfile;
-    }
-
-    // 4. Asignar el rol vía user_roles (única fuente)
-    await upsertUserRole(this.supabase.db, {
-      profileId: userId,
+    await upsertUserRole(this.prisma, {
+      profileId: profile.id,
       role,
       grantedBy: performedBy ?? null,
     });
 
-    return finalProfile;
+    if (dto.password && this.local.isEnabled()) {
+      await this.local.setPassword(profile.id, dto.password, {
+        mustChangePassword: true,
+        performedBy,
+      });
+    }
+
+    return profile;
   }
 
   /**
-   * Update collaborator data.
-   *
-   * Atributos del PERSONA (nombre, posición, departamento) siempre editables.
-   * El rol se gestiona en user_roles del módulo capacitación: si se pasa un
-   * rol nuevo, se revocan los demás de personnel en cap. y se asigna el nuevo.
+   * Update collaborator data. Atributos de la persona siempre editables.
+   * Si se pasa rol nuevo, se revocan los demás de personnel en capacitación
+   * y se asigna el nuevo.
    */
   async update(id: string, dto: UpdatePersonnelDto, performedBy?: string) {
     const existing = await this.findOne(id);
@@ -309,34 +260,38 @@ export class PersonnelService {
       throw new BadRequestException('Rol no permitido en este módulo');
     }
 
-    // Atributos del usuario (sin role — el rol va en user_roles)
     const updatePayload: Record<string, unknown> = {};
     if (dto.full_name !== undefined) updatePayload.full_name = dto.full_name;
     if (dto.position !== undefined) updatePayload.position = dto.position;
-    if (dto.department_id !== undefined) updatePayload.department_id = dto.department_id;
+    if (dto.department_id !== undefined)
+      updatePayload.department_id = dto.department_id;
 
     if (Object.keys(updatePayload).length > 0) {
-      const { error } = await this.supabase.db
-        .from('profiles')
-        .update(updatePayload)
-        .eq('id', id);
-      if (error) throw new BadRequestException('Error al actualizar: ' + error.message);
+      try {
+        await this.prisma.profiles.update({
+          where: { id },
+          data: updatePayload,
+        });
+      } catch (err: unknown) {
+        const msg = (err as { message?: string })?.message ?? 'unknown';
+        throw new BadRequestException('Error al actualizar: ' + msg);
+      }
     }
 
-    // Cambio de rol: revocar otros roles de personnel en módulo capacitación
-    // y asignar el nuevo. Roles en otros módulos no se ven afectados.
     if (dto.role && dto.role !== existing.role) {
-      const { data: existingCapRoles } = await this.supabase.db
-        .from('user_roles')
-        .select('role')
-        .eq('profile_id', id)
-        .eq('module', 'capacitacion')
-        .in('role', PERSONNEL_ROLES_FILTER)
-        .eq('is_active', true);
+      const existingCapRoles = await this.prisma.user_roles.findMany({
+        where: {
+          profile_id: id,
+          module: 'capacitacion',
+          role: { in: PERSONNEL_ROLES_FILTER as never[] },
+          is_active: true,
+        },
+        select: { role: true },
+      });
 
-      for (const r of existingCapRoles ?? []) {
+      for (const r of existingCapRoles) {
         if (r.role !== dto.role) {
-          await revokeUserRole(this.supabase.db, {
+          await revokeUserRole(this.prisma, {
             profileId: id,
             role: r.role,
             revokedBy: performedBy ?? null,
@@ -344,7 +299,7 @@ export class PersonnelService {
         }
       }
 
-      await upsertUserRole(this.supabase.db, {
+      await upsertUserRole(this.prisma, {
         profileId: id,
         role: dto.role,
         grantedBy: performedBy ?? null,
@@ -355,25 +310,22 @@ export class PersonnelService {
   }
 
   /**
-   * "Dar de baja" desde /personal:
-   *   Revoca TODOS los roles de personnel del usuario en módulo capacitación.
-   *   La cuenta global (profiles.is_active) NO se toca — si el usuario tiene
-   *   roles en otros módulos, ahí sigue funcionando.
-   *
-   *   Para desactivar globalmente al usuario (cerrar la cuenta), usar
-   *   /admin/users (super_admin).
+   * "Dar de baja" — revoca TODOS los roles de personnel en capacitación.
+   * La cuenta global (profiles.is_active) NO se toca.
    */
   async deactivate(id: string, performedBy?: string) {
-    const { data: roles } = await this.supabase.db
-      .from('user_roles')
-      .select('role')
-      .eq('profile_id', id)
-      .eq('module', 'capacitacion')
-      .in('role', PERSONNEL_ROLES_FILTER)
-      .eq('is_active', true);
+    const roles = await this.prisma.user_roles.findMany({
+      where: {
+        profile_id: id,
+        module: 'capacitacion',
+        role: { in: PERSONNEL_ROLES_FILTER as never[] },
+        is_active: true,
+      },
+      select: { role: true },
+    });
 
-    for (const r of roles ?? []) {
-      await revokeUserRole(this.supabase.db, {
+    for (const r of roles) {
+      await revokeUserRole(this.prisma, {
         profileId: id,
         role: r.role,
         revokedBy: performedBy ?? null,
@@ -384,20 +336,22 @@ export class PersonnelService {
   }
 
   /**
-   * Reactivar: vuelve a activar los user_roles previamente revocados del
-   * usuario en módulo capacitación. Si nunca tuvo roles, no hace nada.
+   * Reactivar — vuelve a activar los user_roles previamente revocados del
+   * usuario en módulo capacitación.
    */
   async reactivate(id: string, performedBy?: string) {
-    const { data: roles } = await this.supabase.db
-      .from('user_roles')
-      .select('role')
-      .eq('profile_id', id)
-      .eq('module', 'capacitacion')
-      .in('role', PERSONNEL_ROLES_FILTER)
-      .eq('is_active', false);
+    const roles = await this.prisma.user_roles.findMany({
+      where: {
+        profile_id: id,
+        module: 'capacitacion',
+        role: { in: PERSONNEL_ROLES_FILTER as never[] },
+        is_active: false,
+      },
+      select: { role: true },
+    });
 
-    for (const r of roles ?? []) {
-      await upsertUserRole(this.supabase.db, {
+    for (const r of roles) {
+      await upsertUserRole(this.prisma, {
         profileId: id,
         role: r.role,
         grantedBy: performedBy ?? null,
@@ -407,11 +361,6 @@ export class PersonnelService {
     return this.findOne(id);
   }
 
-  /**
-   * Stats de personal de capacitación. Reutiliza findAll() para que el conteo
-   * incluya tanto a los usuarios con rol primario de personnel como a los
-   * "compartidos" (con rol secundario en módulo capacitación).
-   */
   async getStats() {
     const all = await this.findAll();
 
@@ -429,7 +378,8 @@ export class PersonnelService {
     const byDepartment: Record<string, number> = {};
     for (const p of all) {
       if (p.department_id && p.is_active) {
-        byDepartment[p.department_id] = (byDepartment[p.department_id] || 0) + 1;
+        byDepartment[p.department_id] =
+          (byDepartment[p.department_id] || 0) + 1;
       }
     }
 

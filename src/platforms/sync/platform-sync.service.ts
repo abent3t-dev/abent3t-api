@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { SupabaseService } from '../../supabase/supabase.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { CrehanaClient, CrehanaMapper } from '../clients/crehana';
 import { SyncType } from '../dto/sync-options.dto';
 import * as crypto from 'crypto';
@@ -23,7 +23,7 @@ export class PlatformSyncService {
     process.env.PLATFORM_ENCRYPTION_KEY || 'default-key-change-in-production-32';
 
   constructor(
-    private readonly supabase: SupabaseService,
+    private readonly prisma: PrismaService,
     private readonly crehanaClient: CrehanaClient,
   ) {}
 
@@ -35,11 +35,9 @@ export class PlatformSyncService {
   async scheduledSync(): Promise<void> {
     this.logger.log('Starting scheduled platform sync...');
 
-    const { data: integrations } = await this.supabase.db
-      .from('platform_integrations')
-      .select('*')
-      .eq('is_active', true)
-      .eq('sync_enabled', true);
+    const integrations = await this.prisma.platform_integrations.findMany({
+      where: { is_active: true, sync_enabled: true },
+    });
 
     if (!integrations || integrations.length === 0) {
       this.logger.log('No integrations with sync enabled');
@@ -70,6 +68,7 @@ export class PlatformSyncService {
   /**
    * Sincronizar una integración específica.
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async syncIntegration(integration: any, syncType: SyncType): Promise<SyncResult> {
     const result: SyncResult = {
       success: true,
@@ -108,6 +107,7 @@ export class PlatformSyncService {
   // =====================================================
 
   private async syncCrehana(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     integration: any,
     syncType: SyncType,
     result: SyncResult,
@@ -158,10 +158,10 @@ export class PlatformSyncService {
    */
   private async syncCrehanaUsers(integrationId: string, result: SyncResult): Promise<void> {
     // Pre-cargar el mapa de profiles por email (case-insensitive).
-    const { data: profiles } = await this.supabase.db
-      .from('profiles')
-      .select('id, email')
-      .eq('is_active', true);
+    const profiles = await this.prisma.profiles.findMany({
+      where: { is_active: true },
+      select: { id: true, email: true },
+    });
 
     const profileByEmail = new Map<string, string>();
     for (const p of profiles ?? []) {
@@ -174,16 +174,26 @@ export class PlatformSyncService {
           ? profileByEmail.get(user.user.email.toLowerCase()) ?? null
           : null;
 
-        const mapping = CrehanaMapper.userMapping(user, integrationId, matchedProfileId);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mapping = CrehanaMapper.userMapping(user, integrationId, matchedProfileId) as any;
 
-        const { error } = await this.supabase.db
-          .from('platform_user_mappings')
-          .upsert(mapping, { onConflict: 'platform_integration_id,external_user_id' });
-
-        if (error) {
-          result.errors.push(`Error guardando usuario ${user.user.email}: ${error.message}`);
-        } else {
+        try {
+          await this.prisma.platform_user_mappings.upsert({
+            where: {
+              platform_integration_id_external_user_id: {
+                platform_integration_id: mapping.platform_integration_id,
+                external_user_id: mapping.external_user_id,
+              },
+            },
+            create: mapping,
+            update: mapping,
+          });
           result.users_synced++;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (upsertError: any) {
+          result.errors.push(
+            `Error guardando usuario ${user.user.email}: ${upsertError?.message ?? 'desconocido'}`,
+          );
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'desconocido';
@@ -208,10 +218,10 @@ export class PlatformSyncService {
     result: SyncResult,
   ): Promise<void> {
     // Pre-cargar profiles por email (para resolver profile_id en cada fila)
-    const { data: profiles } = await this.supabase.db
-      .from('profiles')
-      .select('id, email')
-      .eq('is_active', true);
+    const profiles = await this.prisma.profiles.findMany({
+      where: { is_active: true },
+      select: { id: true, email: true },
+    });
 
     const profileByEmail = new Map<string, string>();
     for (const p of profiles ?? []) {
@@ -226,26 +236,37 @@ export class PlatformSyncService {
         // 1) Asegurar curso (upsert + recuperar id interno)
         let platformCourseId: string | undefined = courseCache.get(row.course_id);
         if (!platformCourseId) {
-          const courseData = CrehanaMapper.courseFromReportRow(row, integrationId);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const courseData = CrehanaMapper.courseFromReportRow(row, integrationId) as any;
 
-          const { data: upserted, error: courseError } = await this.supabase.db
-            .from('platform_courses')
-            .upsert(courseData, {
-              onConflict: 'platform_integration_id,external_course_id',
-            })
-            .select('id')
-            .single();
+          try {
+            const upserted = await this.prisma.platform_courses.upsert({
+              where: {
+                platform_integration_id_external_course_id: {
+                  platform_integration_id: courseData.platform_integration_id,
+                  external_course_id: courseData.external_course_id,
+                },
+              },
+              create: courseData,
+              update: courseData,
+              select: { id: true },
+            });
 
-          if (courseError || !upserted?.id) {
+            if (!upserted?.id) {
+              result.errors.push(`Error guardando curso ${row.course_name}: sin id`);
+              continue;
+            }
+
+            platformCourseId = upserted.id as string;
+            courseCache.set(row.course_id, platformCourseId);
+            result.courses_synced++;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } catch (courseError: any) {
             result.errors.push(
               `Error guardando curso ${row.course_name}: ${courseError?.message ?? 'sin id'}`,
             );
             continue;
           }
-
-          platformCourseId = upserted.id as string;
-          courseCache.set(row.course_id, platformCourseId);
-          result.courses_synced++;
         }
 
         // 2) Resolver profile_id por email
@@ -254,24 +275,31 @@ export class PlatformSyncService {
           : null;
 
         // 3) Upsert de enrollment
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const enrollment = CrehanaMapper.enrollmentFromReportRow(
           row,
           platformCourseId,
           profileId,
-        );
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ) as any;
 
-        const { error: enrollError } = await this.supabase.db
-          .from('platform_enrollments')
-          .upsert(enrollment, {
-            onConflict: 'platform_course_id,external_user_id',
+        try {
+          await this.prisma.platform_enrollments.upsert({
+            where: {
+              platform_course_id_external_user_id: {
+                platform_course_id: enrollment.platform_course_id,
+                external_user_id: enrollment.external_user_id,
+              },
+            },
+            create: enrollment,
+            update: enrollment,
           });
-
-        if (enrollError) {
-          result.errors.push(
-            `Error guardando inscripción ${row.user_email}/${row.course_name}: ${enrollError.message}`,
-          );
-        } else {
           result.enrollments_synced++;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } catch (enrollError: any) {
+          result.errors.push(
+            `Error guardando inscripción ${row.user_email}/${row.course_name}: ${enrollError?.message ?? 'desconocido'}`,
+          );
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : 'desconocido';

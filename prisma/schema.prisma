@@ -1,0 +1,1121 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = []
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model accounting_okrs {
+  id                    String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  titulo                String            @db.VarChar(255)
+  descripcion           String?
+  periodo               String            @db.VarChar(20)
+  tipo                  okr_type
+  parent_okr_id         String?           @db.Uuid
+  target_value          Decimal?          @db.Decimal(18, 2)
+  current_value         Decimal?          @default(0) @db.Decimal(18, 2)
+  unit                  String?           @db.VarChar(50)
+  status                okr_status?       @default(on_track)
+  due_date              DateTime?         @db.Date
+  created_by            String?           @db.Uuid
+  is_active             Boolean?          @default(true)
+  created_at            DateTime?         @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime?         @default(now()) @updatedAt @db.Timestamptz(6)
+  profiles              profiles?         @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  accounting_okrs       accounting_okrs?  @relation("accounting_okrsToaccounting_okrs", fields: [parent_okr_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_accounting_okrs accounting_okrs[] @relation("accounting_okrsToaccounting_okrs")
+
+  @@index([parent_okr_id], map: "idx_accounting_okrs_parent")
+  @@index([periodo], map: "idx_accounting_okrs_periodo")
+  @@index([status], map: "idx_accounting_okrs_status")
+  @@index([tipo], map: "idx_accounting_okrs_tipo")
+}
+
+model approval_workflows {
+  id             String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requisition_id String                    @unique @db.Uuid
+  current_level  Int?                      @default(1)
+  status         approval_workflow_status? @default(pendiente)
+  started_at     DateTime?                 @default(now()) @db.Timestamptz(6)
+  completed_at   DateTime?                 @db.Timestamptz(6)
+  is_active      Boolean?                  @default(true)
+  created_at     DateTime?                 @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime?                 @default(now()) @updatedAt @db.Timestamptz(6)
+  requisitions   requisitions              @relation(fields: [requisition_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  approvals      approvals[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model approvals {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  workflow_id        String             @db.Uuid
+  level              Int
+  approver_id        String             @db.Uuid
+  status             approval_status?   @default(pendiente)
+  comments           String?
+  approved_at        DateTime?          @db.Timestamptz(6)
+  rejected_at        DateTime?          @db.Timestamptz(6)
+  rejection_reason   String?
+  time_to_approve    Int?
+  notified_at        DateTime?          @db.Timestamptz(6)
+  is_active          Boolean?           @default(true)
+  created_at         DateTime?          @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime?          @default(now()) @updatedAt @db.Timestamptz(6)
+  profiles           profiles           @relation(fields: [approver_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approval_workflows approval_workflows @relation(fields: [workflow_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([workflow_id, level], map: "approvals_workflow_level_key")
+  @@index([workflow_id], map: "idx_approvals_workflow")
+}
+
+model audit_logs {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  action      audit_action
+  entity_type audit_entity
+  entity_id   String       @db.Uuid
+  entity_name String?      @db.VarChar(255)
+  user_id     String       @db.Uuid
+  user_name   String?      @db.VarChar(255)
+  user_role   String?      @db.VarChar(50)
+  old_values  Json?
+  new_values  Json?
+  description String?
+  ip_address  String?      @db.VarChar(45)
+  user_agent  String?
+  created_at  DateTime?    @default(now()) @db.Timestamp(6)
+  profiles    profiles     @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([action], map: "idx_audit_logs_action")
+  @@index([created_at(sort: Desc)], map: "idx_audit_logs_created_at")
+  @@index([entity_type, entity_id], map: "idx_audit_logs_entity")
+  @@index([user_id], map: "idx_audit_logs_user_id")
+}
+
+model budgets {
+  id              String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  department_id   String      @db.Uuid
+  period_id       String      @db.Uuid
+  assigned_amount Decimal     @default(0) @db.Decimal
+  consumed_amount Decimal     @default(0) @db.Decimal
+  is_active       Boolean     @default(true)
+  created_at      DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime    @default(now()) @updatedAt @db.Timestamptz(6)
+  departments     departments @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  periods         periods     @relation(fields: [period_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([department_id], map: "idx_budgets_department_id")
+  @@index([period_id], map: "idx_budgets_period_id")
+}
+
+model cfdis {
+  id                     String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  uuid                   String    @unique @db.VarChar(36)
+  tipo                   cfdi_type
+  rfc_emisor             String    @db.VarChar(13)
+  nombre_emisor          String?   @db.VarChar(250)
+  rfc_receptor           String    @db.VarChar(13)
+  nombre_receptor        String?   @db.VarChar(250)
+  fecha_emision          DateTime  @db.Timestamptz(6)
+  fecha_certificacion    DateTime? @db.Timestamptz(6)
+  subtotal               Decimal?  @default(0) @db.Decimal(18, 2)
+  descuento              Decimal?  @default(0) @db.Decimal(18, 2)
+  total                  Decimal   @db.Decimal(18, 2)
+  moneda                 String?   @default("MXN") @db.VarChar(3)
+  tipo_cambio            Decimal?  @default(1) @db.Decimal(18, 6)
+  forma_pago             String?   @db.VarChar(50)
+  metodo_pago            String?   @db.VarChar(10)
+  uso_cfdi               String?   @db.VarChar(10)
+  version_complementaria Boolean?  @default(false)
+  uuid_relacionado       String?   @db.VarChar(36)
+  xml_content            String?
+  status                 String?   @default("vigente") @db.VarChar(50)
+  downloaded_at          DateTime? @default(now()) @db.Timestamptz(6)
+  is_active              Boolean?  @default(true)
+  created_at             DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@index([fecha_emision], map: "idx_cfdis_fecha_emision")
+  @@index([rfc_emisor], map: "idx_cfdis_rfc_emisor")
+  @@index([rfc_receptor], map: "idx_cfdis_rfc_receptor")
+  @@index([tipo], map: "idx_cfdis_tipo")
+  @@index([uuid], map: "idx_cfdis_uuid")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model course_editions {
+  id                              String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  course_id                       String               @db.Uuid
+  start_date                      DateTime             @db.Date
+  end_date                        DateTime?            @db.Date
+  location                        String?              @db.VarChar(255)
+  instructor                      String?              @db.VarChar(255)
+  max_participants                Int?
+  is_active                       Boolean              @default(true)
+  created_at                      DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at                      DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  prorate_cost                    Boolean?             @default(false)
+  require_evidence_for_completion Boolean?             @default(true)
+  cost_override                   Decimal?             @db.Decimal
+  payment_status                  String?              @default("pending")
+  payment_reference               String?              @db.VarChar(255)
+  payment_date                    DateTime?            @db.Date
+  courses                         courses              @relation(fields: [course_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  course_enrollments              course_enrollments[]
+  course_proposals                course_proposals[]
+  training_requests               training_requests[]
+
+  @@index([course_id], map: "idx_course_editions_course")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model course_enrollments {
+  id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  course_edition_id    String                 @db.Uuid
+  profile_id           String                 @db.Uuid
+  status               String                 @default("inscrito")
+  enrolled_at          DateTime               @default(now()) @db.Timestamptz(6)
+  completed_at         DateTime?              @db.Timestamptz(6)
+  notes                String?
+  is_active            Boolean                @default(true)
+  created_at           DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime               @default(now()) @updatedAt @db.Timestamptz(6)
+  course_editions      course_editions        @relation(fields: [course_edition_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "course_enrollments_edition_fkey")
+  profiles             profiles               @relation(fields: [profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "course_enrollments_profile_fkey")
+  course_proposals     course_proposals[]
+  enrollment_evidences enrollment_evidences[]
+  training_requests    training_requests[]
+
+  @@unique([course_edition_id, profile_id], map: "course_enrollments_unique")
+  @@index([course_edition_id], map: "idx_enrollments_edition")
+  @@index([profile_id], map: "idx_enrollments_profile")
+  @@index([status], map: "idx_enrollments_status")
+}
+
+model course_proposals {
+  id                                              String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  proposed_by                                     String                 @db.Uuid
+  profile_id                                      String                 @db.Uuid
+  course_name                                     String                 @db.VarChar(255)
+  institution_name                                String?                @db.VarChar(255)
+  course_url                                      String?
+  estimated_cost                                  Decimal?               @default(0) @db.Decimal
+  estimated_hours                                 Int?                   @default(0)
+  modality                                        String?                @db.VarChar(50)
+  start_date                                      DateTime?              @db.Date
+  end_date                                        DateTime?              @db.Date
+  justification                                   String?
+  status                                          proposal_status?       @default(pendiente)
+  reviewed_by                                     String?                @db.Uuid
+  reviewed_at                                     DateTime?              @db.Timestamp(6)
+  review_notes                                    String?
+  rejection_reason                                String?
+  course_id                                       String?                @db.Uuid
+  course_edition_id                               String?                @db.Uuid
+  enrollment_id                                   String?                @db.Uuid
+  is_active                                       Boolean?               @default(true)
+  created_at                                      DateTime?              @default(now()) @db.Timestamp(6)
+  updated_at                                      DateTime?              @default(now()) @updatedAt @db.Timestamp(6)
+  course_editions                                 course_editions?       @relation(fields: [course_edition_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  courses                                         courses?               @relation(fields: [course_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  course_enrollments                              course_enrollments?    @relation(fields: [enrollment_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_course_proposals_profile_idToprofiles  profiles               @relation("course_proposals_profile_idToprofiles", fields: [profile_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_course_proposals_proposed_byToprofiles profiles               @relation("course_proposals_proposed_byToprofiles", fields: [proposed_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_course_proposals_reviewed_byToprofiles profiles?              @relation("course_proposals_reviewed_byToprofiles", fields: [reviewed_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  proposal_attachments                            proposal_attachments[]
+}
+
+model course_types {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String             @unique @db.VarChar(100)
+  key              String             @unique @db.VarChar(50)
+  description      String?
+  is_active        Boolean            @default(true)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  courses          courses[]
+  platform_courses platform_courses[]
+}
+
+model courses {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String             @db.VarChar(255)
+  institution_id   String?            @db.Uuid
+  course_type_id   String?            @db.Uuid
+  modality_id      String?            @db.Uuid
+  total_hours      Int                @default(0)
+  cost             Decimal            @default(0) @db.Decimal(12, 2)
+  description      String?
+  is_active        Boolean            @default(true)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime           @default(now()) @updatedAt @db.Timestamptz(6)
+  course_editions  course_editions[]
+  course_proposals course_proposals[]
+  course_types     course_types?      @relation(fields: [course_type_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  institutions     institutions?      @relation(fields: [institution_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  modalities       modalities?        @relation(fields: [modality_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([institution_id], map: "idx_courses_institution")
+  @@index([modality_id], map: "idx_courses_modality")
+  @@index([course_type_id], map: "idx_courses_type")
+}
+
+model departments {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String            @unique @db.VarChar(255)
+  is_active       Boolean           @default(true)
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime          @default(now()) @updatedAt @db.Timestamptz(6)
+  budgets         budgets[]
+  non_deductibles non_deductibles[]
+  profiles        profiles[]
+  requisitions    requisitions[]
+}
+
+model enrollment_evidences {
+  id                                                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  enrollment_id                                       String              @db.Uuid
+  file_name                                           String              @db.VarChar(255)
+  file_path                                           String
+  file_size                                           Int
+  file_type                                           String              @db.VarChar(100)
+  evidence_type                                       evidence_type       @default(certificate)
+  uploaded_by                                         String              @db.Uuid
+  uploaded_at                                         DateTime?           @default(now()) @db.Timestamptz(6)
+  verification_status                                 verification_status @default(pending)
+  verified_by                                         String?             @db.Uuid
+  verified_at                                         DateTime?           @db.Timestamptz(6)
+  rejection_reason                                    String?
+  notes                                               String?
+  is_active                                           Boolean?            @default(true)
+  created_at                                          DateTime?           @default(now()) @db.Timestamptz(6)
+  updated_at                                          DateTime?           @default(now()) @updatedAt @db.Timestamptz(6)
+  course_enrollments                                  course_enrollments  @relation(fields: [enrollment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  profiles_enrollment_evidences_uploaded_byToprofiles profiles            @relation("enrollment_evidences_uploaded_byToprofiles", fields: [uploaded_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_enrollment_evidences_verified_byToprofiles profiles?           @relation("enrollment_evidences_verified_byToprofiles", fields: [verified_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([enrollment_id], map: "idx_evidences_enrollment")
+  @@index([uploaded_by], map: "idx_evidences_uploaded_by")
+}
+
+model fiscal_loss_amortizations {
+  id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fiscal_loss_id       String            @db.Uuid
+  ejercicio_aplicacion Int
+  monto_amortizado     Decimal           @db.Decimal(18, 2)
+  declaracion_id       String?           @db.Uuid
+  notes                String?
+  created_by           String?           @db.Uuid
+  is_active            Boolean?          @default(true)
+  created_at           DateTime?         @default(now()) @db.Timestamptz(6)
+  profiles             profiles?         @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sat_declarations     sat_declarations? @relation(fields: [declaracion_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fiscal_losses        fiscal_losses     @relation(fields: [fiscal_loss_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([ejercicio_aplicacion], map: "idx_fiscal_loss_amortizations_ejercicio")
+  @@index([fiscal_loss_id], map: "idx_fiscal_loss_amortizations_fiscal_loss")
+}
+
+model fiscal_losses {
+  id                        String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ejercicio                 Int
+  fecha_declaracion         DateTime                    @db.Date
+  fecha_vencimiento         DateTime                    @db.Date
+  monto_original            Decimal                     @db.Decimal(18, 2)
+  factor_actualizacion      Decimal?                    @default(1) @db.Decimal(10, 6)
+  monto_actualizado         Decimal                     @db.Decimal(18, 2)
+  amortizado                Decimal?                    @default(0) @db.Decimal(18, 2)
+  saldo_pendiente           Decimal                     @db.Decimal(18, 2)
+  status                    fiscal_loss_status?         @default(vigente)
+  notes                     String?
+  created_by                String?                     @db.Uuid
+  is_active                 Boolean?                    @default(true)
+  created_at                DateTime?                   @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime?                   @default(now()) @updatedAt @db.Timestamptz(6)
+  fiscal_loss_amortizations fiscal_loss_amortizations[]
+  profiles                  profiles?                   @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([ejercicio], map: "idx_fiscal_losses_ejercicio")
+  @@index([fecha_vencimiento], map: "idx_fiscal_losses_fecha_vencimiento")
+  @@index([status], map: "idx_fiscal_losses_status")
+}
+
+model holidays {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  holiday_date DateTime  @unique @db.Date
+  description  String    @db.VarChar(255)
+  is_active    Boolean?  @default(true)
+  created_at   DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime? @default(now()) @updatedAt @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model inpc_factors {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  year       Int
+  month      Int
+  factor     Decimal   @db.Decimal(10, 6)
+  is_active  Boolean?  @default(true)
+  created_at DateTime? @default(now()) @db.Timestamptz(6)
+
+  @@unique([year, month])
+  @@index([year, month], map: "idx_inpc_factors_year_month")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model institutions {
+  id                    String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                  String                 @unique @db.VarChar(255)
+  type                  String                 @default("external") @db.VarChar(20)
+  is_platform           Boolean                @default(false)
+  annual_cost           Decimal?               @default(0) @db.Decimal(12, 2)
+  platform_url          String?                @db.VarChar(500)
+  is_active             Boolean                @default(true)
+  created_at            DateTime               @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime               @default(now()) @updatedAt @db.Timestamptz(6)
+  courses               courses[]
+  platform_integrations platform_integrations?
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model local_credentials {
+  profile_id           String    @id @db.Uuid
+  password_hash        String
+  password_set_at      DateTime  @default(now()) @db.Timestamptz(6)
+  last_login_at        DateTime? @db.Timestamptz(6)
+  failed_attempts      Int       @default(0)
+  locked_until         DateTime? @db.Timestamptz(6)
+  must_change_password Boolean   @default(false)
+  is_active            Boolean   @default(true)
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  profiles             profiles  @relation(fields: [profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model modalities {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String             @unique @db.VarChar(100)
+  key              String             @unique @db.VarChar(50)
+  description      String?
+  is_active        Boolean            @default(true)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  courses          courses[]
+  platform_courses platform_courses[]
+}
+
+model non_deductibles {
+  id            String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  periodo       String       @db.VarChar(7)
+  concepto      String       @db.VarChar(255)
+  monto         Decimal      @db.Decimal(18, 2)
+  department_id String?      @db.Uuid
+  cfdi_uuid     String?      @db.VarChar(36)
+  notes         String?
+  created_by    String?      @db.Uuid
+  is_active     Boolean?     @default(true)
+  created_at    DateTime?    @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime?    @default(now()) @updatedAt @db.Timestamptz(6)
+  profiles      profiles?    @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  departments   departments? @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([department_id], map: "idx_non_deductibles_department")
+  @@index([periodo], map: "idx_non_deductibles_periodo")
+}
+
+model payment_complement_reconciliation {
+  id                String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  periodo           String                        @db.VarChar(7)
+  sap_payment_id    String?                       @db.VarChar(100)
+  cfdi_uuid         String?                       @db.VarChar(36)
+  rfc_proveedor     String?                       @db.VarChar(13)
+  proveedor_nombre  String?                       @db.VarChar(255)
+  monto_sap         Decimal?                      @db.Decimal(18, 2)
+  monto_sat         Decimal?                      @db.Decimal(18, 2)
+  difference_amount Decimal?                      @default(0) @db.Decimal(18, 2)
+  status            payment_reconciliation_status
+  reviewed_by       String?                       @db.Uuid
+  reviewed_at       DateTime?                     @db.Timestamptz(6)
+  notes             String?
+  is_active         Boolean?                      @default(true)
+  created_at        DateTime?                     @default(now()) @db.Timestamptz(6)
+  profiles          profiles?                     @relation(fields: [reviewed_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([periodo], map: "idx_payment_reconciliation_periodo")
+  @@index([status], map: "idx_payment_reconciliation_status")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model periods {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  year       Int
+  semester   Int?
+  label      String    @db.VarChar(50)
+  start_date DateTime  @db.Date
+  end_date   DateTime  @db.Date
+  is_active  Boolean   @default(true)
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  budgets    budgets[]
+
+  @@unique([year, semester])
+}
+
+model platform_courses {
+  id                      String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  platform_integration_id String                 @db.Uuid
+  external_course_id      String                 @db.VarChar(255)
+  external_track_id       String?                @db.VarChar(255)
+  name                    String                 @db.VarChar(500)
+  description             String?
+  instructor              String?                @db.VarChar(255)
+  language                String?                @default("es") @db.VarChar(10)
+  total_hours             Decimal?               @default(0) @db.Decimal
+  total_modules           Int?                   @default(0)
+  total_lessons           Int?                   @default(0)
+  course_type_id          String?                @db.Uuid
+  modality_id             String?                @db.Uuid
+  course_url              String?
+  thumbnail_url           String?
+  is_active               Boolean?               @default(true)
+  last_synced_at          DateTime?              @default(now()) @db.Timestamptz(6)
+  created_at              DateTime?              @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime?              @default(now()) @updatedAt @db.Timestamptz(6)
+  course_types            course_types?          @relation(fields: [course_type_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  modalities              modalities?            @relation(fields: [modality_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  platform_integrations   platform_integrations  @relation(fields: [platform_integration_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  platform_enrollments    platform_enrollments[]
+
+  @@unique([platform_integration_id, external_course_id], map: "platform_courses_external_unique")
+  @@index([external_course_id], map: "idx_platform_courses_external")
+  @@index([platform_integration_id], map: "idx_platform_courses_integration")
+  @@index([name], map: "idx_platform_courses_name")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model platform_enrollments {
+  id                     String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  platform_course_id     String                      @db.Uuid
+  profile_id             String?                     @db.Uuid
+  external_enrollment_id String?                     @db.VarChar(255)
+  external_user_id       String                      @db.VarChar(255)
+  external_user_email    String?                     @db.VarChar(255)
+  progress_percentage    Decimal?                    @default(0) @db.Decimal
+  status                 platform_enrollment_status? @default(not_started)
+  enrolled_at            DateTime?                   @db.Timestamptz(6)
+  started_at             DateTime?                   @db.Timestamptz(6)
+  completed_at           DateTime?                   @db.Timestamptz(6)
+  last_activity_at       DateTime?                   @db.Timestamptz(6)
+  hours_completed        Decimal?                    @default(0) @db.Decimal
+  modules_completed      Int?                        @default(0)
+  lessons_completed      Int?                        @default(0)
+  certificate_url        String?
+  certificate_issued_at  DateTime?                   @db.Timestamptz(6)
+  last_synced_at         DateTime?                   @default(now()) @db.Timestamptz(6)
+  sync_error             String?
+  is_active              Boolean?                    @default(true)
+  created_at             DateTime?                   @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime?                   @default(now()) @updatedAt @db.Timestamptz(6)
+  platform_courses       platform_courses            @relation(fields: [platform_course_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles               profiles?                   @relation(fields: [profile_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([platform_course_id, external_user_id], map: "platform_enrollments_external_unique")
+  @@index([platform_course_id], map: "idx_platform_enrollments_course")
+  @@index([external_user_email], map: "idx_platform_enrollments_email")
+  @@index([profile_id], map: "idx_platform_enrollments_profile")
+  @@index([progress_percentage], map: "idx_platform_enrollments_progress")
+  @@index([status], map: "idx_platform_enrollments_status")
+}
+
+model platform_integrations {
+  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institution_id         String                   @unique @db.Uuid
+  platform_type          platform_type            @default(crehana)
+  api_url                String?                  @db.VarChar(500)
+  public_key             String?                  @db.VarChar(500)
+  private_key_encrypted  String?
+  sync_enabled           Boolean?                 @default(true)
+  sync_frequency_hours   Int?                     @default(24)
+  last_sync_at           DateTime?                @db.Timestamptz(6)
+  last_sync_status       sync_status?             @default(pending)
+  last_sync_error        String?
+  sso_enabled            Boolean?                 @default(false)
+  sso_type               String?                  @db.VarChar(50)
+  sso_config             Json?
+  configured_by          String?                  @db.Uuid
+  is_active              Boolean?                 @default(true)
+  created_at             DateTime?                @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime?                @default(now()) @updatedAt @db.Timestamptz(6)
+  organization_slug      String?                  @db.VarChar(255)
+  platform_courses       platform_courses[]
+  profiles               profiles?                @relation(fields: [configured_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  institutions           institutions             @relation(fields: [institution_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  platform_sync_logs     platform_sync_logs[]
+  platform_user_mappings platform_user_mappings[]
+
+  @@index([platform_type], map: "idx_platform_integrations_type")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model platform_sync_logs {
+  id                      String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  platform_integration_id String                @db.Uuid
+  sync_type               String                @db.VarChar(50)
+  status                  sync_status
+  started_at              DateTime              @default(now()) @db.Timestamptz(6)
+  completed_at            DateTime?             @db.Timestamptz(6)
+  courses_synced          Int?                  @default(0)
+  enrollments_synced      Int?                  @default(0)
+  users_synced            Int?                  @default(0)
+  errors_count            Int?                  @default(0)
+  error_details           Json?
+  sync_summary            Json?
+  triggered_by            String?               @db.Uuid
+  created_at              DateTime?             @default(now()) @db.Timestamptz(6)
+  platform_integrations   platform_integrations @relation(fields: [platform_integration_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles                profiles?             @relation(fields: [triggered_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([created_at(sort: Desc)], map: "idx_platform_sync_logs_created")
+  @@index([platform_integration_id], map: "idx_platform_sync_logs_integration")
+}
+
+model platform_user_mappings {
+  id                      String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  platform_integration_id String                @db.Uuid
+  profile_id              String?               @db.Uuid
+  external_user_id        String                @db.VarChar(255)
+  external_email          String?               @db.VarChar(255)
+  external_username       String?               @db.VarChar(255)
+  is_active               Boolean?              @default(true)
+  last_synced_at          DateTime?             @default(now()) @db.Timestamptz(6)
+  created_at              DateTime?             @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime?             @default(now()) @updatedAt @db.Timestamptz(6)
+  platform_integrations   platform_integrations @relation(fields: [platform_integration_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles                profiles?             @relation(fields: [profile_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([platform_integration_id, external_user_id], map: "platform_user_mappings_external_unique")
+  @@index([external_user_id], map: "idx_platform_user_mappings_external")
+  @@index([profile_id], map: "idx_platform_user_mappings_profile")
+}
+
+model profiles {
+  id                                                              String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  full_name                                                       String?                             @db.VarChar(255)
+  email                                                           String                              @unique @db.VarChar(255)
+  department_id                                                   String?                             @db.Uuid
+  role                                                            user_role                           @default(collaborator)
+  position                                                        String?                             @db.VarChar(255)
+  pending_first_login                                             Boolean                             @default(true)
+  is_active                                                       Boolean                             @default(true)
+  deactivated_at                                                  DateTime?                           @db.Timestamptz(6)
+  created_at                                                      DateTime                            @default(now()) @db.Timestamptz(6)
+  updated_at                                                      DateTime                            @default(now()) @updatedAt @db.Timestamptz(6)
+  accounting_okrs                                                 accounting_okrs[]
+  approvals                                                       approvals[]
+  audit_logs                                                      audit_logs[]
+  auth_events                                                     auth_events[]
+  course_enrollments                                              course_enrollments[]
+  course_proposals_course_proposals_profile_idToprofiles          course_proposals[]                  @relation("course_proposals_profile_idToprofiles")
+  course_proposals_course_proposals_proposed_byToprofiles         course_proposals[]                  @relation("course_proposals_proposed_byToprofiles")
+  course_proposals_course_proposals_reviewed_byToprofiles         course_proposals[]                  @relation("course_proposals_reviewed_byToprofiles")
+  enrollment_evidences_enrollment_evidences_uploaded_byToprofiles enrollment_evidences[]              @relation("enrollment_evidences_uploaded_byToprofiles")
+  enrollment_evidences_enrollment_evidences_verified_byToprofiles enrollment_evidences[]              @relation("enrollment_evidences_verified_byToprofiles")
+  fiscal_loss_amortizations                                       fiscal_loss_amortizations[]
+  fiscal_losses                                                   fiscal_losses[]
+  local_credentials                                               local_credentials?
+  non_deductibles                                                 non_deductibles[]
+  payment_complement_reconciliation                               payment_complement_reconciliation[]
+  platform_enrollments                                            platform_enrollments[]
+  platform_integrations                                           platform_integrations[]
+  platform_sync_logs                                              platform_sync_logs[]
+  platform_user_mappings                                          platform_user_mappings[]
+  departments                                                     departments?                        @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  proposal_attachments                                            proposal_attachments[]
+  purchase_orders                                                 purchase_orders[]
+  requisition_history                                             requisition_history[]
+  requisitions_requisitions_buyer_idToprofiles                    requisitions[]                      @relation("requisitions_buyer_idToprofiles")
+  requisitions_requisitions_requester_idToprofiles                requisitions[]                      @relation("requisitions_requester_idToprofiles")
+  shareholding_records                                            shareholding_records[]
+  suppliers                                                       suppliers[]
+  training_requests_training_requests_profile_idToprofiles        training_requests[]                 @relation("training_requests_profile_idToprofiles")
+  training_requests_training_requests_requested_byToprofiles      training_requests[]                 @relation("training_requests_requested_byToprofiles")
+  training_requests_training_requests_reviewed_byToprofiles       training_requests[]                 @relation("training_requests_reviewed_byToprofiles")
+  user_roles_user_roles_granted_byToprofiles                      user_roles[]                        @relation("user_roles_granted_byToprofiles")
+  user_roles_user_roles_profile_idToprofiles                      user_roles[]                        @relation("user_roles_profile_idToprofiles")
+  user_roles_user_roles_revoked_byToprofiles                      user_roles[]                        @relation("user_roles_revoked_byToprofiles")
+
+  @@index([department_id], map: "idx_profiles_department")
+  @@index([email], map: "idx_profiles_email")
+  @@index([role], map: "idx_profiles_role")
+}
+
+model proposal_attachments {
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  proposal_id      String           @db.Uuid
+  file_name        String           @db.VarChar(255)
+  file_path        String
+  file_size        Int
+  file_type        String           @db.VarChar(100)
+  uploaded_by      String           @db.Uuid
+  uploaded_at      DateTime?        @default(now()) @db.Timestamptz(6)
+  is_active        Boolean?         @default(true)
+  created_at       DateTime?        @default(now()) @db.Timestamptz(6)
+  course_proposals course_proposals @relation(fields: [proposal_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  profiles         profiles         @relation(fields: [uploaded_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([proposal_id, is_active], map: "idx_proposal_attachments_active")
+  @@index([proposal_id], map: "idx_proposal_attachments_proposal_id")
+}
+
+model purchase_orders {
+  id                     String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  po_number              String         @unique @db.VarChar(50)
+  requisition_id         String         @db.Uuid
+  supplier_id            String         @db.Uuid
+  purchase_type_id       String         @db.Uuid
+  buyer_id               String         @db.Uuid
+  amount                 Decimal        @db.Decimal(15, 2)
+  expense_type           expense_type?  @default(OPEX)
+  description            String?
+  notes                  String?
+  expected_delivery_date DateTime?      @db.Date
+  actual_delivery_date   DateTime?      @db.Date
+  status                 po_status?     @default(emitida)
+  is_active              Boolean?       @default(true)
+  created_at             DateTime?      @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime?      @default(now()) @updatedAt @db.Timestamptz(6)
+  profiles               profiles       @relation(fields: [buyer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  purchase_types         purchase_types @relation(fields: [purchase_type_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  requisitions           requisitions   @relation(fields: [requisition_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  suppliers              suppliers      @relation(fields: [supplier_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([po_number], map: "idx_purchase_orders_po_number")
+  @@index([requisition_id], map: "idx_purchase_orders_requisition")
+}
+
+model purchase_types {
+  id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name              String            @unique @db.VarChar(100)
+  key               String            @unique @db.VarChar(50)
+  requires_contract Boolean?          @default(false)
+  description       String?
+  is_active         Boolean?          @default(true)
+  created_at        DateTime?         @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime?         @default(now()) @updatedAt @db.Timestamptz(6)
+  purchase_orders   purchase_orders[]
+}
+
+model requisition_history {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requisition_id String       @db.Uuid
+  field_changed  String       @db.VarChar(100)
+  old_value      String?
+  new_value      String?
+  changed_by     String       @db.Uuid
+  changed_at     DateTime?    @default(now()) @db.Timestamptz(6)
+  profiles       profiles     @relation(fields: [changed_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  requisitions   requisitions @relation(fields: [requisition_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([changed_at], map: "idx_requisition_history_changed_at")
+  @@index([changed_by], map: "idx_requisition_history_changed_by")
+  @@index([requisition_id], map: "idx_requisition_history_requisition")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model requisitions {
+  id                                           String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  rq_number                                    String                @unique @db.VarChar(50)
+  description                                  String
+  justification                                String?
+  requester_id                                 String                @db.Uuid
+  department_id                                String?               @db.Uuid
+  buyer_id                                     String?               @db.Uuid
+  status                                       requisition_status?   @default(en_revision)
+  expense_type                                 expense_type?         @default(OPEX)
+  source                                       String?               @default("manual") @db.VarChar(20)
+  external_id                                  String?               @db.VarChar(100)
+  estimated_amount                             Decimal?              @default(0) @db.Decimal(15, 2)
+  created_date                                 DateTime              @default(dbgenerated("CURRENT_DATE")) @db.Date
+  required_date                                DateTime?             @db.Date
+  closed_date                                  DateTime?             @db.Date
+  business_days_elapsed                        Int?                  @default(0)
+  is_active                                    Boolean?              @default(true)
+  created_at                                   DateTime?             @default(now()) @db.Timestamptz(6)
+  updated_at                                   DateTime?             @default(now()) @updatedAt @db.Timestamptz(6)
+  approval_workflows                           approval_workflows?
+  purchase_orders                              purchase_orders[]
+  requisition_history                          requisition_history[]
+  profiles_requisitions_buyer_idToprofiles     profiles?             @relation("requisitions_buyer_idToprofiles", fields: [buyer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  departments                                  departments?          @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_requisitions_requester_idToprofiles profiles              @relation("requisitions_requester_idToprofiles", fields: [requester_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([rq_number], map: "idx_requisitions_rq_number")
+}
+
+model sap_connections {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  environment        String    @default("production") @db.VarChar(50)
+  base_url           String
+  company_db         String    @db.VarChar(100)
+  username           String    @db.VarChar(100)
+  encrypted_password String
+  is_active          Boolean?  @default(true)
+  last_sync_at       DateTime? @db.Timestamptz(6)
+  created_at         DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime? @default(now()) @updatedAt @db.Timestamptz(6)
+}
+
+model sat_credentials {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  rfc                  String    @unique @db.VarChar(13)
+  encrypted_ciec       String?
+  encrypted_efirma_cer String?
+  encrypted_efirma_key String?
+  efirma_password_hint String?   @db.VarChar(100)
+  is_active            Boolean?  @default(true)
+  validated_at         DateTime? @db.Timestamptz(6)
+  created_at           DateTime? @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime? @default(now()) @updatedAt @db.Timestamptz(6)
+}
+
+model sat_declarations {
+  id                        String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tipo_declaracion          String                      @db.VarChar(50)
+  ejercicio                 Int
+  periodo                   String                      @db.VarChar(20)
+  fecha_presentacion        DateTime                    @db.Timestamptz(6)
+  fecha_limite              DateTime?                   @db.Timestamptz(6)
+  acuse_url                 String?
+  monto_a_cargo             Decimal?                    @default(0) @db.Decimal(18, 2)
+  monto_a_favor             Decimal?                    @default(0) @db.Decimal(18, 2)
+  monto_pagado              Decimal?                    @default(0) @db.Decimal(18, 2)
+  status                    String?                     @default("presentada") @db.VarChar(50)
+  is_active                 Boolean?                    @default(true)
+  created_at                DateTime?                   @default(now()) @db.Timestamptz(6)
+  fiscal_loss_amortizations fiscal_loss_amortizations[]
+
+  @@index([ejercicio], map: "idx_sat_declarations_ejercicio")
+  @@index([periodo], map: "idx_sat_declarations_periodo")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model shareholding_detail {
+  id                     String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shareholding_record_id String               @db.Uuid
+  accionista_nombre      String               @db.VarChar(255)
+  rfc                    String?              @db.VarChar(13)
+  tipo_accion            String?              @default("ordinaria") @db.VarChar(50)
+  porcentaje             Decimal              @db.Decimal(6, 3)
+  num_acciones           Int?
+  notes                  String?
+  is_active              Boolean?             @default(true)
+  created_at             DateTime?            @default(now()) @db.Timestamptz(6)
+  shareholding_records   shareholding_records @relation(fields: [shareholding_record_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([shareholding_record_id], map: "idx_shareholding_detail_record")
+}
+
+model shareholding_records {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  version             Int
+  effective_date      DateTime              @db.Date
+  event_description   String?
+  created_by          String?               @db.Uuid
+  is_active           Boolean?              @default(true)
+  created_at          DateTime?             @default(now()) @db.Timestamptz(6)
+  shareholding_detail shareholding_detail[]
+  profiles            profiles?             @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([effective_date], map: "idx_shareholding_records_effective_date")
+  @@index([version(sort: Desc)], map: "idx_shareholding_records_version")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model suppliers {
+  id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  legal_name        String            @db.VarChar(255)
+  commercial_name   String?           @db.VarChar(255)
+  tax_id            String            @unique @db.VarChar(20)
+  email             String?           @db.VarChar(255)
+  phone             String?           @db.VarChar(50)
+  address           String?
+  contact_name      String?           @db.VarChar(255)
+  contact_email     String?           @db.VarChar(255)
+  contact_phone     String?           @db.VarChar(50)
+  performance_score Decimal?          @default(0) @db.Decimal(5, 2)
+  is_blocked        Boolean?          @default(false)
+  blocked_reason    String?
+  blocked_at        DateTime?         @db.Timestamptz(6)
+  blocked_by        String?           @db.Uuid
+  is_active         Boolean?          @default(true)
+  created_at        DateTime?         @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime?         @default(now()) @updatedAt @db.Timestamptz(6)
+  purchase_orders   purchase_orders[]
+  profiles          profiles?         @relation(fields: [blocked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([legal_name], map: "idx_suppliers_legal_name")
+  @@index([tax_id], map: "idx_suppliers_tax_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model sync_logs {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  source          String       @db.VarChar(20)
+  sync_type       String       @db.VarChar(50)
+  status          sync_status? @default(pending)
+  records_fetched Int?         @default(0)
+  error_message   String?
+  started_at      DateTime?    @default(now()) @db.Timestamptz(6)
+  finished_at     DateTime?    @db.Timestamptz(6)
+  created_at      DateTime?    @default(now()) @db.Timestamptz(6)
+
+  @@index([source], map: "idx_sync_logs_source")
+  @@index([started_at(sort: Desc)], map: "idx_sync_logs_started_at")
+  @@index([status], map: "idx_sync_logs_status")
+}
+
+model training_requests {
+  id                                                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  course_edition_id                                 String              @db.Uuid
+  profile_id                                        String              @db.Uuid
+  requested_by                                      String              @db.Uuid
+  status                                            request_status?     @default(pendiente)
+  request_reason                                    String?
+  reviewed_by                                       String?             @db.Uuid
+  reviewed_at                                       DateTime?           @db.Timestamp(6)
+  rejection_reason                                  String?
+  enrollment_id                                     String?             @db.Uuid
+  is_active                                         Boolean?            @default(true)
+  created_at                                        DateTime?           @default(now()) @db.Timestamp(6)
+  updated_at                                        DateTime?           @default(now()) @updatedAt @db.Timestamp(6)
+  course_editions                                   course_editions     @relation(fields: [course_edition_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  course_enrollments                                course_enrollments? @relation(fields: [enrollment_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_training_requests_profile_idToprofiles   profiles            @relation("training_requests_profile_idToprofiles", fields: [profile_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_training_requests_requested_byToprofiles profiles            @relation("training_requests_requested_byToprofiles", fields: [requested_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_training_requests_reviewed_byToprofiles  profiles?           @relation("training_requests_reviewed_byToprofiles", fields: [reviewed_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([course_edition_id, profile_id, is_active])
+}
+
+model user_roles {
+  id                                       String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profile_id                               String      @db.Uuid
+  module                                   user_module
+  role                                     user_role
+  granted_at                               DateTime?   @default(now()) @db.Timestamptz(6)
+  granted_by                               String?     @db.Uuid
+  revoked_at                               DateTime?   @db.Timestamptz(6)
+  revoked_by                               String?     @db.Uuid
+  is_active                                Boolean?    @default(true)
+  created_at                               DateTime?   @default(now()) @db.Timestamptz(6)
+  updated_at                               DateTime?   @default(now()) @updatedAt @db.Timestamptz(6)
+  profiles_user_roles_granted_byToprofiles profiles?   @relation("user_roles_granted_byToprofiles", fields: [granted_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_user_roles_profile_idToprofiles profiles    @relation("user_roles_profile_idToprofiles", fields: [profile_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  profiles_user_roles_revoked_byToprofiles profiles?   @relation("user_roles_revoked_byToprofiles", fields: [revoked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([profile_id, module, role], map: "user_roles_unique")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model auth_events {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  event_type String    @db.VarChar(50)
+  email      String?   @db.VarChar(255)
+  profile_id String?   @db.Uuid
+  success    Boolean
+  reason     String?   @db.VarChar(255)
+  ip_address String?   @db.VarChar(45)
+  user_agent String?
+  metadata   Json?
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  profiles   profiles? @relation(fields: [profile_id], references: [id], onUpdate: NoAction)
+
+  @@index([created_at(sort: Desc)], map: "idx_auth_events_created_at")
+  @@index([email], map: "idx_auth_events_email")
+  @@index([profile_id], map: "idx_auth_events_profile")
+  @@index([event_type], map: "idx_auth_events_type")
+}
+
+enum approval_status {
+  pendiente
+  aprobada
+  rechazada
+}
+
+enum approval_workflow_status {
+  pendiente
+  aprobada
+  rechazada
+}
+
+enum audit_action {
+  create
+  update
+  delete
+  approve
+  reject
+  upload
+  verify
+}
+
+enum audit_entity {
+  course
+  course_edition
+  enrollment
+  evidence
+  budget
+  request
+  user
+  proposal
+  platform_integration
+  platform_course
+  platform_enrollment
+  platform_sync
+  fiscal_loss
+  fiscal_loss_amortization
+  non_deductible
+  shareholding
+  okr
+  sap_config
+  sat_config
+  payment_reconciliation
+  cfdi
+}
+
+enum cfdi_type {
+  I
+  E
+  P
+  N
+  T
+}
+
+enum evidence_type {
+  certificate
+  attendance
+  assessment
+  other
+}
+
+enum expense_type {
+  CAPEX
+  OPEX
+}
+
+enum fiscal_loss_status {
+  vigente
+  proxima_a_vencer
+  vencida
+  amortizada_total
+}
+
+enum okr_status {
+  on_track
+  at_risk
+  behind
+  completed
+}
+
+enum okr_type {
+  objective
+  key_result
+}
+
+enum payment_reconciliation_status {
+  conciliado
+  diferencia_monto
+  solo_en_sap
+  solo_en_sat
+}
+
+enum payment_status {
+  pending
+  paid
+  cancelled
+  na
+}
+
+enum platform_enrollment_status {
+  not_started
+  in_progress
+  completed
+  expired
+}
+
+enum platform_type {
+  crehana
+  udemy_business
+  linkedin_learning
+  coursera
+  other
+}
+
+enum po_status {
+  emitida
+  en_transito
+  entregada_parcial
+  entregada_completa
+  cancelada
+}
+
+enum proposal_status {
+  pendiente
+  en_investigacion
+  aprobada
+  rechazada
+}
+
+enum request_status {
+  pendiente
+  aprobada
+  rechazada
+}
+
+enum requisition_status {
+  en_revision
+  en_aprobacion
+  aprobada
+  en_progreso
+  cerrada
+  cancelada
+}
+
+enum sync_status {
+  pending
+  in_progress
+  completed
+  failed
+}
+
+enum user_module {
+  core
+  capacitacion
+  compras
+  contabilidad
+}
+
+enum user_role {
+  admin_rh
+  director
+  collaborator
+  executive
+  super_admin
+  jefe_area
+  colaborador
+  comprador
+  coordinador_compras
+  lider_procura
+  aprobador_nivel_1
+  aprobador_nivel_2
+  aprobador_nivel_3
+  director_general
+  solicitante
+  contabilidad
+  fiscal
+  director_financiero
+  accionista
+}
+
+enum verification_status {
+  pending
+  approved
+  rejected
+}

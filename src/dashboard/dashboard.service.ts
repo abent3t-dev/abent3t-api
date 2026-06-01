@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 export interface KpiValue {
   value: number;
@@ -12,15 +12,15 @@ interface Period {
   label: string;
   year: number;
   semester: number | null;
-  start_date: string;
-  end_date: string;
+  start_date: Date | string;
+  end_date: Date | string;
 }
 
 @Injectable()
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   // ── helpers ──────────────────────────────────────────────
 
@@ -35,15 +35,22 @@ export class DashboardService {
   }
 
   private async getCurrentPeriod(): Promise<Period | null> {
-    const today = new Date().toISOString().split('T')[0];
-    const { data } = await this.supabase.db
-      .from('periods')
-      .select('id, label, year, semester, start_date, end_date')
-      .eq('is_active', true)
-      .lte('start_date', today)
-      .gte('end_date', today)
-      .limit(1)
-      .maybeSingle();
+    const today = new Date();
+    const data = await this.prisma.periods.findFirst({
+      where: {
+        is_active: true,
+        start_date: { lte: today },
+        end_date: { gte: today },
+      },
+      select: {
+        id: true,
+        label: true,
+        year: true,
+        semester: true,
+        start_date: true,
+        end_date: true,
+      },
+    });
     return data as Period | null;
   }
 
@@ -58,23 +65,40 @@ export class DashboardService {
     period: Period,
     scopeDeptId?: string,
   ) {
-    const { data } = await this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        id, status, enrolled_at, completed_at, profile_id,
-        profiles!inner(id, department_id),
-        course_editions!inner(
-          id, start_date,
-          courses(id, total_hours, cost)
-        )
-      `)
-      .eq('is_active', true)
-      .gte('course_editions.start_date', period.start_date)
-      .lte('course_editions.start_date', period.end_date);
+    const data = await this.prisma.course_enrollments.findMany({
+      where: {
+        is_active: true,
+        course_editions: {
+          start_date: {
+            gte: new Date(period.start_date),
+            lte: new Date(period.end_date),
+          },
+        },
+        ...(scopeDeptId
+          ? { profiles: { department_id: scopeDeptId } }
+          : {}),
+      },
+      select: {
+        id: true,
+        status: true,
+        enrolled_at: true,
+        completed_at: true,
+        profile_id: true,
+        profiles: { select: { id: true, department_id: true } },
+        course_editions: {
+          select: {
+            id: true,
+            start_date: true,
+            courses: {
+              select: { id: true, total_hours: true, cost: true },
+            },
+          },
+        },
+      },
+    });
 
-    const all = (data ?? []) as any[];
-    if (!scopeDeptId) return all;
-    return all.filter((e) => e.profiles?.department_id === scopeDeptId);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return data as any[];
   }
 
   // ── KPI calculators ──────────────────────────────────────
@@ -95,7 +119,9 @@ export class DashboardService {
    * usan la misma fuente de verdad y cuadran entre sí.
    */
   private calculateBudgetExecution(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     enrollments: any[],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     budgets: any[],
   ): KpiValue {
     let totalAssigned = 0;
@@ -118,6 +144,7 @@ export class DashboardService {
   }
 
   private calculateInvestmentPerEmployee(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     enrollments: any[],
   ): KpiValue {
     const profileCosts = new Map<string, number>();
@@ -139,6 +166,7 @@ export class DashboardService {
     };
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private calculateHoursPerEmployee(enrollments: any[]): KpiValue {
     const profileHours = new Map<string, number>();
     let totalCompleted = 0;
@@ -163,6 +191,7 @@ export class DashboardService {
   }
 
   private async calculateCoverageRate(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     enrollments: any[],
     scopeDeptId?: string,
   ): Promise<KpiValue> {
@@ -173,12 +202,12 @@ export class DashboardService {
     }
 
     // Total active employees (filtrado por departamento si está scoped)
-    let q = this.supabase.db
-      .from('profiles')
-      .select('id', { count: 'exact', head: true })
-      .eq('is_active', true);
-    if (scopeDeptId) q = q.eq('department_id', scopeDeptId);
-    const { count: totalActive } = await q;
+    const totalActive = await this.prisma.profiles.count({
+      where: {
+        is_active: true,
+        ...(scopeDeptId ? { department_id: scopeDeptId } : {}),
+      },
+    });
 
     const total = totalActive ?? 0;
     const enrolled = enrolledProfiles.size;
@@ -191,6 +220,7 @@ export class DashboardService {
     };
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private calculateCompletionRate(enrollments: any[]): KpiValue {
     let completed = 0;
     let nonCancelled = 0;
@@ -231,13 +261,15 @@ export class DashboardService {
 
     const enrollments = await this.getEnrollmentsForPeriod(period, scopeDeptId);
 
-    let budgetsQ = this.supabase.db
-      .from('budgets')
-      .select('assigned_amount')
-      .eq('period_id', period.id)
-      .eq('is_active', true);
-    if (scopeDeptId) budgetsQ = budgetsQ.eq('department_id', scopeDeptId);
-    const { data: budgetsRaw } = await budgetsQ;
+    const budgetsRaw = await this.prisma.budgets.findMany({
+      where: {
+        period_id: period.id,
+        is_active: true,
+        ...(scopeDeptId ? { department_id: scopeDeptId } : {}),
+      },
+      select: { assigned_amount: true },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const budgets = (budgetsRaw ?? []) as any[];
 
     const coverageRate = await this.calculateCoverageRate(
@@ -273,13 +305,18 @@ export class DashboardService {
     // `assigned_amount - totalSpent` (con totalSpent agregado de las
     // inscripciones del periodo), garantizando que las columnas Gastado y
     // Disponible siempre cuadren entre sí.
-    let budgetsQ = this.supabase.db
-      .from('budgets')
-      .select('department_id, assigned_amount, departments(name)')
-      .eq('period_id', period.id)
-      .eq('is_active', true);
-    if (scopeDeptId) budgetsQ = budgetsQ.eq('department_id', scopeDeptId);
-    const { data: budgets } = await budgetsQ;
+    const budgets = await this.prisma.budgets.findMany({
+      where: {
+        period_id: period.id,
+        is_active: true,
+        ...(scopeDeptId ? { department_id: scopeDeptId } : {}),
+      },
+      select: {
+        department_id: true,
+        assigned_amount: true,
+        departments: { select: { name: true } },
+      },
+    });
 
     // Group enrollments by department
     const stats: Record<string, {
@@ -318,6 +355,7 @@ export class DashboardService {
     }
 
     // Merge budget data
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const b of (budgets ?? []) as any[]) {
       const deptId = b.department_id;
       if (!stats[deptId]) {
@@ -342,10 +380,10 @@ export class DashboardService {
 
     // Fill missing department names from enrollments
     if (Object.values(stats).some((s) => !s.department_name)) {
-      const { data: depts } = await this.supabase.db
-        .from('departments')
-        .select('id, name');
-      const deptMap = new Map((depts ?? []).map((d: any) => [d.id, d.name]));
+      const depts = await this.prisma.departments.findMany({
+        select: { id: true, name: true },
+      });
+      const deptMap = new Map((depts ?? []).map((d) => [d.id, d.name]));
       for (const s of Object.values(stats)) {
         if (!s.department_name) s.department_name = deptMap.get(s.department_id) || 'Sin Área';
       }
@@ -355,10 +393,15 @@ export class DashboardService {
   }
 
   async getByInstitution() {
-    const { data: courses } = await this.supabase.db
-      .from('courses')
-      .select('id, cost, is_active, institutions(id, name)')
-      .eq('is_active', true);
+    const courses = await this.prisma.courses.findMany({
+      where: { is_active: true },
+      select: {
+        id: true,
+        cost: true,
+        is_active: true,
+        institutions: { select: { id: true, name: true } },
+      },
+    });
 
     const stats: Record<string, {
       institution_id: string;
@@ -367,6 +410,7 @@ export class DashboardService {
       totalInvestment: number;
     }> = {};
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const c of (courses ?? []) as any[]) {
       const id = c.institutions?.id || 'sin_institucion';
       const name = c.institutions?.name || 'Sin Institución';
@@ -379,17 +423,29 @@ export class DashboardService {
   }
 
   async getCompletionTime() {
-    const { data: enrollments } = await this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        enrolled_at, completed_at,
-        course_editions(courses(modalities(id, name)))
-      `)
-      .eq('status', 'completo')
-      .not('completed_at', 'is', null);
+    const enrollments = await this.prisma.course_enrollments.findMany({
+      where: {
+        status: 'completo',
+        completed_at: { not: null },
+      },
+      select: {
+        enrolled_at: true,
+        completed_at: true,
+        course_editions: {
+          select: {
+            courses: {
+              select: {
+                modalities: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
 
     const stats: Record<string, { modality: string; totalDays: number; minDays: number; maxDays: number; count: number }> = {};
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     for (const e of (enrollments ?? []) as any[]) {
       const modality = e.course_editions?.courses?.modalities?.name || 'Sin Modalidad';
       const days = Math.floor(

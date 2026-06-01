@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { SupabaseService } from '../../supabase/supabase.service';
-import { BaseCrudService } from '../../common/services/base-crud.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { BaseCrudPrismaService } from '../../common/services/base-crud-prisma.service';
 import { CreatePerdidaFiscalDto } from './dto/create-perdida-fiscal.dto';
 import { UpdatePerdidaFiscalDto } from './dto/update-perdida-fiscal.dto';
 import { CreateAmortizacionDto } from './dto/create-amortizacion.dto';
@@ -36,42 +36,42 @@ export interface AmortizationRow {
 }
 
 @Injectable()
-export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscalDto, UpdatePerdidaFiscalDto> {
-  protected readonly tableName = 'fiscal_losses';
-  protected readonly selectFields = '*';
+export class PerdidasFiscalesService extends BaseCrudPrismaService<
+  CreatePerdidaFiscalDto,
+  UpdatePerdidaFiscalDto
+> {
+  protected get model() {
+    return this.prisma.fiscal_losses;
+  }
   protected readonly orderField = 'ejercicio';
 
-  constructor(supabase: SupabaseService) {
-    super(supabase);
+  constructor(prisma: PrismaService) {
+    super(prisma);
   }
 
   /**
    * Obtiene todas las pérdidas fiscales activas con cálculo de estado
    */
   async findAll(): Promise<FiscalLossRow[]> {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('is_active', true)
-      .order('ejercicio', { ascending: false });
-
-    if (error) throw error;
-    return (data as FiscalLossRow[]).map(this.enrichWithStatus);
+    const data = await this.prisma.fiscal_losses.findMany({
+      where: { is_active: true },
+      orderBy: { ejercicio: 'desc' },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (data as any as FiscalLossRow[]).map((d) => this.enrichWithStatus(d));
   }
 
   /**
    * Obtiene una pérdida fiscal por ID
    */
   async findOne(id: string): Promise<FiscalLossRow> {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('id', id)
-      .eq('is_active', true)
-      .single();
+    const data = await this.prisma.fiscal_losses.findFirst({
+      where: { id, is_active: true },
+    });
 
-    if (error || !data) throw new NotFoundException('Pérdida fiscal no encontrada');
-    return this.enrichWithStatus(data as FiscalLossRow);
+    if (!data) throw new NotFoundException('Pérdida fiscal no encontrada');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.enrichWithStatus(data as any as FiscalLossRow);
   }
 
   /**
@@ -90,8 +90,8 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
 
     const insertData = {
       ejercicio: dto.ejercicio,
-      fecha_declaracion: dto.fecha_declaracion,
-      fecha_vencimiento: fechaVencimiento.toISOString().split('T')[0],
+      fecha_declaracion: new Date(dto.fecha_declaracion),
+      fecha_vencimiento: new Date(fechaVencimiento.toISOString().split('T')[0]),
       monto_original: dto.monto_original,
       monto_actualizado: montoActualizado,
       amortizado: 0,
@@ -102,14 +102,12 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
       created_by: userId || null,
     };
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .insert(insertData as any)
-      .select(this.selectFields)
-      .single();
-
-    if (error) throw error;
-    return this.enrichWithStatus(data as FiscalLossRow);
+    const data = await this.prisma.fiscal_losses.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: insertData as any,
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.enrichWithStatus(data as any as FiscalLossRow);
   }
 
   /**
@@ -119,18 +117,19 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
   async update(id: string, dto: UpdatePerdidaFiscalDto): Promise<FiscalLossRow> {
     const existing = await this.findOne(id);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updateData: any = { ...dto };
 
     // Si se actualiza el factor, recalcular montos
     if (dto.factor_actualizacion !== undefined || dto.monto_original !== undefined) {
-      const montoOriginal = dto.monto_original ?? existing.monto_original;
-      const factor = dto.factor_actualizacion ?? existing.factor_actualizacion;
+      const montoOriginal = Number(dto.monto_original ?? existing.monto_original);
+      const factor = Number(dto.factor_actualizacion ?? existing.factor_actualizacion);
       const montoActualizado = montoOriginal * factor;
 
       updateData.monto_original = montoOriginal;
       updateData.factor_actualizacion = factor;
       updateData.monto_actualizado = montoActualizado;
-      updateData.saldo_pendiente = montoActualizado - existing.amortizado;
+      updateData.saldo_pendiente = montoActualizado - Number(existing.amortizado);
     }
 
     // Si se actualiza la fecha de declaración, recalcular vencimiento
@@ -138,30 +137,40 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
       const fechaDeclaracion = new Date(dto.fecha_declaracion);
       const fechaVencimiento = new Date(fechaDeclaracion);
       fechaVencimiento.setFullYear(fechaVencimiento.getFullYear() + 10);
-      updateData.fecha_vencimiento = fechaVencimiento.toISOString().split('T')[0];
+      updateData.fecha_declaracion = fechaDeclaracion;
+      updateData.fecha_vencimiento = new Date(fechaVencimiento.toISOString().split('T')[0]);
     }
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .update(updateData)
-      .eq('id', id)
-      .select(this.selectFields)
-      .single();
+    let data;
+    try {
+      data = await this.prisma.fiscal_losses.update({
+        where: { id },
+        data: updateData,
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('Pérdida fiscal no encontrada');
+      }
+      throw err;
+    }
 
-    if (error || !data) throw new NotFoundException('Pérdida fiscal no encontrada');
-    return this.enrichWithStatus(data as FiscalLossRow);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.enrichWithStatus(data as any as FiscalLossRow);
   }
 
   /**
    * Registra una amortización de pérdida fiscal
    */
-  async amortizar(dto: CreateAmortizacionDto, userId: string): Promise<{ loss: FiscalLossRow; amortization: AmortizationRow }> {
+  async amortizar(
+    dto: CreateAmortizacionDto,
+    userId: string,
+  ): Promise<{ loss: FiscalLossRow; amortization: AmortizationRow }> {
     const loss = await this.findOne(dto.fiscal_loss_id);
 
     // Validar que hay suficiente saldo pendiente
-    if (dto.monto_amortizado > loss.saldo_pendiente) {
+    if (dto.monto_amortizado > Number(loss.saldo_pendiente)) {
       throw new BadRequestException(
-        `El monto a amortizar ($${dto.monto_amortizado.toLocaleString()}) excede el saldo pendiente ($${loss.saldo_pendiente.toLocaleString()})`,
+        `El monto a amortizar ($${dto.monto_amortizado.toLocaleString()}) excede el saldo pendiente ($${Number(loss.saldo_pendiente).toLocaleString()})`,
       );
     }
 
@@ -184,35 +193,31 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
       created_by: userId,
     };
 
-    const { data: amortization, error: amortError } = await this.supabase.db
-      .from('fiscal_loss_amortizations')
-      .insert(amortizationData as any)
-      .select('*')
-      .single();
-
-    if (amortError) throw amortError;
+    const amortization = await this.prisma.fiscal_loss_amortizations.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: amortizationData as any,
+    });
 
     // Actualizar pérdida fiscal
-    const nuevoAmortizado = loss.amortizado + dto.monto_amortizado;
-    const nuevoSaldoPendiente = loss.monto_actualizado - nuevoAmortizado;
+    const nuevoAmortizado = Number(loss.amortizado) + dto.monto_amortizado;
+    const nuevoSaldoPendiente = Number(loss.monto_actualizado) - nuevoAmortizado;
     const nuevoStatus = nuevoSaldoPendiente <= 0 ? 'amortizada_total' : 'vigente';
 
-    const { data: updatedLoss, error: updateError } = await this.supabase.db
-      .from(this.tableName)
-      .update({
+    const updatedLoss = await this.prisma.fiscal_losses.update({
+      where: { id: dto.fiscal_loss_id },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: {
         amortizado: nuevoAmortizado,
         saldo_pendiente: nuevoSaldoPendiente,
         status: nuevoStatus,
-      } as any)
-      .eq('id', dto.fiscal_loss_id)
-      .select(this.selectFields)
-      .single();
-
-    if (updateError) throw updateError;
+      } as any,
+    });
 
     return {
-      loss: this.enrichWithStatus(updatedLoss as FiscalLossRow),
-      amortization: amortization as AmortizationRow,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      loss: this.enrichWithStatus(updatedLoss as any as FiscalLossRow),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      amortization: amortization as any as AmortizationRow,
     };
   }
 
@@ -220,15 +225,13 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
    * Obtiene el historial de amortizaciones de una pérdida fiscal
    */
   async getAmortizaciones(fiscalLossId: string): Promise<AmortizationRow[]> {
-    const { data, error } = await this.supabase.db
-      .from('fiscal_loss_amortizations')
-      .select('*, profiles:created_by(id, full_name)')
-      .eq('fiscal_loss_id', fiscalLossId)
-      .eq('is_active', true)
-      .order('ejercicio_aplicacion', { ascending: false });
-
-    if (error) throw error;
-    return data as AmortizationRow[];
+    const data = await this.prisma.fiscal_loss_amortizations.findMany({
+      where: { fiscal_loss_id: fiscalLossId, is_active: true },
+      include: { profiles: { select: { id: true, full_name: true } } },
+      orderBy: { ejercicio_aplicacion: 'desc' },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return data as any as AmortizationRow[];
   }
 
   /**
@@ -239,22 +242,28 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
     const sixMonthsFromNow = new Date();
     sixMonthsFromNow.setMonth(sixMonthsFromNow.getMonth() + 6);
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('is_active', true)
-      .neq('status', 'amortizada_total')
-      .lte('fecha_vencimiento', sixMonthsFromNow.toISOString().split('T')[0])
-      .order('fecha_vencimiento', { ascending: true });
+    const data = await this.prisma.fiscal_losses.findMany({
+      where: {
+        is_active: true,
+        status: { not: 'amortizada_total' },
+        fecha_vencimiento: { lte: sixMonthsFromNow },
+      },
+      orderBy: { fecha_vencimiento: 'asc' },
+    });
 
-    if (error) throw error;
-
-    const losses = (data as FiscalLossRow[]).map(this.enrichWithStatus);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const losses = (data as any as FiscalLossRow[]).map((d) => this.enrichWithStatus(d));
     const todayStr = today.toISOString().split('T')[0];
 
     return {
-      proximas_vencer: losses.filter((l) => l.fecha_vencimiento > todayStr && l.status === 'proxima_a_vencer'),
-      vencidas: losses.filter((l) => l.fecha_vencimiento <= todayStr || l.status === 'vencida'),
+      proximas_vencer: losses.filter((l) => {
+        const fv = new Date(l.fecha_vencimiento).toISOString().split('T')[0];
+        return fv > todayStr && l.status === 'proxima_a_vencer';
+      }),
+      vencidas: losses.filter((l) => {
+        const fv = new Date(l.fecha_vencimiento).toISOString().split('T')[0];
+        return fv <= todayStr || l.status === 'vencida';
+      }),
     };
   }
 
@@ -264,22 +273,28 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
   async actualizarFactorINPC(id: string, nuevoFactor: number): Promise<FiscalLossRow> {
     const loss = await this.findOne(id);
 
-    const montoActualizado = loss.monto_original * nuevoFactor;
-    const saldoPendiente = montoActualizado - loss.amortizado;
+    const montoActualizado = Number(loss.monto_original) * nuevoFactor;
+    const saldoPendiente = montoActualizado - Number(loss.amortizado);
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .update({
-        factor_actualizacion: nuevoFactor,
-        monto_actualizado: montoActualizado,
-        saldo_pendiente: saldoPendiente,
-      } as any)
-      .eq('id', id)
-      .select(this.selectFields)
-      .single();
-
-    if (error || !data) throw new NotFoundException('Pérdida fiscal no encontrada');
-    return this.enrichWithStatus(data as FiscalLossRow);
+    let data;
+    try {
+      data = await this.prisma.fiscal_losses.update({
+        where: { id },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data: {
+          factor_actualizacion: nuevoFactor,
+          monto_actualizado: montoActualizado,
+          saldo_pendiente: saldoPendiente,
+        } as any,
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('Pérdida fiscal no encontrada');
+      }
+      throw err;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return this.enrichWithStatus(data as any as FiscalLossRow);
   }
 
   /**
@@ -293,17 +308,19 @@ export class PerdidasFiscalesService extends BaseCrudService<CreatePerdidaFiscal
     const threeMonthsStr = threeMonthsFromNow.toISOString().split('T')[0];
 
     // Si ya está completamente amortizada, mantener ese estado
-    if (loss.status === 'amortizada_total' || loss.saldo_pendiente <= 0) {
+    if (loss.status === 'amortizada_total' || Number(loss.saldo_pendiente) <= 0) {
       return { ...loss, status: 'amortizada_total' };
     }
 
+    const fechaVencimientoStr = new Date(loss.fecha_vencimiento).toISOString().split('T')[0];
+
     // Verificar si está vencida
-    if (loss.fecha_vencimiento <= todayStr) {
+    if (fechaVencimientoStr <= todayStr) {
       return { ...loss, status: 'vencida' };
     }
 
     // Verificar si está próxima a vencer (3 meses)
-    if (loss.fecha_vencimiento <= threeMonthsStr) {
+    if (fechaVencimientoStr <= threeMonthsStr) {
       return { ...loss, status: 'proxima_a_vencer' };
     }
 

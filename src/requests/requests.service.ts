@@ -6,58 +6,99 @@ import {
   ForbiddenException,
   ConflictException,
 } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { EnrollmentsService } from '../enrollments/enrollments.service';
 import { SocketService } from '../socket/socket.service';
 import { CreateRequestDto } from './dto/create-request.dto';
 import { ReviewRequestDto } from './dto/review-request.dto';
 
-const REQUEST_SELECT = `
-  *,
-  profiles!training_requests_profile_id_fkey(id, full_name, email, position, department_id, departments(id, name)),
-  requester:profiles!training_requests_requested_by_fkey(id, full_name, email),
-  reviewer:profiles!training_requests_reviewed_by_fkey(id, full_name),
-  course_editions(
-    id, start_date, end_date, location, instructor, cost_override,
-    courses(id, name, cost, total_hours, institutions(name), modalities(name))
-  )
-`;
+const REQUEST_INCLUDE = {
+  profiles_training_requests_profile_idToprofiles: {
+    select: {
+      id: true,
+      full_name: true,
+      email: true,
+      position: true,
+      department_id: true,
+      departments: { select: { id: true, name: true } },
+    },
+  },
+  profiles_training_requests_requested_byToprofiles: {
+    select: { id: true, full_name: true, email: true },
+  },
+  profiles_training_requests_reviewed_byToprofiles: {
+    select: { id: true, full_name: true },
+  },
+  course_editions: {
+    select: {
+      id: true,
+      start_date: true,
+      end_date: true,
+      location: true,
+      instructor: true,
+      cost_override: true,
+      courses: {
+        select: {
+          id: true,
+          name: true,
+          cost: true,
+          total_hours: true,
+          institutions: { select: { name: true } },
+          modalities: { select: { name: true } },
+        },
+      },
+    },
+  },
+} as const;
+
+/**
+ * Adapta el include de Prisma al shape que el frontend espera (claves
+ * `profiles`, `requester`, `reviewer`). Mantiene retro-compatibilidad sin
+ * cambios en el front.
+ */
+function aliasRequest<T extends Record<string, unknown>>(row: T): T {
+  if (!row) return row;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const r = row as any;
+  return {
+    ...row,
+    profiles: r.profiles_training_requests_profile_idToprofiles ?? null,
+    requester: r.profiles_training_requests_requested_byToprofiles ?? null,
+    reviewer: r.profiles_training_requests_reviewed_byToprofiles ?? null,
+  } as T;
+}
 
 @Injectable()
 export class RequestsService {
   private readonly logger = new Logger(RequestsService.name);
 
   constructor(
-    private readonly supabase: SupabaseService,
+    private readonly prisma: PrismaService,
     private readonly enrollmentsService: EnrollmentsService,
     private readonly socketService: SocketService,
   ) {}
 
-  /**
-   * Get all requests (for admin_rh) with pagination
-   */
+  /** Get all requests (for admin_rh) with pagination */
   async findAll(status?: string, page = 1, limit = 10) {
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
+    const where: Prisma.training_requestsWhereInput = { is_active: true };
+    if (status) where.status = status as Prisma.training_requestsWhereInput['status'];
 
-    let query = this.supabase.db
-      .from('training_requests')
-      .select(REQUEST_SELECT, { count: 'exact' })
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.training_requests.findMany({
+        where,
+        include: REQUEST_INCLUDE,
+        orderBy: { created_at: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.training_requests.count({ where }),
+    ]);
 
-    if (status) {
-      query = query.eq('status', status);
-    }
-
-    const { data, error, count } = await query;
-    if (error) throw error;
-
-    const total = count || 0;
-    const totalPages = Math.ceil(total / limit);
-
+    const totalPages = Math.ceil(total / limit) || 1;
     return {
-      data: data || [],
+      data: data.map((r) => aliasRequest(r as unknown as Record<string, unknown>)),
       meta: {
         total,
         page,
@@ -69,276 +110,231 @@ export class RequestsService {
     };
   }
 
-  /**
-   * Get pending requests (for admin_rh dashboard)
-   */
   async findPending() {
     return this.findAll('pendiente');
   }
 
-  /**
-   * Get request statistics
-   */
   async getStats(userId?: string, userRole?: string) {
-    let query = this.supabase.db
-      .from('training_requests')
-      .select('status', { count: 'exact' })
-      .eq('is_active', true);
-
-    // Filter by user if not admin
-    if (userId && userRole && !['admin_rh', 'super_admin'].includes(userRole)) {
+    const where: Prisma.training_requestsWhereInput = { is_active: true };
+    if (
+      userId &&
+      userRole &&
+      !['admin_rh', 'super_admin'].includes(userRole)
+    ) {
       if (['jefe_area', 'director'].includes(userRole)) {
-        query = query.eq('requested_by', userId);
+        where.requested_by = userId;
       } else {
-        query = query.eq('profile_id', userId);
+        where.profile_id = userId;
       }
     }
 
-    const { data, error } = await query;
-    if (error) throw error;
+    const data = await this.prisma.training_requests.findMany({
+      where,
+      select: { status: true },
+    });
 
-    // Count by status
-    const stats = {
-      total: data?.length || 0,
-      pendientes: data?.filter(r => r.status === 'pendiente').length || 0,
-      aprobadas: data?.filter(r => r.status === 'aprobada').length || 0,
-      rechazadas: data?.filter(r => r.status === 'rechazada').length || 0,
+    return {
+      total: data.length,
+      pendientes: data.filter((r) => r.status === 'pendiente').length,
+      aprobadas: data.filter((r) => r.status === 'aprobada').length,
+      rechazadas: data.filter((r) => r.status === 'rechazada').length,
     };
-
-    return stats;
   }
 
-  /**
-   * Get requests made by a specific user (jefe_area) with pagination
-   */
   async findByRequester(requesterId: string, page = 1, limit = 10) {
-    const offset = (page - 1) * limit;
-
-    const { data, error, count } = await this.supabase.db
-      .from('training_requests')
-      .select(REQUEST_SELECT, { count: 'exact' })
-      .eq('requested_by', requesterId)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (error) throw error;
-
-    const total = count || 0;
-    const totalPages = Math.ceil(total / limit);
-
+    const skip = (page - 1) * limit;
+    const where: Prisma.training_requestsWhereInput = {
+      requested_by: requesterId,
+      is_active: true,
+    };
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.training_requests.findMany({
+        where,
+        include: REQUEST_INCLUDE,
+        orderBy: { created_at: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.training_requests.count({ where }),
+    ]);
+    const totalPages = Math.ceil(total / limit) || 1;
     return {
-      data: data || [],
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1,
-      },
+      data: data.map((r) => aliasRequest(r as unknown as Record<string, unknown>)),
+      meta: { total, page, limit, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
     };
   }
 
-  /**
-   * Get requests where the user is the beneficiary (colaborador) with pagination
-   */
   async findByBeneficiary(profileId: string, page = 1, limit = 10) {
-    const offset = (page - 1) * limit;
-
-    const { data, error, count } = await this.supabase.db
-      .from('training_requests')
-      .select(REQUEST_SELECT, { count: 'exact' })
-      .eq('profile_id', profileId)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (error) throw error;
-
-    const total = count || 0;
-    const totalPages = Math.ceil(total / limit);
-
+    const skip = (page - 1) * limit;
+    const where: Prisma.training_requestsWhereInput = {
+      profile_id: profileId,
+      is_active: true,
+    };
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.training_requests.findMany({
+        where,
+        include: REQUEST_INCLUDE,
+        orderBy: { created_at: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.training_requests.count({ where }),
+    ]);
+    const totalPages = Math.ceil(total / limit) || 1;
     return {
-      data: data || [],
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1,
-      },
+      data: data.map((r) => aliasRequest(r as unknown as Record<string, unknown>)),
+      meta: { total, page, limit, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
     };
   }
 
-  /**
-   * Get requests for profiles in a specific department
-   */
+  /** Get requests for profiles in a specific department */
   async findByDepartment(departmentId: string) {
-    const { data, error } = await this.supabase.db
-      .from('training_requests')
-      .select(REQUEST_SELECT)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-
-    // Filter by department (profile's department)
-    return data?.filter((r: any) =>
-      r.profiles?.department_id === departmentId
-    ) || [];
+    const data = await this.prisma.training_requests.findMany({
+      where: {
+        is_active: true,
+        profiles_training_requests_profile_idToprofiles: {
+          department_id: departmentId,
+        },
+      },
+      include: REQUEST_INCLUDE,
+      orderBy: { created_at: 'desc' },
+    });
+    return data.map((r) => aliasRequest(r as unknown as Record<string, unknown>));
   }
 
-  /**
-   * Get a single request by ID
-   */
   async findOne(id: string) {
-    const { data, error } = await this.supabase.db
-      .from('training_requests')
-      .select(REQUEST_SELECT)
-      .eq('id', id)
-      .single();
-
-    if (error || !data) {
-      throw new NotFoundException('Solicitud no encontrada');
-    }
-    return data;
+    const data = await this.prisma.training_requests.findUnique({
+      where: { id },
+      include: REQUEST_INCLUDE,
+    });
+    if (!data) throw new NotFoundException('Solicitud no encontrada');
+    return aliasRequest(data as unknown as Record<string, unknown>);
   }
 
   /**
-   * Create a new training request (by jefe_area)
+   * Create a new training request (by jefe_area).
    */
-  async create(dto: CreateRequestDto, requestedBy: string, requesterDepartmentId: string | null) {
-    // 1. Validate that the profile exists and is active
-    const { data: profile } = await this.supabase.db
-      .from('profiles')
-      .select('id, full_name, department_id, is_active')
-      .eq('id', dto.profile_id)
-      .single();
-
-    if (!profile) {
-      throw new BadRequestException('El colaborador no existe');
-    }
-    if (!profile.is_active) {
+  async create(
+    dto: CreateRequestDto,
+    requestedBy: string,
+    requesterDepartmentId: string | null,
+  ) {
+    const profile = await this.prisma.profiles.findUnique({
+      where: { id: dto.profile_id },
+      select: {
+        id: true,
+        full_name: true,
+        department_id: true,
+        is_active: true,
+      },
+    });
+    if (!profile) throw new BadRequestException('El colaborador no existe');
+    if (!profile.is_active)
       throw new BadRequestException('El colaborador está desactivado');
-    }
 
-    // 2. Validate that jefe_area can only request for their own department
-    if (requesterDepartmentId && profile.department_id !== requesterDepartmentId) {
+    if (
+      requesterDepartmentId &&
+      profile.department_id !== requesterDepartmentId
+    ) {
       throw new ForbiddenException(
         'Solo puedes solicitar capacitación para colaboradores de tu área',
       );
     }
 
-    // 3. Validate that the edition exists and is active
-    const { data: edition } = await this.supabase.db
-      .from('course_editions')
-      .select('id, is_active, courses(name)')
-      .eq('id', dto.course_edition_id)
-      .single();
-
-    if (!edition) {
-      throw new BadRequestException('La edición del curso no existe');
-    }
-    if (!edition.is_active) {
+    const edition = await this.prisma.course_editions.findUnique({
+      where: { id: dto.course_edition_id },
+      select: {
+        id: true,
+        is_active: true,
+        courses: { select: { name: true } },
+      },
+    });
+    if (!edition) throw new BadRequestException('La edición del curso no existe');
+    if (!edition.is_active)
       throw new BadRequestException('La edición del curso no está activa');
-    }
 
-    // 4. Check if already enrolled
-    const { data: existingEnrollment } = await this.supabase.db
-      .from('course_enrollments')
-      .select('id')
-      .eq('course_edition_id', dto.course_edition_id)
-      .eq('profile_id', dto.profile_id)
-      .eq('is_active', true)
-      .single();
-
+    const existingEnrollment = await this.prisma.course_enrollments.findFirst({
+      where: {
+        course_edition_id: dto.course_edition_id,
+        profile_id: dto.profile_id,
+        is_active: true,
+      },
+      select: { id: true },
+    });
     if (existingEnrollment) {
       throw new ConflictException(
         'El colaborador ya está inscrito en esta edición',
       );
     }
 
-    // 5. Check if there's already a pending request
-    const { data: existingRequest } = await this.supabase.db
-      .from('training_requests')
-      .select('id')
-      .eq('course_edition_id', dto.course_edition_id)
-      .eq('profile_id', dto.profile_id)
-      .eq('status', 'pendiente')
-      .eq('is_active', true)
-      .single();
-
+    const existingRequest = await this.prisma.training_requests.findFirst({
+      where: {
+        course_edition_id: dto.course_edition_id,
+        profile_id: dto.profile_id,
+        status: 'pendiente',
+        is_active: true,
+      },
+      select: { id: true },
+    });
     if (existingRequest) {
       throw new ConflictException(
         'Ya existe una solicitud pendiente para este colaborador y curso',
       );
     }
 
-    // 6. Create the request
-    const { data, error } = await this.supabase.db
-      .from('training_requests')
-      .insert({
+    const created = await this.prisma.training_requests.create({
+      data: {
         course_edition_id: dto.course_edition_id,
         profile_id: dto.profile_id,
         requested_by: requestedBy,
         request_reason: dto.request_reason,
         status: 'pendiente',
-      })
-      .select(REQUEST_SELECT)
-      .single();
+      },
+      include: REQUEST_INCLUDE,
+    });
 
-    if (error) {
-      this.logger.error('Error creating request', error);
-      throw error;
-    }
-
+    const data = aliasRequest(created as unknown as Record<string, unknown>);
     this.logger.log(
-      `Request created: ${profile.full_name} for ${(edition.courses as any)?.name}`,
+      `Request created: ${profile.full_name} for ${edition.courses?.name}`,
     );
 
-    // Emit socket event
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const aliased: any = data;
     this.socketService.emitRequest(
       'create',
       {
-        id: data.id,
+        id: aliased.id,
         requesterId: requestedBy,
-        requesterName: data.requester?.full_name || '',
+        requesterName: aliased.requester?.full_name || '',
         profileId: dto.profile_id,
-        profileName: profile.full_name,
-        courseName: (edition.courses as any)?.name || '',
-        departmentId: profile.department_id,
+        profileName: profile.full_name ?? '',
+        courseName: edition.courses?.name || '',
+        departmentId: profile.department_id ?? undefined,
       },
-      { id: requestedBy, name: data.requester?.full_name || '' },
+      { id: requestedBy, name: aliased.requester?.full_name || '' },
     );
 
     return data;
   }
 
-  /**
-   * Review (approve/reject) a request (by admin_rh)
-   */
+  /** Review (approve/reject) a request (by admin_rh) */
   async review(id: string, dto: ReviewRequestDto, reviewedBy: string) {
-    // 1. Get the request
-    const { data: request } = await this.supabase.db
-      .from('training_requests')
-      .select('id, status, course_edition_id, profile_id')
-      .eq('id', id)
-      .eq('is_active', true)
-      .single();
-
-    if (!request) {
-      throw new NotFoundException('Solicitud no encontrada');
-    }
+    const request = await this.prisma.training_requests.findFirst({
+      where: { id, is_active: true },
+      select: {
+        id: true,
+        status: true,
+        course_edition_id: true,
+        profile_id: true,
+      },
+    });
+    if (!request) throw new NotFoundException('Solicitud no encontrada');
 
     if (request.status !== 'pendiente') {
-      throw new BadRequestException(
-        `La solicitud ya fue ${request.status}`,
-      );
+      throw new BadRequestException(`La solicitud ya fue ${request.status}`);
     }
 
-    // 2. If rejecting, just update status
+    // === REJECT ===
     if (dto.status === 'rechazada') {
       if (!dto.rejection_reason) {
         throw new BadRequestException(
@@ -346,35 +342,32 @@ export class RequestsService {
         );
       }
 
-      const { data, error } = await this.supabase.db
-        .from('training_requests')
-        .update({
+      const updated = await this.prisma.training_requests.update({
+        where: { id },
+        data: {
           status: 'rechazada',
           rejection_reason: dto.rejection_reason,
           reviewed_by: reviewedBy,
-          reviewed_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .select(REQUEST_SELECT)
-        .single();
-
-      if (error) throw error;
+          reviewed_at: new Date(),
+        },
+        include: REQUEST_INCLUDE,
+      });
+      const data = aliasRequest(updated as unknown as Record<string, unknown>);
 
       this.logger.log(`Request ${id} rejected: ${dto.rejection_reason}`);
 
-      // Emit socket event for rejection
-      const profile = data.profiles as any;
-      const courseName = (data.course_editions as any)?.courses?.name || '';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const aliased: any = data;
       this.socketService.emitRequest(
         'reject',
         {
-          id: data.id,
-          requesterId: data.requested_by,
-          requesterName: data.requester?.full_name || '',
-          profileId: profile?.id,
-          profileName: profile?.full_name || '',
-          courseName,
-          departmentId: profile?.department_id,
+          id: aliased.id,
+          requesterId: aliased.requested_by,
+          requesterName: aliased.requester?.full_name || '',
+          profileId: aliased.profiles?.id,
+          profileName: aliased.profiles?.full_name || '',
+          courseName: aliased.course_editions?.courses?.name || '',
+          departmentId: aliased.profiles?.department_id ?? undefined,
         },
         { id: reviewedBy, name: '' },
       );
@@ -382,88 +375,72 @@ export class RequestsService {
       return data;
     }
 
-    // 3. If approving, create the enrollment
+    // === APPROVE ===
     const enrollment = await this.enrollmentsService.create(
       {
         course_edition_id: request.course_edition_id,
         profile_id: request.profile_id,
       },
-      true, // bypass blocking check since admin_rh is approving
+      true, // bypass blocking check (admin_rh approving)
     );
 
-    // 4. Update the request with approval info
-    const { data, error } = await this.supabase.db
-      .from('training_requests')
-      .update({
+    const updated = await this.prisma.training_requests.update({
+      where: { id },
+      data: {
         status: 'aprobada',
         reviewed_by: reviewedBy,
-        reviewed_at: new Date().toISOString(),
+        reviewed_at: new Date(),
         enrollment_id: enrollment.id,
-      })
-      .eq('id', id)
-      .select(REQUEST_SELECT)
-      .single();
+      },
+      include: REQUEST_INCLUDE,
+    });
+    const data = aliasRequest(updated as unknown as Record<string, unknown>);
 
-    if (error) throw error;
+    this.logger.log(
+      `Request ${id} approved, enrollment ${enrollment.id} created`,
+    );
 
-    this.logger.log(`Request ${id} approved, enrollment ${enrollment.id} created`);
-
-    // Emit socket event for approval
-    const profile = data.profiles as any;
-    const courseName = (data.course_editions as any)?.courses?.name || '';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const aliased: any = data;
     this.socketService.emitRequest(
       'approve',
       {
-        id: data.id,
-        requesterId: data.requested_by,
-        requesterName: data.requester?.full_name || '',
-        profileId: profile?.id,
-        profileName: profile?.full_name || '',
-        courseName,
-        departmentId: profile?.department_id,
+        id: aliased.id,
+        requesterId: aliased.requested_by,
+        requesterName: aliased.requester?.full_name || '',
+        profileId: aliased.profiles?.id,
+        profileName: aliased.profiles?.full_name || '',
+        courseName: aliased.course_editions?.courses?.name || '',
+        departmentId: aliased.profiles?.department_id ?? undefined,
       },
       { id: reviewedBy, name: '' },
     );
-
-    // Emit dashboard refresh
     this.socketService.emitDashboardRefresh();
 
     return data;
   }
 
-  /**
-   * Cancel a request (by the requester, only if pending)
-   */
+  /** Cancel a request (by the requester, only if pending) */
   async cancel(id: string, cancelledBy: string) {
-    const { data: request } = await this.supabase.db
-      .from('training_requests')
-      .select('id, status, requested_by')
-      .eq('id', id)
-      .eq('is_active', true)
-      .single();
+    const request = await this.prisma.training_requests.findFirst({
+      where: { id, is_active: true },
+      select: { id: true, status: true, requested_by: true },
+    });
+    if (!request) throw new NotFoundException('Solicitud no encontrada');
 
-    if (!request) {
-      throw new NotFoundException('Solicitud no encontrada');
-    }
-
-    // Only the requester can cancel, and only if pending
     if (request.requested_by !== cancelledBy) {
       throw new ForbiddenException('Solo el solicitante puede cancelar');
     }
-
     if (request.status !== 'pendiente') {
       throw new BadRequestException(
         `No se puede cancelar una solicitud ${request.status}`,
       );
     }
 
-    const { error } = await this.supabase.db
-      .from('training_requests')
-      .update({ is_active: false })
-      .eq('id', id);
-
-    if (error) throw error;
-
+    await this.prisma.training_requests.update({
+      where: { id },
+      data: { is_active: false },
+    });
     return { message: 'Solicitud cancelada' };
   }
 }

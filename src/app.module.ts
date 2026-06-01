@@ -4,7 +4,8 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { SupabaseModule } from './supabase/supabase.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { StorageModule } from './storage/storage.module';
 import { AuthModule } from './auth/auth.module';
 import { DepartmentsModule } from './departments/departments.module';
 import { InstitutionsModule } from './institutions/institutions.module';
@@ -36,7 +37,7 @@ import { EmailModule } from './email/email.module';
 import { RemindersModule } from './reminders/reminders.module';
 // Modulo de Contabilidad y Compliance Fiscal
 import { ContabilidadModule } from './contabilidad/contabilidad.module';
-import { SupabaseAuthGuard } from './common/guards/supabase-auth.guard';
+import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 
 @Module({
@@ -50,7 +51,10 @@ import { RolesGuard } from './common/guards/roles.guard';
         limit: Number(process.env.THROTTLE_LIMIT) || 100,
       },
     ]),
-    SupabaseModule,
+    // PrismaModule y StorageModule son @Global() — exponen `PrismaService` y
+    // `StorageService` a todos los módulos sin imports explícitos.
+    PrismaModule,
+    StorageModule,
     AuthModule,
     DepartmentsModule,
     InstitutionsModule,
@@ -91,7 +95,10 @@ import { RolesGuard } from './common/guards/roles.guard';
     // 2) Autenticación
     // 3) Autorización por rol
     { provide: APP_GUARD, useClass: ThrottlerGuard },
-    { provide: APP_GUARD, useClass: SupabaseAuthGuard },
+    // Fase 2: JwtAuthGuard reemplaza al viejo SupabaseAuthGuard. Valida el
+    // JWT propio (cookie HttpOnly o Authorization header). El shape de
+    // `request.user` no cambia — RolesGuard/DepartmentGuard siguen iguales.
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })

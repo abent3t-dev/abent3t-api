@@ -1,12 +1,19 @@
-import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+import { BusinessDaysService } from '../common/services/business-days.service';
 import { CreateRequisitionDto } from './dto/create-requisition.dto';
 import { UpdateRequisitionDto } from './dto/update-requisition.dto';
 import { FilterRequisitionDto } from './dto/filter-requisition.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
-import { buildIlikeOrFilter } from '../common/utils/postgrest.util';
 
-// Estados validos de requisicion (segun DB enum)
+// Estados validos de requisicion (segun DB enum). NOTA: 'borrador' NO existe
+// en BD real (§K-3 del AUDIT) — el flujo empieza en 'en_revision'.
 export type RequisitionStatus =
   | 'en_revision'
   | 'en_aprobacion'
@@ -15,85 +22,90 @@ export type RequisitionStatus =
   | 'cerrada'
   | 'cancelada';
 
-// Transiciones validas de estado
 const VALID_TRANSITIONS: Record<RequisitionStatus, RequisitionStatus[]> = {
   en_revision: ['en_aprobacion', 'cancelada'],
-  en_aprobacion: ['aprobada', 'cancelada'], // Requiere workflow de aprobacion
+  en_aprobacion: ['aprobada', 'cancelada'],
   aprobada: ['en_progreso', 'cancelada'],
   en_progreso: ['cerrada', 'cancelada'],
-  cerrada: [], // Estado final
-  cancelada: [], // Estado final
+  cerrada: [],
+  cancelada: [],
 };
+
+const REQUISITION_INCLUDE = {
+  profiles_requisitions_requester_idToprofiles: {
+    select: { id: true, full_name: true, email: true },
+  },
+  profiles_requisitions_buyer_idToprofiles: {
+    select: { id: true, full_name: true, email: true },
+  },
+  departments: { select: { id: true, name: true } },
+} as const;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function aliasRequisition<T extends Record<string, any>>(row: T): T {
+  if (!row) return row;
+  return {
+    ...row,
+    requester: row.profiles_requisitions_requester_idToprofiles ?? null,
+    buyer: row.profiles_requisitions_buyer_idToprofiles ?? null,
+    department: row.departments ?? null,
+  };
+}
 
 @Injectable()
 export class RequisitionsService {
   private readonly logger = new Logger(RequisitionsService.name);
-  private readonly tableName = 'requisitions';
-  private readonly selectFields = `
-    *,
-    requester:profiles!requester_id(id, full_name, email),
-    buyer:profiles!buyer_id(id, full_name, email),
-    department:departments(id, name)
-  `;
 
-  constructor(private readonly supabase: SupabaseService) {}
+  /** Lock simple para generación de rq_number (single-process). */
+  private rqNumberLock: Promise<void> = Promise.resolve();
 
-  /**
-   * Obtiene todas las requisiciones con filtros y paginacion
-   */
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly businessDays: BusinessDaysService,
+  ) {}
+
   async findAll(pagination: PaginationDto, filters?: FilterRequisitionDto) {
     const page = pagination.page ?? 1;
     const limit = pagination.limit ?? 20;
-    const offset = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-    let query = this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields, { count: 'exact' })
-      .eq('is_active', true);
-
-    // Aplicar filtros
-    if (filters?.status) {
-      query = query.eq('status', filters.status);
-    }
-    if (filters?.expense_type) {
-      query = query.eq('expense_type', filters.expense_type);
-    }
-    if (filters?.buyer_id) {
-      query = query.eq('buyer_id', filters.buyer_id);
-    }
-    if (filters?.requester_id) {
-      query = query.eq('requester_id', filters.requester_id);
-    }
-    if (filters?.department_id) {
-      query = query.eq('department_id', filters.department_id);
-    }
-    if (filters?.source) {
-      query = query.eq('source', filters.source);
-    }
-    if (filters?.date_from) {
-      query = query.gte('created_date', filters.date_from);
-    }
-    if (filters?.date_to) {
-      query = query.lte('created_date', filters.date_to);
+    const where: Prisma.requisitionsWhereInput = { is_active: true };
+    if (filters?.status)
+      where.status = filters.status as Prisma.requisitionsWhereInput['status'];
+    if (filters?.expense_type)
+      where.expense_type = filters.expense_type as Prisma.requisitionsWhereInput['expense_type'];
+    if (filters?.buyer_id) where.buyer_id = filters.buyer_id;
+    if (filters?.requester_id) where.requester_id = filters.requester_id;
+    if (filters?.department_id) where.department_id = filters.department_id;
+    if (filters?.source) where.source = filters.source;
+    if (filters?.date_from || filters?.date_to) {
+      const range: Prisma.DateTimeFilter = {};
+      if (filters.date_from) range.gte = new Date(filters.date_from);
+      if (filters.date_to) range.lte = new Date(filters.date_to);
+      where.created_date = range;
     }
 
-    // Busqueda por texto (sanitizada para evitar inyección PostgREST)
-    const orFilter = buildIlikeOrFilter(pagination.search, [
-      'rq_number',
-      'description',
+    const term = pagination.search?.trim();
+    if (term) {
+      where.OR = [
+        { rq_number: { contains: term, mode: 'insensitive' } },
+        { description: { contains: term, mode: 'insensitive' } },
+      ];
+    }
+
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.requisitions.findMany({
+        where,
+        include: REQUISITION_INCLUDE,
+        orderBy: { created_at: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.requisitions.count({ where }),
     ]);
-    if (orFilter) {
-      query = query.or(orFilter);
-    }
 
-    query = query.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
-
-    const { data, error, count } = await query;
-    if (error) throw error;
-
-    const total = count ?? 0;
     return {
-      data: data ?? [],
+      data: data.map((r) => aliasRequisition(r as unknown as Record<string, unknown>)),
       meta: {
         total,
         page,
@@ -105,252 +117,237 @@ export class RequisitionsService {
     };
   }
 
-  /**
-   * Obtiene estadisticas generales de requisiciones
-   */
   async getStats(filters?: { date_from?: string; date_to?: string }) {
-    let query = this.supabase.db
-      .from(this.tableName)
-      .select('status, expense_type, business_days_elapsed, estimated_amount')
-      .eq('is_active', true);
-
-    if (filters?.date_from) {
-      query = query.gte('created_date', filters.date_from);
-    }
-    if (filters?.date_to) {
-      query = query.lte('created_date', filters.date_to);
+    const where: Prisma.requisitionsWhereInput = { is_active: true };
+    if (filters?.date_from || filters?.date_to) {
+      const range: Prisma.DateTimeFilter = {};
+      if (filters.date_from) range.gte = new Date(filters.date_from);
+      if (filters.date_to) range.lte = new Date(filters.date_to);
+      where.created_date = range;
     }
 
-    const { data, error } = await query;
-    if (error) throw error;
+    const data = await this.prisma.requisitions.findMany({
+      where,
+      select: {
+        status: true,
+        expense_type: true,
+        business_days_elapsed: true,
+        estimated_amount: true,
+      },
+    });
 
-    // Contar por estado
     const byStatus: Record<string, number> = {};
     const byType: Record<string, number> = {};
     let totalDays = 0;
     let closedCount = 0;
     let totalAmount = 0;
 
-    for (const rq of data || []) {
-      byStatus[rq.status] = (byStatus[rq.status] || 0) + 1;
-      byType[rq.expense_type] = (byType[rq.expense_type] || 0) + 1;
-      totalAmount += rq.estimated_amount || 0;
-
-      if (rq.status === 'cerrada' && rq.business_days_elapsed) {
+    for (const rq of data) {
+      const status = rq.status ?? 'unknown';
+      byStatus[status] = (byStatus[status] || 0) + 1;
+      if (rq.expense_type)
+        byType[rq.expense_type] = (byType[rq.expense_type] || 0) + 1;
+      totalAmount += Number(rq.estimated_amount ?? 0);
+      if (status === 'cerrada' && rq.business_days_elapsed) {
         totalDays += rq.business_days_elapsed;
         closedCount++;
       }
     }
 
     return {
-      total: data?.length || 0,
+      total: data.length,
       by_status: byStatus,
       by_type: byType,
       total_estimated_amount: totalAmount,
-      average_business_days: closedCount > 0 ? Math.round(totalDays / closedCount) : 0,
+      average_business_days:
+        closedCount > 0 ? Math.round(totalDays / closedCount) : 0,
     };
   }
 
-  /**
-   * Obtiene una requisicion por ID
-   */
   async findOne(id: string) {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('id', id)
-      .single();
-
-    if (error || !data) throw new NotFoundException('Requisicion no encontrada');
-    return data;
+    const data = await this.prisma.requisitions.findUnique({
+      where: { id },
+      include: REQUISITION_INCLUDE,
+    });
+    if (!data) throw new NotFoundException('Requisición no encontrada');
+    return aliasRequisition(data as unknown as Record<string, unknown>);
   }
 
-  /**
-   * Obtiene el historial de cambios de una requisicion
-   */
   async getHistory(requisitionId: string) {
-    const { data, error } = await this.supabase.db
-      .from('requisition_history')
-      .select(
-        `
-        *,
-        changed_by_user:profiles!changed_by(id, full_name)
-      `,
-      )
-      .eq('requisition_id', requisitionId)
-      .order('changed_at', { ascending: false });
-
-    if (error) throw error;
-    return data || [];
+    return this.prisma.requisition_history.findMany({
+      where: { requisition_id: requisitionId },
+      include: {
+        profiles: { select: { id: true, full_name: true } },
+      },
+      orderBy: { changed_at: 'desc' },
+    });
   }
 
   /**
-   * Crea una nueva requisicion
+   * Genera el siguiente rq_number (reemplaza el trigger
+   * `auto_generate_rq_number` — §K-4). Patrón: `RQ-YYYY-NNNNNN`
+   * (año + secuencia anual de 6 dígitos zero-padded).
+   *
+   * Serializado por `rqNumberLock` para evitar race conditions en single
+   * process. En multi-instancia hay que migrar a una sequence o advisory
+   * lock — para dev local es suficiente.
    */
+  private async generateRqNumber(): Promise<string> {
+    const year = new Date().getUTCFullYear();
+    const prefix = `RQ-${year}-`;
+
+    // Lock simple por proceso
+    const release = this.rqNumberLock;
+    let resolveNext: () => void = () => {};
+    this.rqNumberLock = new Promise<void>((r) => {
+      resolveNext = r;
+    });
+    await release;
+
+    try {
+      const last = await this.prisma.requisitions.findFirst({
+        where: { rq_number: { startsWith: prefix } },
+        orderBy: { rq_number: 'desc' },
+        select: { rq_number: true },
+      });
+      let next = 1;
+      if (last?.rq_number) {
+        const seq = parseInt(last.rq_number.slice(prefix.length), 10);
+        if (!isNaN(seq)) next = seq + 1;
+      }
+      return prefix + String(next).padStart(6, '0');
+    } finally {
+      resolveNext();
+    }
+  }
+
   async create(dto: CreateRequisitionDto, userId: string) {
-    // Validar requester_id existe
-    await this.validateFK('profiles', dto.requester_id, 'requester_id');
+    await this.validateFK(this.prisma.profiles, dto.requester_id, 'requester_id');
+    if (dto.buyer_id)
+      await this.validateFK(this.prisma.profiles, dto.buyer_id, 'buyer_id');
+    if (dto.department_id)
+      await this.validateFK(
+        this.prisma.departments,
+        dto.department_id,
+        'department_id',
+      );
 
-    // Validar buyer_id si se proporciona
-    if (dto.buyer_id) {
-      await this.validateFK('profiles', dto.buyer_id, 'buyer_id');
-    }
+    const rqNumber = await this.generateRqNumber();
 
-    // Validar department_id si se proporciona
-    if (dto.department_id) {
-      await this.validateFK('departments', dto.department_id, 'department_id');
-    }
-
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .insert({
+    const created = await this.prisma.requisitions.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: {
         ...dto,
+        rq_number: rqNumber,
         status: 'en_revision',
-      })
-      .select(this.selectFields)
-      .single();
+      } as any,
+      include: REQUISITION_INCLUDE,
+    });
 
-    if (error) throw error;
-
-    this.logger.log(`Requisicion ${data.rq_number} creada por usuario ${userId}`);
-
-    return data;
+    this.logger.log(
+      `Requisición ${created.rq_number} creada por usuario ${userId}`,
+    );
+    return aliasRequisition(created as unknown as Record<string, unknown>);
   }
 
-  /**
-   * Actualiza una requisicion
-   */
   async update(id: string, dto: UpdateRequisitionDto, userId: string) {
     const existing = await this.findOne(id);
-
-    // No permitir actualizar si esta cerrada o cancelada
-    if (['cerrada', 'cancelada'].includes(existing.status)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e: any = existing;
+    if (['cerrada', 'cancelada'].includes(e.status)) {
       throw new BadRequestException(
-        `No se puede actualizar una requisicion con estado ${existing.status}`,
+        `No se puede actualizar una requisición con estado ${e.status}`,
       );
     }
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .update({
-        ...dto,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select(this.selectFields)
-      .single();
+    const updated = await this.prisma.requisitions.update({
+      where: { id },
+      data: dto as Prisma.requisitionsUpdateInput,
+      include: REQUISITION_INCLUDE,
+    });
 
-    if (error) throw error;
+    await this.logHistory(
+      id,
+      'general_update',
+      JSON.stringify(existing),
+      JSON.stringify(dto),
+      userId,
+    );
 
-    // Registrar en historial
-    await this.logHistory(id, 'general_update', JSON.stringify(existing), JSON.stringify(dto), userId);
-
-    return data;
+    return aliasRequisition(updated as unknown as Record<string, unknown>);
   }
 
-  /**
-   * Cambia el estado de una requisicion
-   */
-  async changeStatus(id: string, newStatus: RequisitionStatus, userId: string) {
+  async changeStatus(
+    id: string,
+    newStatus: RequisitionStatus,
+    userId: string,
+  ) {
     const existing = await this.findOne(id);
-    const currentStatus = existing.status as RequisitionStatus;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e: any = existing;
+    const currentStatus = e.status as RequisitionStatus;
 
-    // Validar transicion de estado
     if (!VALID_TRANSITIONS[currentStatus]?.includes(newStatus)) {
       throw new BadRequestException(
-        `Transicion de estado no permitida: ${currentStatus} -> ${newStatus}`,
+        `Transición de estado no permitida: ${currentStatus} -> ${newStatus}`,
       );
     }
 
-    const updateData: any = {
-      status: newStatus,
-      updated_at: new Date().toISOString(),
+    const updateData: Prisma.requisitionsUpdateInput = {
+      status: newStatus as Prisma.requisitionsUpdateInput['status'],
     };
 
-    // Si se cierra, calcular dias habiles y registrar fecha de cierre
     if (newStatus === 'cerrada') {
-      updateData.closed_date = new Date().toISOString().split('T')[0];
-      updateData.business_days_elapsed = await this.calculateBusinessDays(
-        existing.created_date,
-        updateData.closed_date,
+      const today = new Date();
+      updateData.closed_date = today;
+      updateData.business_days_elapsed = await this.businessDays.calculate(
+        e.created_date,
+        today,
       );
     }
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .update(updateData)
-      .eq('id', id)
-      .select(this.selectFields)
-      .single();
+    const updated = await this.prisma.requisitions.update({
+      where: { id },
+      data: updateData,
+      include: REQUISITION_INCLUDE,
+    });
 
-    if (error) throw error;
-
-    // Registrar en historial
     await this.logHistory(id, 'status', currentStatus, newStatus, userId);
+    this.logger.log(
+      `Requisición ${e.rq_number} cambió de ${currentStatus} a ${newStatus}`,
+    );
 
-    this.logger.log(`Requisicion ${existing.rq_number} cambio de ${currentStatus} a ${newStatus}`);
-
-    return data;
+    return aliasRequisition(updated as unknown as Record<string, unknown>);
   }
 
-  /**
-   * Asigna un comprador a una requisicion
-   */
   async assignBuyer(id: string, buyerId: string, userId: string) {
     const existing = await this.findOne(id);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e: any = existing;
 
-    // Validar que el comprador existe
-    await this.validateFK('profiles', buyerId, 'buyer_id');
+    await this.validateFK(this.prisma.profiles, buyerId, 'buyer_id');
 
-    const oldBuyerId = existing.buyer_id;
+    const updated = await this.prisma.requisitions.update({
+      where: { id },
+      data: { buyer_id: buyerId },
+      include: REQUISITION_INCLUDE,
+    });
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .update({
-        buyer_id: buyerId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select(this.selectFields)
-      .single();
+    await this.logHistory(id, 'buyer_id', e.buyer_id ?? null, buyerId, userId);
+    this.logger.log(
+      `Requisición ${e.rq_number} asignada a comprador ${buyerId}`,
+    );
 
-    if (error) throw error;
-
-    // Registrar en historial
-    await this.logHistory(id, 'buyer_id', oldBuyerId, buyerId, userId);
-
-    this.logger.log(`Requisicion ${existing.rq_number} asignada a comprador ${buyerId}`);
-
-    return data;
+    return aliasRequisition(updated as unknown as Record<string, unknown>);
   }
 
-  /**
-   * Cancela una requisicion (soft-delete con cambio de estado)
-   */
   async cancel(id: string, userId: string) {
     return this.changeStatus(id, 'cancelada', userId);
   }
 
   /**
-   * Calcula dias habiles entre dos fechas
-   * Usa la funcion de Supabase calculate_business_days()
-   */
-  async calculateBusinessDays(startDate: string, endDate: string): Promise<number> {
-    const { data, error } = await this.supabase.db.rpc('calculate_business_days', {
-      start_date: startDate,
-      end_date: endDate,
-    });
-
-    if (error) {
-      this.logger.error('Error calculando dias habiles:', error);
-      return 0;
-    }
-
-    return data || 0;
-  }
-
-  /**
-   * Registra un cambio en el historial
+   * Registra un cambio en el historial (reemplaza el trigger
+   * `log_requisition_changes` — §K-4). No bloquea la operación principal.
    */
   private async logHistory(
     requisitionId: string,
@@ -359,41 +356,46 @@ export class RequisitionsService {
     newValue: string,
     changedBy: string,
   ) {
-    const { error } = await this.supabase.db.from('requisition_history').insert({
-      requisition_id: requisitionId,
-      field_changed: fieldChanged,
-      old_value: oldValue,
-      new_value: newValue,
-      changed_by: changedBy,
-    });
-
-    if (error) {
-      this.logger.error('Error registrando historial:', error);
+    try {
+      await this.prisma.requisition_history.create({
+        data: {
+          requisition_id: requisitionId,
+          field_changed: fieldChanged,
+          old_value: oldValue,
+          new_value: newValue,
+          changed_by: changedBy,
+        },
+      });
+    } catch (err) {
+      this.logger.error('Error registrando historial:', err);
     }
   }
 
-  /**
-   * Valida que existe un registro en una tabla (FK)
-   */
-  private async validateFK(table: string, id: string, fieldName: string): Promise<void> {
-    const { data, error } = await this.supabase.db
-      .from(table)
-      .select('id, is_active')
-      .eq('id', id)
-      .single();
+  private async validateFK(
+    delegate: { findUnique: (args: unknown) => Promise<unknown> },
+    id: string,
+    fieldName: string,
+  ): Promise<void> {
+    const row = (await delegate.findUnique({
+      where: { id },
+      select: { id: true, is_active: true },
+    } as unknown)) as { id: string; is_active?: boolean } | null;
 
-    if (error || !data) {
+    if (!row) {
       throw new BadRequestException(`${fieldName}: registro no encontrado`);
     }
-    if (!(data as any).is_active) {
-      throw new BadRequestException(`${fieldName}: el registro esta desactivado`);
+    if (row.is_active === false) {
+      throw new BadRequestException(
+        `${fieldName}: el registro está desactivado`,
+      );
     }
   }
 
-  /**
-   * Importa requisiciones desde un sistema externo (Maximo/SAP)
-   */
-  async importFromExternal(requisitions: CreateRequisitionDto[], source: 'maximo' | 'sap', userId: string) {
+  async importFromExternal(
+    requisitions: CreateRequisitionDto[],
+    source: 'maximo' | 'sap',
+    userId: string,
+  ) {
     const results = {
       imported: 0,
       failed: 0,
@@ -402,17 +404,15 @@ export class RequisitionsService {
 
     for (const rq of requisitions) {
       try {
-        // Verificar si ya existe por external_id
         if (rq.external_id) {
-          const { data: existing } = await this.supabase.db
-            .from(this.tableName)
-            .select('id')
-            .eq('external_id', rq.external_id)
-            .eq('source', source)
-            .single();
-
+          const existing = await this.prisma.requisitions.findFirst({
+            where: { external_id: rq.external_id, source },
+            select: { id: true },
+          });
           if (existing) {
-            results.errors.push(`RQ ${rq.external_id} ya existe en el sistema`);
+            results.errors.push(
+              `RQ ${rq.external_id} ya existe en el sistema`,
+            );
             results.failed++;
             continue;
           }
@@ -420,16 +420,16 @@ export class RequisitionsService {
 
         await this.create({ ...rq, source }, userId);
         results.imported++;
-      } catch (error: any) {
+      } catch (error: unknown) {
         results.failed++;
-        results.errors.push(`Error importando RQ: ${error.message}`);
+        const msg = (error as { message?: string })?.message ?? 'unknown';
+        results.errors.push(`Error importando RQ: ${msg}`);
       }
     }
 
     this.logger.log(
-      `Importacion desde ${source}: ${results.imported} exitosas, ${results.failed} fallidas`,
+      `Importación desde ${source}: ${results.imported} exitosas, ${results.failed} fallidas`,
     );
-
     return results;
   }
 }

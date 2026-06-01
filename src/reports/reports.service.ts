@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 interface ReportFilters {
   period_id?: string;
@@ -12,58 +12,66 @@ interface ReportFilters {
 export class ReportsService {
   private readonly logger = new Logger(ReportsService.name);
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Reporte por persona: horas e inversión por colaborador
    */
   async getByPerson(filters: ReportFilters) {
-    let query = this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        id,
-        status,
-        enrolled_at,
-        completed_at,
-        profile_id,
-        profiles!inner(
-          id,
-          full_name,
-          email,
-          position,
-          department_id,
-          departments(id, name)
-        ),
-        course_editions!inner(
-          id,
-          start_date,
-          cost_override,
-          courses!inner(
-            id,
-            name,
-            total_hours,
-            cost,
-            institution_id,
-            institutions(id, name)
-          )
-        )
-      `)
-      .eq('is_active', true)
-      .neq('status', 'cancelado');
-
-    if (filters.department_id) {
-      query = query.eq('profiles.department_id', filters.department_id);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
+    const data = await this.prisma.course_enrollments.findMany({
+      where: {
+        is_active: true,
+        status: { not: 'cancelado' },
+        ...(filters.department_id
+          ? { profiles: { department_id: filters.department_id } }
+          : {}),
+      },
+      select: {
+        id: true,
+        status: true,
+        enrolled_at: true,
+        completed_at: true,
+        profile_id: true,
+        profiles: {
+          select: {
+            id: true,
+            full_name: true,
+            email: true,
+            position: true,
+            department_id: true,
+            departments: { select: { id: true, name: true } },
+          },
+        },
+        course_editions: {
+          select: {
+            id: true,
+            start_date: true,
+            cost_override: true,
+            courses: {
+              select: {
+                id: true,
+                name: true,
+                total_hours: true,
+                cost: true,
+                institution_id: true,
+                institutions: { select: { id: true, name: true } },
+              },
+            },
+          },
+        },
+      },
+    });
 
     // Agrupar por persona
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const byPerson: Record<string, any> = {};
 
     for (const enrollment of data || []) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const profile = enrollment.profiles as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const edition = enrollment.course_editions as any;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const course = edition?.courses as any;
 
       if (!profile?.id) continue;
@@ -85,7 +93,7 @@ export class ReportsService {
 
       const hours = course?.total_hours || 0;
       // Costo efectivo: usa cost_override de la edición si existe, sino el costo base del curso
-      const effectiveCost = edition?.cost_override ?? course?.cost ?? 0;
+      const effectiveCost = Number(edition?.cost_override ?? course?.cost ?? 0);
 
       byPerson[profile.id].courses_enrolled += 1;
       byPerson[profile.id].total_investment += effectiveCost;
@@ -107,50 +115,51 @@ export class ReportsService {
    */
   async getByDepartment(filters: ReportFilters) {
     // Obtener presupuestos
-    let budgetQuery = this.supabase.db
-      .from('budgets')
-      .select(`
-        id,
-        department_id,
-        period_id,
-        assigned_amount,
-        consumed_amount,
-        departments(id, name),
-        periods(id, year, semester, label)
-      `)
-      .eq('is_active', true);
-
-    if (filters.period_id) {
-      budgetQuery = budgetQuery.eq('period_id', filters.period_id);
-    }
-
-    const { data: budgets, error: budgetError } = await budgetQuery;
-    if (budgetError) throw budgetError;
+    const budgets = await this.prisma.budgets.findMany({
+      where: {
+        is_active: true,
+        ...(filters.period_id ? { period_id: filters.period_id } : {}),
+      },
+      select: {
+        id: true,
+        department_id: true,
+        period_id: true,
+        assigned_amount: true,
+        consumed_amount: true,
+        departments: { select: { id: true, name: true } },
+        periods: {
+          select: { id: true, year: true, semester: true, label: true },
+        },
+      },
+    });
 
     // Obtener inscripciones para calcular horas
-    let enrollmentQuery = this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        id,
-        status,
-        profile_id,
-        profiles!inner(department_id),
-        course_editions!inner(
-          cost_override,
-          courses!inner(total_hours, cost)
-        )
-      `)
-      .eq('is_active', true)
-      .neq('status', 'cancelado');
-
-    const { data: enrollments, error: enrollmentError } = await enrollmentQuery;
-    if (enrollmentError) throw enrollmentError;
+    const enrollments = await this.prisma.course_enrollments.findMany({
+      where: {
+        is_active: true,
+        status: { not: 'cancelado' },
+      },
+      select: {
+        id: true,
+        status: true,
+        profile_id: true,
+        profiles: { select: { department_id: true } },
+        course_editions: {
+          select: {
+            cost_override: true,
+            courses: { select: { total_hours: true, cost: true } },
+          },
+        },
+      },
+    });
 
     // Agrupar horas por departamento
     const hoursByDept: Record<string, { total: number; completed: number; enrolled: number; completed_count: number }> = {};
 
     for (const e of enrollments || []) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const deptId = (e.profiles as any)?.department_id;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const hours = (e.course_editions as any)?.courses?.total_hours || 0;
 
       if (!deptId) continue;
@@ -169,6 +178,7 @@ export class ReportsService {
     }
 
     // Combinar presupuestos con horas
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = (budgets || []).map((b: any) => {
       const deptId = b.department_id;
       const hoursData = hoursByDept[deptId] || { total: 0, completed: 0, enrolled: 0, completed_count: 0 };
@@ -198,32 +208,40 @@ export class ReportsService {
    * Reporte por institución: cursos e inversión por proveedor
    */
   async getByInstitution(filters: ReportFilters) {
-    const { data: enrollments, error } = await this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        id,
-        status,
-        course_editions!inner(
-          cost_override,
-          courses!inner(
-            id,
-            name,
-            cost,
-            total_hours,
-            institution_id,
-            institutions(id, name, type)
-          )
-        )
-      `)
-      .eq('is_active', true)
-      .neq('status', 'cancelado');
-
-    if (error) throw error;
+    const enrollments = await this.prisma.course_enrollments.findMany({
+      where: {
+        is_active: true,
+        status: { not: 'cancelado' },
+      },
+      select: {
+        id: true,
+        status: true,
+        course_editions: {
+          select: {
+            cost_override: true,
+            courses: {
+              select: {
+                id: true,
+                name: true,
+                cost: true,
+                total_hours: true,
+                institution_id: true,
+                institutions: {
+                  select: { id: true, name: true, type: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
 
     // Agrupar por institución
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const byInstitution: Record<string, any> = {};
 
     for (const e of enrollments || []) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const edition = e.course_editions as any;
       const course = edition?.courses;
       const institution = course?.institutions;
@@ -244,7 +262,7 @@ export class ReportsService {
       }
 
       // Costo efectivo: usa cost_override de la edición si existe, sino el costo base del curso
-      const effectiveCost = edition?.cost_override ?? course?.cost ?? 0;
+      const effectiveCost = Number(edition?.cost_override ?? course?.cost ?? 0);
       byInstitution[institution.id].total_investment += effectiveCost;
       byInstitution[institution.id].total_hours += course.total_hours || 0;
       byInstitution[institution.id].courses_count.add(course.id);
@@ -268,50 +286,54 @@ export class ReportsService {
    */
   async getByPeriod() {
     // Obtener todos los períodos
-    const { data: periods, error: periodError } = await this.supabase.db
-      .from('periods')
-      .select('*')
-      .eq('is_active', true)
-      .order('year', { ascending: false })
-      .order('semester', { ascending: false });
-
-    if (periodError) throw periodError;
+    const periods = await this.prisma.periods.findMany({
+      where: { is_active: true },
+      orderBy: [{ year: 'desc' }, { semester: 'desc' }],
+    });
 
     // Obtener presupuestos agrupados por período
-    const { data: budgets, error: budgetError } = await this.supabase.db
-      .from('budgets')
-      .select('period_id, assigned_amount, consumed_amount')
-      .eq('is_active', true);
-
-    if (budgetError) throw budgetError;
+    const budgets = await this.prisma.budgets.findMany({
+      where: { is_active: true },
+      select: {
+        period_id: true,
+        assigned_amount: true,
+        consumed_amount: true,
+      },
+    });
 
     // Obtener inscripciones con fechas
-    const { data: enrollments, error: enrollmentError } = await this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        id,
-        status,
-        enrolled_at,
-        course_editions!inner(
-          start_date,
-          cost_override,
-          courses!inner(total_hours, cost)
-        )
-      `)
-      .eq('is_active', true)
-      .neq('status', 'cancelado');
-
-    if (enrollmentError) throw enrollmentError;
+    const enrollments = await this.prisma.course_enrollments.findMany({
+      where: {
+        is_active: true,
+        status: { not: 'cancelado' },
+      },
+      select: {
+        id: true,
+        status: true,
+        enrolled_at: true,
+        course_editions: {
+          select: {
+            start_date: true,
+            cost_override: true,
+            courses: { select: { total_hours: true, cost: true } },
+          },
+        },
+      },
+    });
 
     // Calcular métricas por período
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = (periods || []).map((period: any) => {
       // Sumar presupuestos del período
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const periodBudgets = (budgets || []).filter((b: any) => b.period_id === period.id);
       const totalAssigned = periodBudgets.reduce((sum: number, b: any) => sum + (Number(b.assigned_amount) || 0), 0);
       const totalConsumed = periodBudgets.reduce((sum: number, b: any) => sum + (Number(b.consumed_amount) || 0), 0);
 
       // Filtrar inscripciones del período (por fecha de inicio del curso)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const periodEnrollments = (enrollments || []).filter((e: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const startDate = new Date((e.course_editions as any)?.start_date);
         const periodStart = new Date(period.start_date);
         const periodEnd = new Date(period.end_date);
@@ -325,10 +347,11 @@ export class ReportsService {
       // Calcular inversión total usando costo efectivo
       const totalInvestment = periodEnrollments.reduce((sum: number, e: any) => {
         const edition = e.course_editions as any;
-        const effectiveCost = edition?.cost_override ?? edition?.courses?.cost ?? 0;
+        const effectiveCost = Number(edition?.cost_override ?? edition?.courses?.cost ?? 0);
         return sum + effectiveCost;
       }, 0);
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const completedCount = periodEnrollments.filter((e: any) => e.status === 'completo').length;
 
       return {
@@ -355,6 +378,7 @@ export class ReportsService {
    * Exportar datos en formato CSV
    */
   async exportToCSV(type: 'person' | 'department' | 'institution' | 'period', filters: ReportFilters): Promise<string> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let data: any[];
     let headers: string[];
 
@@ -392,6 +416,7 @@ export class ReportsService {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private generateCSV(data: any[], headers: string[], fields: string[]): string {
     const rows = [headers.join(',')];
 

@@ -1,17 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
-import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 
 interface PendingEvidenceRecord {
   id: string;
   status: string;
   profile_id: string;
-  enrolled_at: string;
+  enrolled_at: Date | string;
   course_editions: {
     id: string;
-    end_date: string | null;
+    end_date: Date | string | null;
     require_evidence_for_completion: boolean;
     courses: {
       id: string;
@@ -45,7 +45,7 @@ export class RemindersService {
   private readonly config: ReminderConfig;
 
   constructor(
-    private readonly supabase: SupabaseService,
+    private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
     private readonly configService: ConfigService,
   ) {
@@ -123,21 +123,48 @@ export class RemindersService {
    * Obtiene todas las inscripciones con evidencia pendiente
    */
   private async getPendingEvidenceRecords(): Promise<PendingEvidenceRecord[]> {
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        id, status, profile_id, enrolled_at,
-        course_editions(
-          id, end_date, require_evidence_for_completion,
-          courses(id, name, institutions(name))
-        ),
-        profiles(id, full_name, email, department_id, departments(id, name))
-      `)
-      .eq('is_active', true)
-      .in('status', ['pendiente_evidencia', 'completo'])
-      .not('course_editions.require_evidence_for_completion', 'is', false);
-
-    if (error) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let data: any[];
+    try {
+      data = await this.prisma.course_enrollments.findMany({
+        where: {
+          is_active: true,
+          status: { in: ['pendiente_evidencia', 'completo'] },
+          course_editions: {
+            require_evidence_for_completion: { not: false },
+          },
+        },
+        select: {
+          id: true,
+          status: true,
+          profile_id: true,
+          enrolled_at: true,
+          course_editions: {
+            select: {
+              id: true,
+              end_date: true,
+              require_evidence_for_completion: true,
+              courses: {
+                select: {
+                  id: true,
+                  name: true,
+                  institutions: { select: { name: true } },
+                },
+              },
+            },
+          },
+          profiles: {
+            select: {
+              id: true,
+              full_name: true,
+              email: true,
+              department_id: true,
+              departments: { select: { id: true, name: true } },
+            },
+          },
+        },
+      });
+    } catch (error) {
       this.logger.error('Error obteniendo registros pendientes:', error);
       throw error;
     }
@@ -148,14 +175,8 @@ export class RemindersService {
     for (const record of data || []) {
       const hasApprovedEvidence = await this.checkApprovedEvidence(record.id);
       if (!hasApprovedEvidence) {
-        // Supabase puede retornar arrays o objetos según la relación
-        // Normalizamos para acceder al primer elemento si es array
-        const edition = Array.isArray(record.course_editions)
-          ? record.course_editions[0]
-          : record.course_editions;
-        const profile = Array.isArray(record.profiles)
-          ? record.profiles[0]
-          : record.profiles;
+        const edition = record.course_editions;
+        const profile = record.profiles;
 
         if (!edition || !profile) continue;
 
@@ -169,14 +190,14 @@ export class RemindersService {
             id: edition.id,
             end_date: edition.end_date,
             require_evidence_for_completion: edition.require_evidence_for_completion,
-            courses: Array.isArray(edition.courses) ? edition.courses[0] : edition.courses,
+            courses: edition.courses,
           } as PendingEvidenceRecord['course_editions'],
           profiles: {
             id: profile.id,
             full_name: profile.full_name,
             email: profile.email,
             department_id: profile.department_id,
-            departments: Array.isArray(profile.departments) ? profile.departments[0] : profile.departments,
+            departments: profile.departments,
           } as PendingEvidenceRecord['profiles'],
         };
         pendingRecords.push(typedRecord);
@@ -190,15 +211,15 @@ export class RemindersService {
    * Verifica si una inscripción tiene evidencia aprobada
    */
   private async checkApprovedEvidence(enrollmentId: string): Promise<boolean> {
-    const { data } = await this.supabase.db
-      .from('enrollment_evidences')
-      .select('id')
-      .eq('enrollment_id', enrollmentId)
-      .eq('verification_status', 'approved')
-      .eq('is_active', true)
-      .limit(1);
+    const count = await this.prisma.enrollment_evidences.count({
+      where: {
+        enrollment_id: enrollmentId,
+        verification_status: 'approved',
+        is_active: true,
+      },
+    });
 
-    return (data?.length || 0) > 0;
+    return count > 0;
   }
 
   /**
@@ -267,11 +288,10 @@ export class RemindersService {
     if (!course) return;
 
     // Obtener emails de admin_rh
-    const { data: admins } = await this.supabase.db
-      .from('profiles')
-      .select('email, full_name')
-      .eq('role', 'admin_rh')
-      .eq('is_active', true);
+    const admins = await this.prisma.profiles.findMany({
+      where: { role: 'admin_rh', is_active: true },
+      select: { email: true, full_name: true },
+    });
 
     if (!admins || admins.length === 0) {
       this.logger.warn('No hay administradores de RRHH para escalar');
@@ -287,7 +307,7 @@ export class RemindersService {
 
     for (const admin of admins) {
       await this.emailService.sendEmail({
-        to: { email: admin.email, name: admin.full_name },
+        to: { email: admin.email, name: admin.full_name || '' },
         subject: template.subject,
         body: template.body,
         isHtml: true,
@@ -322,17 +342,25 @@ export class RemindersService {
     followUpReminders: number;
     escalations: number;
   }): Promise<void> {
-    await this.supabase.db.from('audit_logs').insert({
-      action: 'create',
-      entity_type: 'enrollment',
-      entity_id: '00000000-0000-0000-0000-000000000000', // ID especial para sistema
-      entity_name: 'reminder_execution',
-      user_id: '00000000-0000-0000-0000-000000000000', // ID especial para sistema
-      user_name: 'Sistema',
-      user_role: 'system',
-      description: `Ejecución de recordatorios: ${stats.totalPending} pendientes, ${stats.firstReminders} primeros, ${stats.followUpReminders} seguimientos, ${stats.escalations} escalamientos`,
-      new_values: stats,
-    });
+    try {
+      await this.prisma.audit_logs.create({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data: {
+          action: 'create',
+          entity_type: 'enrollment',
+          entity_id: '00000000-0000-0000-0000-000000000000', // ID especial para sistema
+          entity_name: 'reminder_execution',
+          user_id: '00000000-0000-0000-0000-000000000000', // ID especial para sistema
+          user_name: 'Sistema',
+          user_role: 'system',
+          description: `Ejecución de recordatorios: ${stats.totalPending} pendientes, ${stats.firstReminders} primeros, ${stats.followUpReminders} seguimientos, ${stats.escalations} escalamientos`,
+          new_values: stats,
+        } as any,
+      });
+    } catch (err) {
+      // El user_id del sistema no es FK válido; logueamos pero no fallamos el cron.
+      this.logger.warn(`No se pudo registrar audit_log de ejecución de recordatorios: ${(err as Error).message}`);
+    }
   }
 
   /**

@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { SupabaseService } from '../../supabase/supabase.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { CreateTenenciaDto } from './dto/create-tenencia.dto';
 
 export interface ShareholdingRecord {
@@ -29,51 +29,55 @@ export interface ShareholdingDetail {
 
 @Injectable()
 export class TenenciaService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Obtiene la tenencia actual (versión más reciente)
    */
   async getCurrent(): Promise<ShareholdingRecord | null> {
-    const { data, error } = await this.supabase.db
-      .from('shareholding_records')
-      .select('*, shareholding_detail(*), profiles:created_by(id, full_name)')
-      .eq('is_active', true)
-      .order('version', { ascending: false })
-      .limit(1)
-      .single();
-
-    if (error && error.code !== 'PGRST116') throw error; // PGRST116 = no rows returned
-    return data as ShareholdingRecord | null;
+    const data = await this.prisma.shareholding_records.findFirst({
+      where: { is_active: true },
+      include: {
+        shareholding_detail: true,
+        profiles: { select: { id: true, full_name: true } },
+      },
+      orderBy: { version: 'desc' },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return data as any as ShareholdingRecord | null;
   }
 
   /**
    * Obtiene el historial de versiones de tenencia
    */
   async getHistorial(): Promise<ShareholdingRecord[]> {
-    const { data, error } = await this.supabase.db
-      .from('shareholding_records')
-      .select('*, shareholding_detail(*), profiles:created_by(id, full_name)')
-      .eq('is_active', true)
-      .order('version', { ascending: false });
-
-    if (error) throw error;
-    return data as ShareholdingRecord[];
+    const data = await this.prisma.shareholding_records.findMany({
+      where: { is_active: true },
+      include: {
+        shareholding_detail: true,
+        profiles: { select: { id: true, full_name: true } },
+      },
+      orderBy: { version: 'desc' },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return data as any as ShareholdingRecord[];
   }
 
   /**
    * Obtiene una versión específica de tenencia
    */
   async getVersion(id: string): Promise<ShareholdingRecord> {
-    const { data, error } = await this.supabase.db
-      .from('shareholding_records')
-      .select('*, shareholding_detail(*), profiles:created_by(id, full_name)')
-      .eq('id', id)
-      .eq('is_active', true)
-      .single();
+    const data = await this.prisma.shareholding_records.findFirst({
+      where: { id, is_active: true },
+      include: {
+        shareholding_detail: true,
+        profiles: { select: { id: true, full_name: true } },
+      },
+    });
 
-    if (error || !data) throw new NotFoundException('Versión de tenencia no encontrada');
-    return data as ShareholdingRecord;
+    if (!data) throw new NotFoundException('Versión de tenencia no encontrada');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return data as any as ShareholdingRecord;
   }
 
   /**
@@ -89,28 +93,23 @@ export class TenenciaService {
     }
 
     // Obtener el siguiente número de versión
-    const { data: lastVersion } = await this.supabase.db
-      .from('shareholding_records')
-      .select('version')
-      .order('version', { ascending: false })
-      .limit(1)
-      .single();
+    const lastVersion = await this.prisma.shareholding_records.findFirst({
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    });
 
     const nextVersion = (lastVersion?.version || 0) + 1;
 
     // Crear nueva versión
-    const { data: record, error: recordError } = await this.supabase.db
-      .from('shareholding_records')
-      .insert({
+    const record = await this.prisma.shareholding_records.create({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: {
         version: nextVersion,
-        effective_date: dto.effective_date,
+        effective_date: new Date(dto.effective_date),
         event_description: dto.event_description || null,
         created_by: userId,
-      } as any)
-      .select('*')
-      .single();
-
-    if (recordError) throw recordError;
+      } as any,
+    });
 
     // Crear detalles de accionistas
     const details = dto.accionistas.map((a) => ({
@@ -122,11 +121,10 @@ export class TenenciaService {
       notes: a.notes || null,
     }));
 
-    const { error: detailError } = await this.supabase.db
-      .from('shareholding_detail')
-      .insert(details as any);
-
-    if (detailError) throw detailError;
+    await this.prisma.shareholding_detail.createMany({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: details as any,
+    });
 
     // Retornar la versión completa
     return this.getVersion(record.id);
@@ -139,10 +137,11 @@ export class TenenciaService {
     await this.getVersion(id); // Validar que existe
 
     // Soft delete del registro (los detalles quedan vinculados)
-    await this.supabase.db
-      .from('shareholding_records')
-      .update({ is_active: false } as any)
-      .eq('id', id);
+    await this.prisma.shareholding_records.update({
+      where: { id },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: { is_active: false } as any,
+    });
 
     return { message: 'Versión de tenencia eliminada correctamente' };
   }
@@ -167,8 +166,12 @@ export class TenenciaService {
       this.getVersion(versionId2),
     ]);
 
-    const accionistas1 = new Map(v1.shareholding_detail?.map((d) => [d.accionista_nombre, d.porcentaje]) || []);
-    const accionistas2 = new Map(v2.shareholding_detail?.map((d) => [d.accionista_nombre, d.porcentaje]) || []);
+    const accionistas1 = new Map(
+      v1.shareholding_detail?.map((d) => [d.accionista_nombre, Number(d.porcentaje)]) || [],
+    );
+    const accionistas2 = new Map(
+      v2.shareholding_detail?.map((d) => [d.accionista_nombre, Number(d.porcentaje)]) || [],
+    );
 
     const added: string[] = [];
     const removed: string[] = [];

@@ -10,7 +10,8 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { JwtAuthService } from '../auth/services/jwt-auth.service';
 import { SocketService } from './socket.service';
 
 interface AuthenticatedSocket extends Socket {
@@ -23,6 +24,22 @@ interface AuthenticatedSocket extends Socket {
       full_name?: string;
     };
   };
+}
+
+/** Parser mínimo de Cookie header. Devuelve null si no hay cookies. */
+function parseCookieHeader(
+  cookieHeader: string | undefined,
+): Record<string, string> | null {
+  if (!cookieHeader) return null;
+  const result: Record<string, string> = {};
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const k = part.slice(0, idx).trim();
+    const v = part.slice(idx + 1).trim();
+    if (k) result[k] = decodeURIComponent(v);
+  }
+  return Object.keys(result).length > 0 ? result : null;
 }
 
 // Lee los mismos orígenes permitidos que el HTTP CORS de main.ts.
@@ -51,7 +68,12 @@ export class SocketGateway
   private connectedClients = new Map<string, AuthenticatedSocket>();
 
   constructor(
-    private readonly supabaseService: SupabaseService,
+    // Fase 2: handshake valida el JWT propio (no Supabase Auth). El cliente
+    // pasa el token como `auth.token` del handshake. Si el frontend usa
+    // cookies HttpOnly, puede pasar el token explícitamente leyéndolo de
+    // /auth/me o usando un endpoint dedicado (ver SocketContext del front).
+    private readonly jwtAuth: JwtAuthService,
+    private readonly prisma: PrismaService,
     private readonly socketService: SocketService,
   ) {}
 
@@ -64,7 +86,10 @@ export class SocketGateway
     try {
       const token =
         client.handshake.auth?.token ||
-        client.handshake.headers?.authorization?.replace('Bearer ', '');
+        client.handshake.headers?.authorization?.replace('Bearer ', '') ||
+        // Fase 2: el frontend usa cookies HttpOnly. Leemos `access_token` del
+        // cookie header del handshake (Socket.IO no expone `cookies` parseado).
+        parseCookieHeader(client.handshake.headers?.cookie)?.access_token;
 
       if (!token) {
         this.logger.warn(`Client ${client.id} connected without token`);
@@ -73,28 +98,31 @@ export class SocketGateway
         return;
       }
 
-      // Validate token using Supabase
-      const {
-        data: { user },
-        error,
-      } = await this.supabaseService.db.auth.getUser(token);
-
-      if (error || !user) {
+      // Validar JWT propio (Fase 2). Si falla la firma o expiró, rechazar.
+      let payload;
+      try {
+        payload = await this.jwtAuth.verifyAccess(token);
+      } catch {
         this.logger.warn(`Client ${client.id} has invalid token`);
         client.emit('error', { message: 'Invalid token' });
         client.disconnect();
         return;
       }
 
-      // Get user profile with role
-      const { data: profile } = await this.supabaseService.db
-        .from('profiles')
-        .select('id, email, full_name, role, department_id')
-        .eq('id', user.id)
-        .single();
+      // Cargar perfil + rol de display.
+      const profile = await this.prisma.profiles.findUnique({
+        where: { id: payload.sub },
+        select: {
+          id: true,
+          email: true,
+          full_name: true,
+          role: true,
+          department_id: true,
+        },
+      });
 
       if (!profile) {
-        this.logger.warn(`No profile found for user ${user.id}`);
+        this.logger.warn(`No profile found for user ${payload.sub}`);
         client.emit('error', { message: 'User profile not found' });
         client.disconnect();
         return;
@@ -105,8 +133,8 @@ export class SocketGateway
         id: profile.id,
         email: profile.email,
         role: profile.role,
-        department_id: profile.department_id,
-        full_name: profile.full_name,
+        department_id: profile.department_id ?? undefined,
+        full_name: profile.full_name ?? undefined,
       };
 
       // Join user-specific room
@@ -134,7 +162,7 @@ export class SocketGateway
         role: profile.role,
       });
     } catch (err) {
-      this.logger.error(`Error handling connection: ${err.message}`);
+      this.logger.error(`Error handling connection: ${(err as Error).message}`);
       client.emit('error', { message: 'Connection error' });
       client.disconnect();
     }

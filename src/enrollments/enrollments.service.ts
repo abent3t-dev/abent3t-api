@@ -5,25 +5,47 @@ import {
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { CreateEnrollmentDto } from './dto/create-enrollment.dto';
 import { BulkEnrollmentDto } from './dto/bulk-enrollment.dto';
 import { UpdateEnrollmentDto } from './dto/update-enrollment.dto';
 
-const ENROLLMENT_SELECT = `
-  *,
-  profiles(id, full_name, email, position, departments(id, name)),
-  course_editions(
-    id, course_id, start_date, end_date, max_participants, location, instructor,
-    require_evidence_for_completion,
-    courses(
-      id, name, total_hours, cost, description,
-      course_types(id, name),
-      modalities(id, name),
-      institutions(id, name)
-    )
-  )
-`;
+const ENROLLMENT_INCLUDE = {
+  profiles: {
+    select: {
+      id: true,
+      full_name: true,
+      email: true,
+      position: true,
+      departments: { select: { id: true, name: true } },
+    },
+  },
+  course_editions: {
+    select: {
+      id: true,
+      course_id: true,
+      start_date: true,
+      end_date: true,
+      max_participants: true,
+      location: true,
+      instructor: true,
+      require_evidence_for_completion: true,
+      courses: {
+        select: {
+          id: true,
+          name: true,
+          total_hours: true,
+          cost: true,
+          description: true,
+          course_types: { select: { id: true, name: true } },
+          modalities: { select: { id: true, name: true } },
+          institutions: { select: { id: true, name: true } },
+        },
+      },
+    },
+  },
+} as const;
 
 // Interface for enriched enrollment with evidence status
 export interface EnrichedEnrollment {
@@ -31,8 +53,8 @@ export interface EnrichedEnrollment {
   course_edition_id: string;
   profile_id: string;
   status: string;
-  enrolled_at: string;
-  completed_at: string | null;
+  enrolled_at: string | Date;
+  completed_at: string | Date | null;
   notes: string | null;
   is_active: boolean;
   profiles: Record<string, unknown> | null;
@@ -54,26 +76,27 @@ export class EnrollmentsService {
     cancelado: [],
   };
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   private async validateEditionCapacity(editionId: string, newCount = 1) {
-    const { data: edition } = await this.supabase.db
-      .from('course_editions')
-      .select('max_participants, is_active')
-      .eq('id', editionId)
-      .single();
+    const edition = await this.prisma.course_editions.findUnique({
+      where: { id: editionId },
+      select: { max_participants: true, is_active: true },
+    });
 
-    if (!edition) throw new BadRequestException('course_edition_id: edición no encontrada');
-    if (!edition.is_active) throw new BadRequestException('course_edition_id: la edición está desactivada');
+    if (!edition)
+      throw new BadRequestException(
+        'course_edition_id: edición no encontrada',
+      );
+    if (!edition.is_active)
+      throw new BadRequestException(
+        'course_edition_id: la edición está desactivada',
+      );
 
     if (edition.max_participants) {
-      const { count } = await this.supabase.db
-        .from('course_enrollments')
-        .select('id', { count: 'exact', head: true })
-        .eq('course_edition_id', editionId)
-        .eq('is_active', true);
-
-      const current = count ?? 0;
+      const current = await this.prisma.course_enrollments.count({
+        where: { course_edition_id: editionId, is_active: true },
+      });
       if (current + newCount > edition.max_participants) {
         throw new BadRequestException(
           `La edición tiene un máximo de ${edition.max_participants} participantes (actualmente ${current})`,
@@ -83,65 +106,59 @@ export class EnrollmentsService {
   }
 
   private async validateProfileExists(profileId: string) {
-    const { data } = await this.supabase.db
-      .from('profiles')
-      .select('id, is_active')
-      .eq('id', profileId)
-      .single();
-
-    if (!data) throw new BadRequestException('profile_id: perfil no encontrado');
-    if (!data.is_active) throw new BadRequestException('profile_id: el perfil está desactivado');
+    const profile = await this.prisma.profiles.findUnique({
+      where: { id: profileId },
+      select: { id: true, is_active: true },
+    });
+    if (!profile)
+      throw new BadRequestException('profile_id: perfil no encontrado');
+    if (!profile.is_active)
+      throw new BadRequestException('profile_id: el perfil está desactivado');
   }
 
   /**
-   * Enriches enrollments with evidence status for the semaphore
-   * - has_approved_evidence: true if there's at least one approved evidence
-   * - requires_evidence: true if the edition requires evidence for completion
+   * Enriches enrollments with evidence status for the semaphore (A3-19).
+   *   - has_approved_evidence: ≥1 evidencia con verification_status='approved'
+   *   - requires_evidence: la edición tiene require_evidence_for_completion=true
    */
   private async enrichWithEvidenceStatus(
-    enrollments: Record<string, unknown>[],
+    enrollments: Array<Record<string, unknown>>,
   ): Promise<EnrichedEnrollment[]> {
-    if (!enrollments || enrollments.length === 0) return [];
+    if (enrollments.length === 0) return [];
 
     const enrollmentIds = enrollments.map((e) => e.id as string);
 
-    // Get all evidences for these enrollments in one query
-    const { data: evidences } = await this.supabase.db
-      .from('enrollment_evidences')
-      .select('enrollment_id, verification_status')
-      .in('enrollment_id', enrollmentIds)
-      .eq('is_active', true);
+    const evidences = await this.prisma.enrollment_evidences.findMany({
+      where: { enrollment_id: { in: enrollmentIds }, is_active: true },
+      select: { enrollment_id: true, verification_status: true },
+    });
 
-    // Create a map of enrollment_id -> has_approved_evidence
     const approvedMap = new Map<string, boolean>();
-    if (evidences) {
-      for (const ev of evidences) {
-        if (ev.verification_status === 'approved') {
-          approvedMap.set(ev.enrollment_id, true);
-        }
+    for (const ev of evidences) {
+      if (ev.verification_status === 'approved') {
+        approvedMap.set(ev.enrollment_id, true);
       }
     }
 
-    // Enrich each enrollment
     return enrollments.map((enrollment) => {
-      const edition = enrollment.course_editions as Record<string, unknown> | null;
+      const edition = enrollment.course_editions as Record<
+        string,
+        unknown
+      > | null;
       return {
         ...enrollment,
-        has_approved_evidence: approvedMap.get(enrollment.id as string) || false,
-        requires_evidence: edition?.require_evidence_for_completion === true,
+        has_approved_evidence:
+          approvedMap.get(enrollment.id as string) || false,
+        requires_evidence:
+          edition?.require_evidence_for_completion === true,
       } as EnrichedEnrollment;
     });
   }
 
   /**
-   * Validates that the profile doesn't have any blocking enrollments.
-   * A blocking enrollment is one where:
-   * - Edition has require_evidence_for_completion = true
-   * - Status is NOT 'cancelado' or 'completo'
-   * - OR status is 'completo' but has no approved evidence
-   *
-   * Rule: Sin diploma/evidencia aprobada, el colaborador NO puede
-   *       inscribirse en otro curso.
+   * Validates that the profile doesn't have any blocking enrollments (A3-19).
+   * Sin diploma/evidencia aprobada, el colaborador NO puede inscribirse en
+   * otro curso.
    */
   private async validateNoBlockingEnrollments(
     profileId: string,
@@ -149,137 +166,124 @@ export class EnrollmentsService {
   ): Promise<void> {
     if (bypassCheck) return;
 
-    // Get all active enrollments for this profile that require evidence
-    const { data: enrollments } = await this.supabase.db
-      .from('course_enrollments')
-      .select(`
-        id,
-        status,
-        course_edition_id,
-        course_editions!inner(
-          id,
-          require_evidence_for_completion,
-          courses(name)
-        )
-      `)
-      .eq('profile_id', profileId)
-      .eq('is_active', true)
-      .neq('status', 'cancelado');
+    const enrollments = await this.prisma.course_enrollments.findMany({
+      where: {
+        profile_id: profileId,
+        is_active: true,
+        status: { not: 'cancelado' },
+      },
+      select: {
+        id: true,
+        status: true,
+        course_edition_id: true,
+        course_editions: {
+          select: {
+            id: true,
+            require_evidence_for_completion: true,
+            courses: { select: { name: true } },
+          },
+        },
+      },
+    });
 
-    if (!enrollments || enrollments.length === 0) return;
+    if (enrollments.length === 0) return;
 
-    // Check each enrollment
     for (const enrollment of enrollments) {
-      const edition = enrollment.course_editions as any;
-
-      // Skip if edition doesn't require evidence
+      const edition = enrollment.course_editions;
       if (!edition?.require_evidence_for_completion) continue;
 
-      const courseName = edition?.courses?.name || 'curso anterior';
+      const courseName = edition.courses?.name || 'curso anterior';
 
-      // If enrollment is not complete, it's blocking
       if (enrollment.status !== 'completo') {
         throw new BadRequestException(
           `El colaborador tiene una inscripción pendiente en "${courseName}". ` +
-          `Debe completar el curso antes de inscribirse en otro.`,
+            `Debe completar el curso antes de inscribirse en otro.`,
         );
       }
 
-      // If enrollment is complete, check for approved evidence
-      const { data: evidences } = await this.supabase.db
-        .from('enrollment_evidences')
-        .select('id, verification_status')
-        .eq('enrollment_id', enrollment.id)
-        .eq('is_active', true);
+      const evidences = await this.prisma.enrollment_evidences.findMany({
+        where: { enrollment_id: enrollment.id, is_active: true },
+        select: { verification_status: true },
+      });
 
-      const hasApprovedEvidence = evidences?.some(
+      const hasApprovedEvidence = evidences.some(
         (e) => e.verification_status === 'approved',
       );
 
       if (!hasApprovedEvidence) {
         throw new BadRequestException(
           `El colaborador completó "${courseName}" pero no tiene evidencia aprobada. ` +
-          `Sin diploma/evidencia aprobada no puede inscribirse en otro curso.`,
+            `Sin diploma/evidencia aprobada no puede inscribirse en otro curso.`,
         );
       }
     }
   }
 
   async findAll() {
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .select(ENROLLMENT_SELECT)
-      .eq('is_active', true)
-      .order('enrolled_at', { ascending: false });
-
-    if (error) throw error;
-    return this.enrichWithEvidenceStatus(data || []);
+    const data = await this.prisma.course_enrollments.findMany({
+      where: { is_active: true },
+      include: ENROLLMENT_INCLUDE,
+      orderBy: { enrolled_at: 'desc' },
+    });
+    return this.enrichWithEvidenceStatus(
+      data as unknown as Record<string, unknown>[],
+    );
   }
 
   async findByEdition(editionId: string) {
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .select(ENROLLMENT_SELECT)
-      .eq('course_edition_id', editionId)
-      .eq('is_active', true)
-      .order('enrolled_at', { ascending: false });
-
-    if (error) throw error;
-    return this.enrichWithEvidenceStatus(data || []);
+    const data = await this.prisma.course_enrollments.findMany({
+      where: { course_edition_id: editionId, is_active: true },
+      include: ENROLLMENT_INCLUDE,
+      orderBy: { enrolled_at: 'desc' },
+    });
+    return this.enrichWithEvidenceStatus(
+      data as unknown as Record<string, unknown>[],
+    );
   }
 
   async findByProfile(profileId: string) {
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .select(ENROLLMENT_SELECT)
-      .eq('profile_id', profileId)
-      .eq('is_active', true)
-      .order('enrolled_at', { ascending: false });
-
-    if (error) throw error;
-    return this.enrichWithEvidenceStatus(data || []);
+    const data = await this.prisma.course_enrollments.findMany({
+      where: { profile_id: profileId, is_active: true },
+      include: ENROLLMENT_INCLUDE,
+      orderBy: { enrolled_at: 'desc' },
+    });
+    return this.enrichWithEvidenceStatus(
+      data as unknown as Record<string, unknown>[],
+    );
   }
 
   /**
-   * Obtiene inscripciones de todos los colaboradores de un departamento
-   * Útil para que jefes de área vean el progreso de su equipo
+   * Inscripciones de todos los colaboradores de un departamento. Útil para
+   * jefes de área que ven el progreso de su equipo.
    */
   async findByDepartment(departmentId: string) {
-    // Primero obtenemos los profile_ids del departamento
-    const { data: profiles, error: profilesError } = await this.supabase.db
-      .from('profiles')
-      .select('id')
-      .eq('department_id', departmentId)
-      .eq('is_active', true);
-
-    if (profilesError) throw profilesError;
-    if (!profiles || profiles.length === 0) return [];
+    const profiles = await this.prisma.profiles.findMany({
+      where: { department_id: departmentId, is_active: true },
+      select: { id: true },
+    });
+    if (profiles.length === 0) return [];
 
     const profileIds = profiles.map((p) => p.id);
 
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .select(ENROLLMENT_SELECT)
-      .in('profile_id', profileIds)
-      .eq('is_active', true)
-      .order('enrolled_at', { ascending: false });
-
-    if (error) throw error;
-    return this.enrichWithEvidenceStatus(data || []);
+    const data = await this.prisma.course_enrollments.findMany({
+      where: { profile_id: { in: profileIds }, is_active: true },
+      include: ENROLLMENT_INCLUDE,
+      orderBy: { enrolled_at: 'desc' },
+    });
+    return this.enrichWithEvidenceStatus(
+      data as unknown as Record<string, unknown>[],
+    );
   }
 
   async findOne(id: string) {
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .select(ENROLLMENT_SELECT)
-      .eq('id', id)
-      .single();
-
-    if (error || !data) {
-      throw new NotFoundException('Inscripción no encontrada');
-    }
-
-    const enriched = await this.enrichWithEvidenceStatus([data]);
+    const data = await this.prisma.course_enrollments.findUnique({
+      where: { id },
+      include: ENROLLMENT_INCLUDE,
+    });
+    if (!data) throw new NotFoundException('Inscripción no encontrada');
+    const enriched = await this.enrichWithEvidenceStatus([
+      data as unknown as Record<string, unknown>,
+    ]);
     return enriched[0];
   }
 
@@ -290,120 +294,133 @@ export class EnrollmentsService {
       this.validateNoBlockingEnrollments(dto.profile_id, bypassBlockingCheck),
     ]);
 
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .insert({
-        course_edition_id: dto.course_edition_id,
-        profile_id: dto.profile_id,
-        status: 'inscrito',
-        notes: dto.notes,
-      })
-      .select(ENROLLMENT_SELECT)
-      .single();
+    try {
+      const data = await this.prisma.course_enrollments.create({
+        data: {
+          course_edition_id: dto.course_edition_id,
+          profile_id: dto.profile_id,
+          status: 'inscrito',
+          notes: dto.notes,
+        },
+        include: ENROLLMENT_INCLUDE,
+      });
 
-    if (error) {
-      if (error.code === '23505') {
+      await this.updateBudgetConsumption(
+        dto.profile_id,
+        dto.course_edition_id,
+        'add',
+      );
+
+      return data;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'P2002') {
         throw new ConflictException(
           'El participante ya está inscrito en esta edición',
         );
       }
-      throw error;
+      throw err;
     }
-
-    await this.updateBudgetConsumption(
-      dto.profile_id,
-      dto.course_edition_id,
-      'add',
-    );
-
-    return data;
   }
 
   async createBulk(dto: BulkEnrollmentDto, bypassBlockingCheck = false) {
-    await this.validateEditionCapacity(dto.course_edition_id, dto.profile_ids.length);
+    await this.validateEditionCapacity(
+      dto.course_edition_id,
+      dto.profile_ids.length,
+    );
     await Promise.all([
       ...dto.profile_ids.map((pid) => this.validateProfileExists(pid)),
-      ...dto.profile_ids.map((pid) => this.validateNoBlockingEnrollments(pid, bypassBlockingCheck)),
+      ...dto.profile_ids.map((pid) =>
+        this.validateNoBlockingEnrollments(pid, bypassBlockingCheck),
+      ),
     ]);
 
-    const enrollments = dto.profile_ids.map((profileId) => ({
-      course_edition_id: dto.course_edition_id,
-      profile_id: profileId,
-      status: 'inscrito',
-    }));
+    try {
+      // Prisma no soporta createMany con `include`; creamos primero y
+      // re-leemos con include después.
+      await this.prisma.course_enrollments.createMany({
+        data: dto.profile_ids.map((profileId) => ({
+          course_edition_id: dto.course_edition_id,
+          profile_id: profileId,
+          status: 'inscrito',
+        })),
+        skipDuplicates: false,
+      });
 
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .insert(enrollments)
-      .select(ENROLLMENT_SELECT);
+      const data = await this.prisma.course_enrollments.findMany({
+        where: {
+          course_edition_id: dto.course_edition_id,
+          profile_id: { in: dto.profile_ids },
+        },
+        include: ENROLLMENT_INCLUDE,
+      });
 
-    if (error) {
-      if (error.code === '23505') {
+      for (const profileId of dto.profile_ids) {
+        await this.updateBudgetConsumption(
+          profileId,
+          dto.course_edition_id,
+          'add',
+        );
+      }
+
+      return data;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'P2002') {
         throw new ConflictException(
           'Algunos participantes ya están inscritos',
         );
       }
-      throw error;
+      throw err;
     }
-
-    for (const profileId of dto.profile_ids) {
-      await this.updateBudgetConsumption(
-        profileId,
-        dto.course_edition_id,
-        'add',
-      );
-    }
-
-    return data;
   }
 
   async update(id: string, dto: UpdateEnrollmentDto) {
-    // Always fetch current state for transition validation + budget tracking
-    const { data: current } = await this.supabase.db
-      .from('course_enrollments')
-      .select('status, profile_id, course_edition_id')
-      .eq('id', id)
-      .single();
-
+    const current = await this.prisma.course_enrollments.findUnique({
+      where: { id },
+      select: { status: true, profile_id: true, course_edition_id: true },
+    });
     if (!current) throw new NotFoundException('Inscripción no encontrada');
 
-    // Validate state transition
     let previousStatus: string | null = null;
     let profileId: string | null = null;
     let editionId: string | null = null;
 
     if (dto.status && dto.status !== current.status) {
-      const currentStatus = current.status as string;
-      const allowed = EnrollmentsService.VALID_TRANSITIONS[currentStatus] ?? [];
+      const allowed =
+        EnrollmentsService.VALID_TRANSITIONS[current.status] ?? [];
       if (!allowed.includes(dto.status)) {
         throw new BadRequestException(
-          `No se puede cambiar de "${currentStatus}" a "${dto.status}". Transiciones válidas: ${allowed.join(', ') || 'ninguna'}`,
+          `No se puede cambiar de "${current.status}" a "${dto.status}". ` +
+            `Transiciones válidas: ${allowed.join(', ') || 'ninguna'}`,
         );
       }
       if (dto.status === 'cancelado') {
-        previousStatus = currentStatus;
-        profileId = current.profile_id as string;
-        editionId = current.course_edition_id as string;
+        previousStatus = current.status;
+        profileId = current.profile_id;
+        editionId = current.course_edition_id;
       }
     }
 
     const updateData: Record<string, unknown> = { ...dto };
     if (dto.status === 'completo') {
-      updateData.completed_at = new Date().toISOString();
+      updateData.completed_at = new Date();
     }
 
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .update(updateData)
-      .eq('id', id)
-      .select(ENROLLMENT_SELECT)
-      .single();
-
-    if (error || !data) {
-      throw new NotFoundException('Inscripción no encontrada');
+    let data;
+    try {
+      data = await this.prisma.course_enrollments.update({
+        where: { id },
+        data: updateData as Prisma.course_enrollmentsUpdateInput,
+        include: ENROLLMENT_INCLUDE,
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('Inscripción no encontrada');
+      }
+      throw err;
     }
 
-    // Subtract budget if status changed to cancelado
     if (previousStatus && profileId && editionId) {
       await this.updateBudgetConsumption(profileId, editionId, 'subtract');
     }
@@ -412,24 +429,26 @@ export class EnrollmentsService {
   }
 
   async remove(id: string) {
-    // Fetch enrollment data before removing to update budget
-    const { data: current } = await this.supabase.db
-      .from('course_enrollments')
-      .select('profile_id, course_edition_id, status')
-      .eq('id', id)
-      .single();
+    const current = await this.prisma.course_enrollments.findUnique({
+      where: { id },
+      select: {
+        profile_id: true,
+        course_edition_id: true,
+        status: true,
+      },
+    });
 
-    const { error } = await this.supabase.db
-      .from('course_enrollments')
-      .update({ is_active: false, status: 'cancelado' })
-      .eq('id', id);
+    if (!current) throw new NotFoundException('Inscripción no encontrada');
 
-    if (error) throw error;
+    await this.prisma.course_enrollments.update({
+      where: { id },
+      data: { is_active: false, status: 'cancelado' },
+    });
 
-    if (current && current.status !== 'cancelado') {
+    if (current.status !== 'cancelado') {
       await this.updateBudgetConsumption(
-        current.profile_id as string,
-        current.course_edition_id as string,
+        current.profile_id,
+        current.course_edition_id,
         'subtract',
       );
     }
@@ -438,8 +457,8 @@ export class EnrollmentsService {
   }
 
   /**
-   * Allows a collaborator to mark their course as finished.
-   * Changes status from 'inscrito' or 'en_curso' to 'pendiente_evidencia'.
+   * Allows a collaborator to mark their course as finished. Transición
+   * inscrito|en_curso → pendiente_evidencia.
    */
   async finishCourse(enrollmentId: string) {
     const enrollment = await this.findOne(enrollmentId);
@@ -448,37 +467,34 @@ export class EnrollmentsService {
     if (!allowedStatuses.includes(enrollment.status)) {
       throw new BadRequestException(
         `No puedes finalizar un curso con estado "${enrollment.status}". ` +
-        `Solo se puede finalizar cursos con estado: ${allowedStatuses.join(', ')}`,
+          `Solo se puede finalizar cursos con estado: ${allowedStatuses.join(', ')}`,
       );
     }
 
-    // Check if course has started based on dates
-    const edition = enrollment.course_editions as any;
+    const edition = enrollment.course_editions as Record<string, unknown>;
     const today = new Date().toISOString().split('T')[0];
+    const startDate = edition?.start_date
+      ? new Date(edition.start_date as string).toISOString().split('T')[0]
+      : null;
 
-    if (edition?.start_date && today < edition.start_date) {
+    if (startDate && today < startDate) {
       throw new BadRequestException(
         'No puedes finalizar un curso que aún no ha comenzado',
       );
     }
 
-    const { data, error } = await this.supabase.db
-      .from('course_enrollments')
-      .update({ status: 'pendiente_evidencia' })
-      .eq('id', enrollmentId)
-      .select(ENROLLMENT_SELECT)
-      .single();
-
-    if (error) throw error;
-    return data;
+    return this.prisma.course_enrollments.update({
+      where: { id: enrollmentId },
+      data: { status: 'pendiente_evidencia' },
+      include: ENROLLMENT_INCLUDE,
+    });
   }
 
   /**
-   * Calculates the effective status of an enrollment based on dates.
-   * - If status is 'inscrito' and today >= start_date: effective = 'en_curso'
-   * - If status is 'inscrito'/'en_curso' and today > end_date: effective = 'pendiente_evidencia'
-   * - Otherwise returns the actual status
+   * Calcula el estado efectivo de una inscripción basado en fechas
+   * (semáforo A3-19).
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   getEffectiveStatus(enrollment: any): {
     status: string;
     effectiveStatus: string;
@@ -489,25 +505,27 @@ export class EnrollmentsService {
   } {
     const edition = enrollment.course_editions;
     const today = new Date().toISOString().split('T')[0];
-    const startDate = edition?.start_date;
-    const endDate = edition?.end_date;
+    const startDate = edition?.start_date
+      ? new Date(edition.start_date).toISOString().split('T')[0]
+      : null;
+    const endDate = edition?.end_date
+      ? new Date(edition.end_date).toISOString().split('T')[0]
+      : null;
 
     const courseStarted = startDate ? today >= startDate : false;
     const courseEnded = endDate ? today > endDate : false;
 
     let effectiveStatus = enrollment.status;
-
-    // If enrolled and course has started, effective status is 'en_curso'
     if (enrollment.status === 'inscrito' && courseStarted) {
       effectiveStatus = 'en_curso';
     }
-
-    // If course has ended and not yet finished, effective status is 'pendiente_evidencia'
-    if (['inscrito', 'en_curso'].includes(enrollment.status) && courseEnded) {
+    if (
+      ['inscrito', 'en_curso'].includes(enrollment.status) &&
+      courseEnded
+    ) {
       effectiveStatus = 'pendiente_evidencia';
     }
 
-    // Determine available actions
     const canFinish =
       ['inscrito', 'en_curso'].includes(enrollment.status) &&
       courseStarted &&
@@ -529,14 +547,9 @@ export class EnrollmentsService {
   }
 
   /**
-   * Updates the consumed_amount on the matching budget when an enrollment
-   * is created or cancelled.
-   *
-   * If prorate_cost is enabled on the edition, recalculates budgets for ALL
-   * departments with participants in the edition.
-   *
-   * Budget lookup: department of the enrolled profile + period whose
-   * date range contains today.
+   * Actualiza consumed_amount del presupuesto al crear/cancelar una
+   * inscripción. Si la edición tiene prorate_cost=true, recalcula presupuestos
+   * de TODOS los departamentos.
    */
   private async updateBudgetConsumption(
     profileId: string,
@@ -544,33 +557,29 @@ export class EnrollmentsService {
     operation: 'add' | 'subtract',
   ): Promise<void> {
     try {
-      // Check if edition has prorate_cost enabled and get cost_override
-      const { data: edition } = await this.supabase.db
-        .from('course_editions')
-        .select('course_id, prorate_cost, cost_override, courses(cost)')
-        .eq('id', courseEditionId)
-        .single();
+      const edition = await this.prisma.course_editions.findUnique({
+        where: { id: courseEditionId },
+        select: {
+          course_id: true,
+          prorate_cost: true,
+          cost_override: true,
+          courses: { select: { cost: true } },
+        },
+      });
 
-      // Costo efectivo: usa cost_override de la edición si existe, sino el costo base del curso
-      const baseCost = (edition?.courses as any)?.cost ?? 0;
-      const effectiveCost = edition?.cost_override ?? baseCost;
+      const baseCost = Number(edition?.courses?.cost ?? 0);
+      const effectiveCost = Number(edition?.cost_override ?? baseCost);
       if (effectiveCost === 0) return;
 
-      // If prorate_cost is enabled, recalculate ALL department budgets
       if (edition?.prorate_cost) {
         await this.recalculateProratedBudgets(courseEditionId, effectiveCost);
         return;
       }
 
-      const cost = effectiveCost;
-
-      // Original logic for non-prorated enrollments
-      // 1. Get profile's department
-      const { data: profile } = await this.supabase.db
-        .from('profiles')
-        .select('department_id')
-        .eq('id', profileId)
-        .single();
+      const profile = await this.prisma.profiles.findUnique({
+        where: { id: profileId },
+        select: { department_id: true },
+      });
 
       if (!profile?.department_id) {
         this.logger.warn(
@@ -579,35 +588,30 @@ export class EnrollmentsService {
         return;
       }
 
-      // 2. Find current active period (today falls between start/end)
-      const today = new Date().toISOString().split('T')[0];
-
-      const { data: period } = await this.supabase.db
-        .from('periods')
-        .select('id')
-        .eq('is_active', true)
-        .lte('start_date', today)
-        .gte('end_date', today)
-        .limit(1)
-        .single();
-
+      const today = new Date();
+      const period = await this.prisma.periods.findFirst({
+        where: {
+          is_active: true,
+          start_date: { lte: today },
+          end_date: { gte: today },
+        },
+        select: { id: true },
+      });
       if (!period) {
         this.logger.warn(
-          `No active period found for date ${today} — skipping budget update`,
+          `No active period found for date ${today.toISOString()} — skipping budget update`,
         );
         return;
       }
 
-      // 3. Find budget for department + period
-      const { data: budget } = await this.supabase.db
-        .from('budgets')
-        .select('id, consumed_amount')
-        .eq('department_id', profile.department_id)
-        .eq('period_id', period.id)
-        .eq('is_active', true)
-        .limit(1)
-        .single();
-
+      const budget = await this.prisma.budgets.findFirst({
+        where: {
+          department_id: profile.department_id,
+          period_id: period.id,
+          is_active: true,
+        },
+        select: { id: true, consumed_amount: true },
+      });
       if (!budget) {
         this.logger.warn(
           `No budget for department ${profile.department_id} / period ${period.id} — skipping`,
@@ -615,85 +619,78 @@ export class EnrollmentsService {
         return;
       }
 
-      // 4. Update consumed_amount
-      const currentConsumed = Number(budget.consumed_amount) || 0;
+      const currentConsumed = Number(budget.consumed_amount);
       const newConsumed =
         operation === 'add'
-          ? currentConsumed + cost
-          : Math.max(0, currentConsumed - cost);
+          ? currentConsumed + effectiveCost
+          : Math.max(0, currentConsumed - effectiveCost);
 
-      await this.supabase.db
-        .from('budgets')
-        .update({ consumed_amount: newConsumed })
-        .eq('id', budget.id);
+      await this.prisma.budgets.update({
+        where: { id: budget.id },
+        data: { consumed_amount: newConsumed },
+      });
 
       this.logger.log(
-        `Budget ${budget.id}: consumed_amount ${currentConsumed} → ${newConsumed} (${operation} ${cost})`,
+        `Budget ${budget.id}: consumed_amount ${currentConsumed} → ${newConsumed} (${operation} ${effectiveCost})`,
       );
     } catch (err) {
-      // Never block enrollment due to budget errors
       this.logger.error('Failed to update budget consumption', err);
     }
   }
 
   /**
-   * Recalculates budget consumption for ALL departments with participants
-   * in a prorated edition.
-   *
-   * Formula: cost_per_person = course_cost / total_participants
-   * Each department pays: cost_per_person * participants_from_department
-   *
-   * This is called whenever a participant is added or removed from a
-   * prorated edition.
+   * Recalcula consumed_amount para TODOS los departamentos con participantes
+   * en una edición con prorate_cost=true. Fórmula A3-16.
    */
   private async recalculateProratedBudgets(
     courseEditionId: string,
     courseCost: number,
   ): Promise<void> {
     try {
-      // 1. Get all active enrollments with profile department info
-      const { data: enrollments } = await this.supabase.db
-        .from('course_enrollments')
-        .select('id, profile_id, profiles(department_id)')
-        .eq('course_edition_id', courseEditionId)
-        .eq('is_active', true)
-        .neq('status', 'cancelado');
+      const enrollments = await this.prisma.course_enrollments.findMany({
+        where: {
+          course_edition_id: courseEditionId,
+          is_active: true,
+          status: { not: 'cancelado' },
+        },
+        select: {
+          id: true,
+          profile_id: true,
+          profiles: { select: { department_id: true } },
+        },
+      });
 
-      if (!enrollments || enrollments.length === 0) {
+      if (enrollments.length === 0) {
         this.logger.log(
           `No active enrollments for edition ${courseEditionId} — skipping proration`,
         );
         return;
       }
 
-      // 2. Find current active period
-      const today = new Date().toISOString().split('T')[0];
-      const { data: period } = await this.supabase.db
-        .from('periods')
-        .select('id')
-        .eq('is_active', true)
-        .lte('start_date', today)
-        .gte('end_date', today)
-        .limit(1)
-        .single();
-
+      const today = new Date();
+      const period = await this.prisma.periods.findFirst({
+        where: {
+          is_active: true,
+          start_date: { lte: today },
+          end_date: { gte: today },
+        },
+        select: { id: true },
+      });
       if (!period) {
         this.logger.warn(
-          `No active period found for date ${today} — skipping proration`,
+          `No active period found for date ${today.toISOString()} — skipping proration`,
         );
         return;
       }
 
-      // 3. Count participants per department
       const departmentCounts: Record<string, number> = {};
       for (const enrollment of enrollments) {
-        const deptId = (enrollment.profiles as any)?.department_id;
+        const deptId = enrollment.profiles?.department_id;
         if (deptId) {
           departmentCounts[deptId] = (departmentCounts[deptId] || 0) + 1;
         }
       }
 
-      // 4. Calculate prorated cost per person
       const totalParticipants = enrollments.length;
       const costPerPerson = courseCost / totalParticipants;
 
@@ -701,19 +698,17 @@ export class EnrollmentsService {
         `Proration: ${courseCost} / ${totalParticipants} participants = ${costPerPerson.toFixed(2)} per person`,
       );
 
-      // 5. Update budget for each department
       for (const [deptId, count] of Object.entries(departmentCounts)) {
         const deptCost = costPerPerson * count;
 
-        // Get current budget
-        const { data: budget } = await this.supabase.db
-          .from('budgets')
-          .select('id, consumed_amount')
-          .eq('department_id', deptId)
-          .eq('period_id', period.id)
-          .eq('is_active', true)
-          .limit(1)
-          .single();
+        const budget = await this.prisma.budgets.findFirst({
+          where: {
+            department_id: deptId,
+            period_id: period.id,
+            is_active: true,
+          },
+          select: { id: true },
+        });
 
         if (!budget) {
           this.logger.warn(
@@ -722,13 +717,10 @@ export class EnrollmentsService {
           continue;
         }
 
-        // Note: For proper proration tracking, we'd need to store previous
-        // proration values. For now, we recalculate based on current state.
-        // This assumes the budget's consumed_amount is updated atomically.
-        await this.supabase.db
-          .from('budgets')
-          .update({ consumed_amount: deptCost })
-          .eq('id', budget.id);
+        await this.prisma.budgets.update({
+          where: { id: budget.id },
+          data: { consumed_amount: deptCost },
+        });
 
         this.logger.log(
           `Budget ${budget.id} (dept ${deptId}): prorated cost = ${deptCost.toFixed(2)} (${count} participants × ${costPerPerson.toFixed(2)})`,

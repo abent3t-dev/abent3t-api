@@ -4,7 +4,9 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { Prisma } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+import { LocalAuthService } from './services/local-auth.service';
 import {
   upsertUserRole,
   revokeUserRole,
@@ -14,7 +16,10 @@ import {
 
 interface CreateUserDto {
   email: string;
-  password: string;
+  /** Opcional desde Fase 2: si se pasa, se setea como credencial local
+   *  (login email+password). Si no, el usuario solo podrá entrar vía OIDC
+   *  cuando Entra ID esté configurado. */
+  password?: string;
   full_name: string;
   position?: string;
   role?: string;
@@ -23,41 +28,45 @@ interface CreateUserDto {
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly supabase: SupabaseService) {}
+  /**
+   * Fase 2: la identidad ya NO depende de Supabase Auth. El alta crea solo
+   * el `profile` (modelo K-7 — pre-registro con `pending_first_login=true`)
+   * y opcionalmente una `local_credentials` si se pasa password. El primer
+   * login (OIDC o local) baja `pending_first_login` a false.
+   */
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly local: LocalAuthService,
+  ) {}
 
   /**
    * Busca un usuario por email (case-insensitive) y devuelve su info básica
    * + roles asignados por módulo. Usado por la UI de alta de usuarios para
-   * detectar duplicados antes del submit y darle feedback al admin.
-   *
-   * No expone password ni datos sensibles.
+   * detectar duplicados antes del submit.
    */
   async lookupByEmail(email: string) {
     const normalized = email.trim().toLowerCase();
     if (!normalized) return { exists: false as const };
 
-    const { data: profile } = await this.supabase.db
-      .from('profiles')
-      .select(`
-        id, full_name, email, position, role, is_active,
-        departments(id, name)
-      `)
-      .ilike('email', normalized)
-      .maybeSingle();
+    const profile = await this.prisma.profiles.findFirst({
+      where: { email: { equals: normalized, mode: 'insensitive' } },
+      select: {
+        id: true,
+        full_name: true,
+        email: true,
+        position: true,
+        role: true,
+        is_active: true,
+        departments: { select: { id: true, name: true } },
+      },
+    });
 
     if (!profile) return { exists: false as const };
 
-    let roles_by_module: { module: string; role: string }[] = [];
-    try {
-      const { data } = await this.supabase.db
-        .from('user_roles')
-        .select('module, role')
-        .eq('profile_id', profile.id)
-        .eq('is_active', true);
-      roles_by_module = data ?? [];
-    } catch {
-      roles_by_module = [];
-    }
+    const roles_by_module = await this.prisma.user_roles.findMany({
+      where: { profile_id: profile.id, is_active: true },
+      select: { module: true, role: true },
+    });
 
     return {
       exists: true as const,
@@ -67,35 +76,22 @@ export class AuthService {
   }
 
   async getProfile(userId: string) {
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .select('*, departments(id, name)')
-      .eq('id', userId)
-      .single();
+    const profile = await this.prisma.profiles.findUnique({
+      where: { id: userId },
+      include: { departments: { select: { id: true, name: true } } },
+    });
+    if (!profile) throw new NotFoundException('Perfil no encontrado');
 
-    if (error || !data) throw new NotFoundException('Perfil no encontrado');
-
-    // user_roles es la fuente única. Si la tabla aún no existe (entornos
-    // pre-migración), degrada gracilmente con array vacío.
-    let assignments: { module: string; role: string }[] = [];
-    try {
-      const { data: rolesData } = await this.supabase.db
-        .from('user_roles')
-        .select('module, role')
-        .eq('profile_id', userId)
-        .eq('is_active', true);
-      assignments = rolesData ?? [];
-    } catch {
-      assignments = [];
-    }
+    const assignments = await this.prisma.user_roles.findMany({
+      where: { profile_id: userId, is_active: true },
+      select: { module: true, role: true },
+    });
 
     const roles = Array.from(new Set(assignments.map((a) => a.role)));
-    // Display role: el rol "principal" para mostrar como badge único o
-    // decidir HOME_ROUTES post-login.
-    const displayRole = getDisplayRole(roles) ?? data.role;
+    const displayRole = getDisplayRole(roles) ?? profile.role;
 
     return {
-      ...data,
+      ...profile,
       role: displayRole, // sobrescribe la columna huérfana profiles.role
       roles,
       role_assignments: assignments,
@@ -104,14 +100,7 @@ export class AuthService {
 
   /**
    * Asigna un rol al usuario en el módulo correspondiente al rol.
-   * Si ya tiene OTROS roles activos en el mismo módulo, los revoca para
-   * que solo quede el rol nuevo (semántica de "cambiar el rol del módulo").
-   *
-   * Notas:
-   *  - profiles.role NO se actualiza — es columna huérfana.
-   *  - Roles en OTROS módulos no se ven afectados.
-   *  - Para gestión más fina (varios roles dentro del mismo módulo),
-   *    usar /auth/users/:id/roles directamente.
+   * Revoca otros roles activos en el mismo módulo (regla "1 rol por módulo").
    */
   async updateRole(userId: string, role: string, performedBy?: string) {
     const targetModule = getModuleForRole(role);
@@ -119,17 +108,14 @@ export class AuthService {
       throw new BadRequestException(`Rol desconocido: ${role}`);
     }
 
-    // Revocar otros roles activos en el mismo módulo
-    const { data: existingRoles } = await this.supabase.db
-      .from('user_roles')
-      .select('role')
-      .eq('profile_id', userId)
-      .eq('module', targetModule)
-      .eq('is_active', true);
+    const existingRoles = await this.prisma.user_roles.findMany({
+      where: { profile_id: userId, module: targetModule, is_active: true },
+      select: { role: true },
+    });
 
-    for (const r of existingRoles ?? []) {
+    for (const r of existingRoles) {
       if (r.role !== role) {
-        await revokeUserRole(this.supabase.db, {
+        await revokeUserRole(this.prisma, {
           profileId: userId,
           role: r.role,
           revokedBy: performedBy ?? null,
@@ -137,64 +123,72 @@ export class AuthService {
       }
     }
 
-    // Asignar (o reactivar) el rol nuevo
-    await upsertUserRole(this.supabase.db, {
+    await upsertUserRole(this.prisma, {
       profileId: userId,
       role,
       grantedBy: performedBy ?? null,
     });
 
-    // Devolver perfil enriquecido (con roles[] actualizados)
     return this.getProfile(userId);
   }
 
   async assignDepartment(userId: string, departmentId: string) {
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .update({ department_id: departmentId })
-      .eq('id', userId)
-      .select()
-      .single();
-
-    if (error || !data) throw new NotFoundException('Perfil no encontrado');
-    return data;
+    try {
+      return await this.prisma.profiles.update({
+        where: { id: userId },
+        data: { department_id: departmentId },
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('Perfil no encontrado');
+      }
+      throw err;
+    }
   }
 
-  async listUsers(filters?: { role?: string; department_id?: string; is_active?: boolean }) {
-    let query = this.supabase.db
-      .from('profiles')
-      .select('*, departments(id, name)')
-      .order('full_name');
+  async listUsers(filters?: {
+    role?: string;
+    department_id?: string;
+    is_active?: boolean;
+  }) {
+    const where: Prisma.profilesWhereInput = {};
+    if (filters?.role) where.role = filters.role as never;
+    if (filters?.department_id) where.department_id = filters.department_id;
+    if (filters?.is_active !== undefined) where.is_active = filters.is_active;
 
-    if (filters?.role) query = query.eq('role', filters.role);
-    if (filters?.department_id) query = query.eq('department_id', filters.department_id);
-    if (filters?.is_active !== undefined) query = query.eq('is_active', filters.is_active);
-
-    const { data, error } = await query;
-    if (error) throw error;
-    return data;
+    return this.prisma.profiles.findMany({
+      where,
+      include: { departments: { select: { id: true, name: true } } },
+      orderBy: { full_name: 'asc' },
+    });
   }
 
   async deactivateUser(userId: string) {
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .update({ is_active: false, deactivated_at: new Date().toISOString() })
-      .eq('id', userId)
-      .select()
-      .single();
-
-    if (error || !data) throw new NotFoundException('Perfil no encontrado');
-    return data;
+    try {
+      return await this.prisma.profiles.update({
+        where: { id: userId },
+        data: { is_active: false, deactivated_at: new Date() },
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('Perfil no encontrado');
+      }
+      throw err;
+    }
   }
 
   /**
-   * Alta de usuario.
+   * Alta de usuario (Fase 2 — modelo K-7).
    *
-   *  - Si el email NO existe: crea auth.users + profile (sin role) y registra
-   *    el rol indicado en user_roles (única fuente de roles).
+   * No crea cuenta en ningún IdP externo: solo registra el `profile` en
+   * PG local con `pending_first_login=true`. El primer login (Microsoft o
+   * email+password si ALLOW_LOCAL_LOGIN=true) baja el flag.
+   *
    *  - Si el email YA existe: agrega el rol al user existente en user_roles.
-   *    Devuelve flag `existing_user_added_role: true` para que el frontend
-   *    muestre el mensaje específico.
+   *    Devuelve `existing_user_added_role: true`.
+   *  - Si el email es nuevo: crea profile + user_roles. Si se pasa `password`,
+   *    también crea `local_credentials` con `must_change_password=true`
+   *    (modo dev — para usar con /auth/login-local).
    */
   async createUser(dto: CreateUserDto, performedBy?: string) {
     if (!dto.email) {
@@ -204,12 +198,11 @@ export class AuthService {
     const targetRole = dto.role || 'colaborador';
     const normalizedEmail = dto.email.trim().toLowerCase();
 
-    // 1. ¿Ya existe un usuario con ese email? (case-insensitive)
-    const { data: existing } = await this.supabase.db
-      .from('profiles')
-      .select('id, email, full_name, is_active')
-      .ilike('email', normalizedEmail)
-      .maybeSingle();
+    // 1. ¿Ya existe en PG local?
+    const existing = await this.prisma.profiles.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+      select: { id: true, email: true, full_name: true, is_active: true },
+    });
 
     if (existing) {
       if (!existing.is_active) {
@@ -217,17 +210,24 @@ export class AuthService {
           'Ya existe un usuario con este email pero está desactivado. Reactívalo desde la lista en lugar de crear uno nuevo.',
         );
       }
-      await upsertUserRole(this.supabase.db, {
+      await upsertUserRole(this.prisma, {
         profileId: existing.id,
         role: targetRole,
         grantedBy: performedBy ?? null,
       });
 
-      const { data: enriched } = await this.supabase.db
-        .from('profiles')
-        .select('*, departments(id, name)')
-        .eq('id', existing.id)
-        .single();
+      // Si el caller envió password, también actualizamos las credenciales locales.
+      if (dto.password && this.local.isEnabled()) {
+        await this.local.setPassword(existing.id, dto.password, {
+          mustChangePassword: true,
+          performedBy,
+        });
+      }
+
+      const enriched = await this.prisma.profiles.findUnique({
+        where: { id: existing.id },
+        include: { departments: { select: { id: true, name: true } } },
+      });
 
       return {
         ...enriched,
@@ -237,114 +237,86 @@ export class AuthService {
       };
     }
 
-    // 2. Email nuevo: para crear cuenta nueva sí necesitamos password y nombre
-    if (!dto.password || dto.password.length < 6) {
-      throw new BadRequestException(
-        'La contraseña es requerida y debe tener al menos 6 caracteres',
-      );
-    }
+    // 2. Email nuevo: validar nombre. El password ahora es opcional —
+    // solo se requiere si se quiere habilitar login local desde el inicio.
     if (!dto.full_name?.trim()) {
       throw new BadRequestException('El nombre completo es requerido');
     }
+    if (dto.password && dto.password.length < 6) {
+      throw new BadRequestException(
+        'La contraseña debe tener al menos 6 caracteres',
+      );
+    }
 
-    const { data: authData, error: authError } = await this.supabase.db.auth.admin.createUser({
-      email: dto.email,
-      password: dto.password,
-      email_confirm: true,
-      user_metadata: {
-        full_name: dto.full_name,
-      },
-    });
-
-    if (authError) throw new BadRequestException(authError.message);
-
-    const userId = authData.user.id;
-
-    // 3. Actualizar/insertar profile (sin role — el rol va a user_roles)
-    const { data: profile, error: profileError } = await this.supabase.db
-      .from('profiles')
-      .update({
+    // 3. Crear profile (pending_first_login=true viene por DEFAULT del schema).
+    const profile = await this.prisma.profiles.create({
+      data: {
+        email: dto.email,
         full_name: dto.full_name,
         position: dto.position || null,
         department_id: dto.department_id || null,
-      })
-      .eq('id', userId)
-      .select('*, departments(id, name)')
-      .single();
+      },
+      include: { departments: { select: { id: true, name: true } } },
+    });
 
-    let finalProfile = profile;
-    if (profileError) {
-      // El trigger no creó el perfil aún — insertarlo nosotros
-      const { data: newProfile, error: createError } = await this.supabase.db
-        .from('profiles')
-        .insert({
-          id: userId,
-          email: dto.email,
-          full_name: dto.full_name,
-          position: dto.position || null,
-          department_id: dto.department_id || null,
-        })
-        .select('*, departments(id, name)')
-        .single();
-
-      if (createError) {
-        throw new BadRequestException('Error al crear perfil: ' + createError.message);
-      }
-      finalProfile = newProfile;
-    }
-
-    // 4. Asignar el rol vía user_roles (única fuente)
-    await upsertUserRole(this.supabase.db, {
-      profileId: userId,
+    // 4. Asignar el rol vía user_roles.
+    await upsertUserRole(this.prisma, {
+      profileId: profile.id,
       role: targetRole,
       grantedBy: performedBy ?? null,
     });
 
-    return finalProfile;
+    // 5. Si se pasó password y el login local está habilitado, crear credencial.
+    //    must_change_password=true → el usuario debe cambiarla en el primer login.
+    if (dto.password && this.local.isEnabled()) {
+      await this.local.setPassword(profile.id, dto.password, {
+        mustChangePassword: true,
+        performedBy,
+      });
+    }
+
+    return profile;
   }
 
   async reactivateUser(userId: string) {
-    const { data, error } = await this.supabase.db
-      .from('profiles')
-      .update({ is_active: true, deactivated_at: null })
-      .eq('id', userId)
-      .select()
-      .single();
-
-    if (error || !data) throw new NotFoundException('Perfil no encontrado');
-    return data;
+    try {
+      return await this.prisma.profiles.update({
+        where: { id: userId },
+        data: { is_active: true, deactivated_at: null },
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('Perfil no encontrado');
+      }
+      throw err;
+    }
   }
 
   // =====================================================
   // GESTIÓN DE ROLES POR MÓDULO (user_roles)
   // =====================================================
 
-  /** Lista las asignaciones de rol por módulo de un usuario. */
   async listUserRoles(userId: string) {
-    const { data, error } = await this.supabase.db
-      .from('user_roles')
-      .select(`
-        id, profile_id, module, role, granted_at, revoked_at, is_active,
-        granted_by_profile:granted_by(id, full_name, email)
-      `)
-      .eq('profile_id', userId)
-      .order('module')
-      .order('role');
-
-    if (error) throw error;
-    return data ?? [];
+    return this.prisma.user_roles.findMany({
+      where: { profile_id: userId },
+      select: {
+        id: true,
+        profile_id: true,
+        module: true,
+        role: true,
+        granted_at: true,
+        revoked_at: true,
+        is_active: true,
+        profiles_user_roles_granted_byToprofiles: {
+          select: { id: true, full_name: true, email: true },
+        },
+      },
+      orderBy: [{ module: 'asc' }, { role: 'asc' }],
+    });
   }
 
   /**
-   * Asigna un rol al usuario en un módulo.
-   *
-   * Regla de negocio: **un usuario solo puede tener UN rol activo por módulo**.
-   * Si ya tiene OTRO rol activo en el mismo módulo, se revoca antes de asignar
-   * el nuevo. Si ya tiene exactamente ese rol activo, no hace nada.
-   * Si el rol existió pero estaba revocado, se reactiva.
-   *
-   * Si el caller pasa `allowedModules`, valida que el módulo destino esté
-   * permitido (usado para que admin_rh solo pueda tocar capacitación).
+   * Asigna un rol al usuario en un módulo (regla "1 rol por módulo").
    */
   async assignUserRole(
     userId: string,
@@ -365,85 +337,68 @@ export class AuthService {
       );
     }
 
-    const { data: target } = await this.supabase.db
-      .from('profiles')
-      .select('id, is_active')
-      .eq('id', userId)
-      .single();
-
+    const target = await this.prisma.profiles.findUnique({
+      where: { id: userId },
+      select: { id: true, is_active: true },
+    });
     if (!target) throw new NotFoundException('Usuario no encontrado');
     if (!target.is_active) {
-      throw new BadRequestException('No se pueden asignar roles a un usuario desactivado');
+      throw new BadRequestException(
+        'No se pueden asignar roles a un usuario desactivado',
+      );
     }
 
-    // Revocar otros roles activos en el mismo módulo (regla "1 rol por módulo")
-    const { data: othersInModule } = await this.supabase.db
-      .from('user_roles')
-      .select('id, role')
-      .eq('profile_id', userId)
-      .eq('module', module)
-      .eq('is_active', true);
-
-    for (const other of othersInModule ?? []) {
-      if (other.role !== role) {
-        await this.supabase.db
-          .from('user_roles')
-          .update({
-            is_active: false,
-            revoked_at: new Date().toISOString(),
-            revoked_by: grantedBy,
-          })
-          .eq('id', other.id);
-      }
-    }
+    // Revocar otros roles activos en el mismo módulo
+    await this.prisma.user_roles.updateMany({
+      where: {
+        profile_id: userId,
+        module: module as never,
+        is_active: true,
+        role: { not: role as never },
+      },
+      data: {
+        is_active: false,
+        revoked_at: new Date(),
+        revoked_by: grantedBy,
+      },
+    });
 
     // Si ya existe una fila exacta (activa o revocada), reactivarla
-    const { data: existing } = await this.supabase.db
-      .from('user_roles')
-      .select('id, is_active')
-      .eq('profile_id', userId)
-      .eq('module', module)
-      .eq('role', role)
-      .maybeSingle();
+    const existing = await this.prisma.user_roles.findFirst({
+      where: {
+        profile_id: userId,
+        module: module as never,
+        role: role as never,
+      },
+      select: { id: true, is_active: true },
+    });
 
     if (existing) {
-      if (existing.is_active) return existing;
-      const { data: reactivated, error: reactivateError } = await this.supabase.db
-        .from('user_roles')
-        .update({
+      if (existing.is_active) {
+        return this.prisma.user_roles.findUnique({ where: { id: existing.id } });
+      }
+      return this.prisma.user_roles.update({
+        where: { id: existing.id },
+        data: {
           is_active: true,
           revoked_at: null,
           revoked_by: null,
           granted_by: grantedBy,
-          granted_at: new Date().toISOString(),
-        })
-        .eq('id', existing.id)
-        .select()
-        .single();
-      if (reactivateError) throw reactivateError;
-      return reactivated;
+          granted_at: new Date(),
+        },
+      });
     }
 
-    const { data: created, error: createError } = await this.supabase.db
-      .from('user_roles')
-      .insert({
+    return this.prisma.user_roles.create({
+      data: {
         profile_id: userId,
-        module,
-        role,
+        module: module as never,
+        role: role as never,
         granted_by: grantedBy,
-      })
-      .select()
-      .single();
-
-    if (createError) throw createError;
-    return created;
+      },
+    });
   }
 
-  /**
-   * Revoca una asignación de rol (soft delete: is_active=false + revoked_at).
-   * Si se pasa `allowedModules`, valida que el rol revocado esté en uno de
-   * ellos (usado para limitar admin_rh a capacitación).
-   */
   async revokeUserRole(
     roleId: string,
     revokedBy: string,
@@ -451,11 +406,10 @@ export class AuthService {
     allowedRoles?: string[],
   ) {
     if (allowedModules || allowedRoles) {
-      const { data: existing } = await this.supabase.db
-        .from('user_roles')
-        .select('module, role')
-        .eq('id', roleId)
-        .maybeSingle();
+      const existing = await this.prisma.user_roles.findUnique({
+        where: { id: roleId },
+        select: { module: true, role: true },
+      });
       if (!existing) {
         throw new NotFoundException('Asignación de rol no encontrada');
       }
@@ -471,38 +425,33 @@ export class AuthService {
       }
     }
 
-    const { data, error } = await this.supabase.db
-      .from('user_roles')
-      .update({
-        is_active: false,
-        revoked_at: new Date().toISOString(),
-        revoked_by: revokedBy,
-      })
-      .eq('id', roleId)
-      .select()
-      .single();
-
-    if (error || !data) throw new NotFoundException('Asignación de rol no encontrada');
-    return data;
+    try {
+      return await this.prisma.user_roles.update({
+        where: { id: roleId },
+        data: {
+          is_active: false,
+          revoked_at: new Date(),
+          revoked_by: revokedBy,
+        },
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('Asignación de rol no encontrada');
+      }
+      throw err;
+    }
   }
 
-  /**
-   * Get team members for a department (jefe_area use case)
-   */
+  /** Get team members for a department (jefe_area use case) */
   async getMyTeam(departmentId: string, excludeUserId?: string) {
-    let query = this.supabase.db
-      .from('profiles')
-      .select('*, departments(id, name)')
-      .eq('department_id', departmentId)
-      .eq('is_active', true)
-      .order('full_name');
-
-    if (excludeUserId) {
-      query = query.neq('id', excludeUserId);
-    }
-
-    const { data, error } = await query;
-    if (error) throw error;
-    return data;
+    return this.prisma.profiles.findMany({
+      where: {
+        department_id: departmentId,
+        is_active: true,
+        ...(excludeUserId ? { id: { not: excludeUserId } } : {}),
+      },
+      include: { departments: { select: { id: true, name: true } } },
+      orderBy: { full_name: 'asc' },
+    });
   }
 }

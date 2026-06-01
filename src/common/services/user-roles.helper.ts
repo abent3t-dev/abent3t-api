@@ -1,4 +1,4 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
+import type { PrismaService } from '../../prisma/prisma.service';
 
 /**
  * Helper compartido para mantener consistente el sistema de roles multi-módulo:
@@ -8,6 +8,9 @@ import type { SupabaseClient } from '@supabase/supabase-js';
  *
  * Cualquier alta/cambio de rol primario debe pasar por aquí para mantener
  * ambas fuentes sincronizadas.
+ *
+ * Post-migración a Prisma: las funciones reciben `PrismaService` (antes
+ * `SupabaseClient`). La semántica es idéntica.
  */
 
 export type UserModule = 'core' | 'capacitacion' | 'compras' | 'contabilidad';
@@ -58,9 +61,6 @@ export function getModuleForRole(role: string | null | undefined): UserModule | 
  * Ordenado de mayor a menor importancia. Se usa para:
  *  - HOME_ROUTES post-login (a qué pantalla redirigir)
  *  - Display de un solo badge cuando el usuario tiene varios roles
- *
- * Regla: super_admin manda. Después roles de dirección/admin. Después
- * roles operativos por módulo. Por último colaborador/empleado.
  */
 export const ROLE_PRIORITY: string[] = [
   'super_admin',
@@ -102,11 +102,9 @@ export function getDisplayRole(roles: string[] | undefined | null): string | nul
  * Asigna (o reactiva) una entrada (profile_id, module, role) en user_roles.
  * Idempotente: si ya estaba activa, no hace nada; si estaba revocada, la
  * reactiva con nuevo granted_by/granted_at; si no existía, la crea.
- *
- * No falla si la tabla user_roles aún no existe (degrada silenciosamente).
  */
 export async function upsertUserRole(
-  supabase: SupabaseClient,
+  prisma: PrismaService,
   params: {
     profileId: string;
     role: string;
@@ -118,39 +116,38 @@ export async function upsertUserRole(
   const module = params.module ?? getModuleForRole(params.role);
   if (!module) return; // rol desconocido — no hacemos nada
 
-  try {
-    const { data: existing } = await supabase
-      .from('user_roles')
-      .select('id, is_active')
-      .eq('profile_id', params.profileId)
-      .eq('module', module)
-      .eq('role', params.role)
-      .maybeSingle();
-
-    if (existing) {
-      if (existing.is_active) return;
-      await supabase
-        .from('user_roles')
-        .update({
-          is_active: true,
-          revoked_at: null,
-          revoked_by: null,
-          granted_by: params.grantedBy ?? null,
-          granted_at: new Date().toISOString(),
-        })
-        .eq('id', existing.id);
-      return;
-    }
-
-    await supabase.from('user_roles').insert({
+  const existing = await prisma.user_roles.findFirst({
+    where: {
       profile_id: params.profileId,
       module,
-      role: params.role,
-      granted_by: params.grantedBy ?? null,
+      role: params.role as never,
+    },
+    select: { id: true, is_active: true },
+  });
+
+  if (existing) {
+    if (existing.is_active) return;
+    await prisma.user_roles.update({
+      where: { id: existing.id },
+      data: {
+        is_active: true,
+        revoked_at: null,
+        revoked_by: null,
+        granted_by: params.grantedBy ?? null,
+        granted_at: new Date(),
+      },
     });
-  } catch {
-    // Tabla aún no existe (entornos pre-migración 015) — ignorar silenciosamente.
+    return;
   }
+
+  await prisma.user_roles.create({
+    data: {
+      profile_id: params.profileId,
+      module,
+      role: params.role as never,
+      granted_by: params.grantedBy ?? null,
+    },
+  });
 }
 
 /**
@@ -158,7 +155,7 @@ export async function upsertUserRole(
  * correspondan al rol dado. Útil para sincronizar un cambio de rol primario.
  */
 export async function revokeUserRole(
-  supabase: SupabaseClient,
+  prisma: PrismaService,
   params: {
     profileId: string;
     role: string;
@@ -170,19 +167,17 @@ export async function revokeUserRole(
   const module = params.module ?? getModuleForRole(params.role);
   if (!module) return;
 
-  try {
-    await supabase
-      .from('user_roles')
-      .update({
-        is_active: false,
-        revoked_at: new Date().toISOString(),
-        revoked_by: params.revokedBy ?? null,
-      })
-      .eq('profile_id', params.profileId)
-      .eq('module', module)
-      .eq('role', params.role)
-      .eq('is_active', true);
-  } catch {
-    // Ignorar si la tabla no existe
-  }
+  await prisma.user_roles.updateMany({
+    where: {
+      profile_id: params.profileId,
+      module,
+      role: params.role as never,
+      is_active: true,
+    },
+    data: {
+      is_active: false,
+      revoked_at: new Date(),
+      revoked_by: params.revokedBy ?? null,
+    },
+  });
 }

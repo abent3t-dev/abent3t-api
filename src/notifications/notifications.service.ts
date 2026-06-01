@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 export interface SidebarCountsParams {
   since_solicitudes?: string;
@@ -24,7 +24,7 @@ const EMPLOYEE_ROLES = ['colaborador', 'collaborator'];
  */
 @Injectable()
 export class NotificationsService {
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   async getSidebarCounts(
     userId: string,
@@ -53,32 +53,34 @@ export class NotificationsService {
     departmentId: string | null,
     since: string | undefined,
   ): Promise<number> {
-    const sinceDate = since || '1970-01-01T00:00:00Z';
+    const sinceDate = new Date(since || '1970-01-01T00:00:00Z');
 
-    if (HR_ADMIN_ROLES.includes(role)) {
-      const { count, error } = await this.supabase.db
-        .from('training_requests')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'pendiente')
-        .eq('is_active', true)
-        .gt('created_at', sinceDate);
-      if (error) return 0;
-      return count ?? 0;
+    try {
+      if (HR_ADMIN_ROLES.includes(role)) {
+        return await this.prisma.training_requests.count({
+          where: {
+            status: 'pendiente',
+            is_active: true,
+            created_at: { gt: sinceDate },
+          },
+        });
+      }
+
+      if (MANAGER_ROLES.includes(role)) {
+        return await this.prisma.training_requests.count({
+          where: {
+            requested_by: userId,
+            status: { in: ['aprobada', 'rechazada'] },
+            is_active: true,
+            reviewed_at: { gt: sinceDate },
+          },
+        });
+      }
+
+      return 0;
+    } catch {
+      return 0;
     }
-
-    if (MANAGER_ROLES.includes(role)) {
-      const { count, error } = await this.supabase.db
-        .from('training_requests')
-        .select('id', { count: 'exact', head: true })
-        .eq('requested_by', userId)
-        .in('status', ['aprobada', 'rechazada'])
-        .eq('is_active', true)
-        .gt('reviewed_at', sinceDate);
-      if (error) return 0;
-      return count ?? 0;
-    }
-
-    return 0;
   }
 
   /**
@@ -94,54 +96,59 @@ export class NotificationsService {
     departmentId: string | null,
     since: string | undefined,
   ): Promise<number> {
-    const sinceDate = since || '1970-01-01T00:00:00Z';
+    const sinceDate = new Date(since || '1970-01-01T00:00:00Z');
 
-    if (HR_ADMIN_ROLES.includes(role)) {
-      const { count, error } = await this.supabase.db
-        .from('course_proposals')
-        .select('id', { count: 'exact', head: true })
-        .in('status', ['pendiente', 'en_investigacion'])
-        .eq('is_active', true)
-        .gt('created_at', sinceDate);
-      if (error) return 0;
-      return count ?? 0;
+    try {
+      if (HR_ADMIN_ROLES.includes(role)) {
+        return await this.prisma.course_proposals.count({
+          where: {
+            status: { in: ['pendiente', 'en_investigacion'] },
+            is_active: true,
+            created_at: { gt: sinceDate },
+          },
+        });
+      }
+
+      if (MANAGER_ROLES.includes(role) && departmentId) {
+        const profiles = await this.prisma.profiles.findMany({
+          where: { department_id: departmentId, is_active: true },
+          select: { id: true },
+        });
+
+        const ids = profiles.map((p) => p.id);
+        if (ids.length === 0) return 0;
+
+        return await this.prisma.course_proposals.count({
+          where: {
+            OR: [
+              { proposed_by: { in: ids } },
+              { profile_id: { in: ids } },
+            ],
+            status: { in: ['aprobada', 'rechazada'] },
+            is_active: true,
+            reviewed_at: { gt: sinceDate },
+          },
+        });
+      }
+
+      if (EMPLOYEE_ROLES.includes(role)) {
+        return await this.prisma.course_proposals.count({
+          where: {
+            OR: [
+              { proposed_by: userId },
+              { profile_id: userId },
+            ],
+            status: { in: ['aprobada', 'rechazada', 'en_investigacion'] },
+            is_active: true,
+            reviewed_at: { gt: sinceDate },
+          },
+        });
+      }
+
+      return 0;
+    } catch {
+      return 0;
     }
-
-    if (MANAGER_ROLES.includes(role) && departmentId) {
-      const { data: profiles } = await this.supabase.db
-        .from('profiles')
-        .select('id')
-        .eq('department_id', departmentId)
-        .eq('is_active', true);
-
-      const ids = (profiles || []).map((p) => p.id);
-      if (ids.length === 0) return 0;
-      const idsList = ids.join(',');
-
-      const { count, error } = await this.supabase.db
-        .from('course_proposals')
-        .select('id', { count: 'exact', head: true })
-        .or(`proposed_by.in.(${idsList}),profile_id.in.(${idsList})`)
-        .in('status', ['aprobada', 'rechazada'])
-        .eq('is_active', true)
-        .gt('reviewed_at', sinceDate);
-      if (error) return 0;
-      return count ?? 0;
-    }
-
-    if (EMPLOYEE_ROLES.includes(role)) {
-      const { count, error } = await this.supabase.db
-        .from('course_proposals')
-        .select('id', { count: 'exact', head: true })
-        .or(`proposed_by.eq.${userId},profile_id.eq.${userId}`)
-        .in('status', ['aprobada', 'rechazada', 'en_investigacion'])
-        .eq('is_active', true)
-        .gt('reviewed_at', sinceDate);
-      if (error) return 0;
-      return count ?? 0;
-    }
-
-    return 0;
   }
 
   /**
@@ -154,15 +161,18 @@ export class NotificationsService {
     since: string | undefined,
   ): Promise<number> {
     if (!HR_ADMIN_ROLES.includes(role)) return 0;
-    const sinceDate = since || '1970-01-01T00:00:00Z';
+    const sinceDate = new Date(since || '1970-01-01T00:00:00Z');
 
-    const { count, error } = await this.supabase.db
-      .from('enrollment_evidences')
-      .select('id', { count: 'exact', head: true })
-      .eq('verification_status', 'pending')
-      .eq('is_active', true)
-      .gt('uploaded_at', sinceDate);
-    if (error) return 0;
-    return count ?? 0;
+    try {
+      return await this.prisma.enrollment_evidences.count({
+        where: {
+          verification_status: 'pending',
+          is_active: true,
+          uploaded_at: { gt: sinceDate },
+        },
+      });
+    } catch {
+      return 0;
+    }
   }
 }

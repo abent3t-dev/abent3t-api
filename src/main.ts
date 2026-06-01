@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { json, urlencoded } from 'express';
 import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
 /**
@@ -29,6 +30,9 @@ async function bootstrap() {
   // Headers de seguridad. Por defecto helmet activa CSP, HSTS,
   // X-Frame-Options=DENY, X-Content-Type-Options=nosniff, etc.
   app.use(helmet());
+
+  // Cookie parser para JWT en cookies HttpOnly (Fase 2).
+  app.use(cookieParser());
 
   // Limitar tamaño del body para evitar DoS por payloads gigantes.
   // 1MB cubre con margen los DTOs reales del sistema; los uploads de archivo

@@ -1,6 +1,10 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
-import { BaseCrudService } from '../common/services/base-crud.service';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { BaseCrudPrismaService } from '../common/services/base-crud-prisma.service';
 import { CreateBudgetDto } from './dto/create-budget.dto';
 import { UpdateBudgetDto } from './dto/update-budget.dto';
 import * as XLSX from 'xlsx';
@@ -13,10 +17,15 @@ interface BudgetRow {
   assigned_amount: number;
   consumed_amount: number;
   is_active: boolean;
-  created_at: string;
-  updated_at: string;
-  departments: { id: string; name: string } | null;
-  periods: { id: string; label: string; year: number; semester: number } | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  departments?: { id: string; name: string } | null;
+  periods?: {
+    id: string;
+    label: string;
+    year: number;
+    semester: number | null;
+  } | null;
 }
 
 export interface ImportResult {
@@ -31,160 +40,173 @@ export interface ImportResult {
 }
 
 @Injectable()
-export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudgetDto> {
-  protected readonly tableName = 'budgets';
-  protected readonly selectFields = '*, departments(id, name), periods(id, label, year, semester)';
+export class BudgetsService extends BaseCrudPrismaService<
+  CreateBudgetDto,
+  UpdateBudgetDto
+> {
+  protected get model() {
+    return this.prisma.budgets;
+  }
   protected readonly orderField = 'created_at';
+  protected readonly include = {
+    departments: { select: { id: true, name: true } },
+    periods: {
+      select: { id: true, label: true, year: true, semester: true },
+    },
+  };
 
-  constructor(supabase: SupabaseService) {
-    super(supabase);
+  constructor(prisma: PrismaService) {
+    super(prisma);
   }
 
-  private calculateAvailable(budget: BudgetRow) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private calculateAvailable(budget: any) {
     return {
       ...budget,
-      available_amount: budget.assigned_amount - budget.consumed_amount,
+      available_amount:
+        Number(budget.assigned_amount) - Number(budget.consumed_amount),
     };
   }
 
   async findAll() {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-    return (data as BudgetRow[]).map(this.calculateAvailable);
+    const data = await this.prisma.budgets.findMany({
+      where: { is_active: true },
+      include: this.include,
+      orderBy: { created_at: 'desc' },
+    });
+    return data.map((b) => this.calculateAvailable(b));
   }
 
   async findOne(id: string) {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('id', id)
-      .eq('is_active', true)
-      .single();
-
-    if (error || !data) throw new NotFoundException('Presupuesto no encontrado');
-    return this.calculateAvailable(data as BudgetRow);
+    const budget = await this.prisma.budgets.findFirst({
+      where: { id, is_active: true },
+      include: this.include,
+    });
+    if (!budget) throw new NotFoundException('Presupuesto no encontrado');
+    return this.calculateAvailable(budget);
   }
 
   async findByDepartment(departmentId: string) {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('department_id', departmentId)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-    return (data as BudgetRow[]).map(this.calculateAvailable);
+    const data = await this.prisma.budgets.findMany({
+      where: { department_id: departmentId, is_active: true },
+      include: this.include,
+      orderBy: { created_at: 'desc' },
+    });
+    return data.map((b) => this.calculateAvailable(b));
   }
 
   async findByPeriod(periodId: string) {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(this.selectFields)
-      .eq('period_id', periodId)
-      .eq('is_active', true)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-    return (data as BudgetRow[]).map(this.calculateAvailable);
+    const data = await this.prisma.budgets.findMany({
+      where: { period_id: periodId, is_active: true },
+      include: this.include,
+      orderBy: { created_at: 'desc' },
+    });
+    return data.map((b) => this.calculateAvailable(b));
   }
 
   async create(dto: CreateBudgetDto) {
     await Promise.all([
-      this.validateFK('departments', dto.department_id, 'department_id'),
-      this.validateFK('periods', dto.period_id, 'period_id'),
+      this.validateFK(
+        this.prisma.departments,
+        dto.department_id,
+        'department_id',
+      ),
+      this.validateFK(this.prisma.periods, dto.period_id, 'period_id'),
     ]);
 
-    // Check uniqueness: one active budget per department+period
-    const { data: existing } = await this.supabase.db
-      .from('budgets')
-      .select('id, departments(name), periods(label)')
-      .eq('department_id', dto.department_id)
-      .eq('period_id', dto.period_id)
-      .eq('is_active', true)
-      .limit(1)
-      .maybeSingle();
+    const existing = await this.prisma.budgets.findFirst({
+      where: {
+        department_id: dto.department_id,
+        period_id: dto.period_id,
+        is_active: true,
+      },
+      include: this.include,
+    });
 
     if (existing) {
-      const deptName = (existing as any).departments?.name || 'este departamento';
-      const periodLabel = (existing as any).periods?.label || 'este período';
+      const deptName = existing.departments?.name || 'este departamento';
+      const periodLabel = existing.periods?.label || 'este período';
       throw new BadRequestException(
-        `Ya existe un presupuesto activo para ${deptName} en el período ${periodLabel}. No se pueden crear presupuestos duplicados para la misma combinación de departamento y período.`,
+        `Ya existe un presupuesto activo para ${deptName} en el período ${periodLabel}. ` +
+          `No se pueden crear presupuestos duplicados para la misma combinación de departamento y período.`,
       );
     }
 
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .insert({ ...dto, consumed_amount: 0 } as any)
-      .select(this.selectFields)
-      .single();
-
-    if (error) throw error;
-    return this.calculateAvailable(data as BudgetRow);
+    const data = await this.prisma.budgets.create({
+      data: { ...dto, consumed_amount: 0 },
+      include: this.include,
+    });
+    return this.calculateAvailable(data);
   }
 
   async update(id: string, dto: UpdateBudgetDto) {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .update(dto as any)
-      .eq('id', id)
-      .select(this.selectFields)
-      .single();
-
-    if (error || !data) throw new NotFoundException('Presupuesto no encontrado');
-    return this.calculateAvailable(data as BudgetRow);
+    try {
+      const data = await this.prisma.budgets.update({
+        where: { id },
+        data: dto,
+        include: this.include,
+      });
+      return this.calculateAvailable(data);
+    } catch (err: unknown) {
+      if ((err as { code?: string })?.code === 'P2025') {
+        throw new NotFoundException('Presupuesto no encontrado');
+      }
+      throw err;
+    }
   }
 
+  // ==========================================================================
+  // Excel template / import — la lógica con XLSX/ExcelJS no cambia; solo
+  // las consultas a BD pasan a Prisma.
+  // ==========================================================================
+
   async exportTemplate(includeData: boolean): Promise<Buffer> {
-    // Cargar catálogos para dropdowns
-    const { data: departments } = await this.supabase.db
-      .from('departments')
-      .select('name')
-      .eq('is_active', true)
-      .order('name');
+    const [departments, periods] = await Promise.all([
+      this.prisma.departments.findMany({
+        where: { is_active: true },
+        select: { name: true },
+        orderBy: { name: 'asc' },
+      }),
+      this.prisma.periods.findMany({
+        where: { is_active: true },
+        select: { label: true },
+        orderBy: { year: 'desc' },
+      }),
+    ]);
 
-    const { data: periods } = await this.supabase.db
-      .from('periods')
-      .select('label')
-      .eq('is_active', true)
-      .order('year', { ascending: false });
+    const departmentNames = departments.map((d) => d.name);
+    const periodLabels = periods.map((p) => p.label);
 
-    const departmentNames = departments?.map((d) => d.name) || [];
-    const periodLabels = periods?.map((p) => p.label) || [];
-
-    // Crear workbook con ExcelJS
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'ABENT 3T';
     workbook.created = new Date();
 
-    // ============ HOJA 1: PRESUPUESTOS ============
     const presupuestosSheet = workbook.addWorksheet('Presupuestos', {
-      views: [{ state: 'frozen', xSplit: 0, ySplit: 1 }], // Congelar primera fila
+      views: [{ state: 'frozen', xSplit: 0, ySplit: 1 }],
     });
 
-    // Configurar columnas
     presupuestosSheet.columns = [
       { header: 'Departamento', key: 'departamento', width: 35 },
       { header: 'Período', key: 'periodo', width: 18 },
       { header: 'Monto Asignado', key: 'monto', width: 20 },
     ];
 
-    // Estilos de encabezados
-    presupuestosSheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+    presupuestosSheet.getRow(1).font = {
+      bold: true,
+      color: { argb: 'FFFFFFFF' },
+      size: 12,
+    };
     presupuestosSheet.getRow(1).fill = {
       type: 'pattern',
       pattern: 'solid',
-      fgColor: { argb: 'FF3B82F6' }, // Azul
+      fgColor: { argb: 'FF3B82F6' },
     };
-    presupuestosSheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+    presupuestosSheet.getRow(1).alignment = {
+      vertical: 'middle',
+      horizontal: 'center',
+    };
     presupuestosSheet.getRow(1).height = 25;
 
-    // Aplicar bordes a encabezados
     ['A1', 'B1', 'C1'].forEach((cell) => {
       presupuestosSheet.getCell(cell).border = {
         top: { style: 'thin' },
@@ -194,31 +216,24 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
       };
     });
 
-    // Agregar datos o filas vacías
-    const numRows = includeData ? 0 : 20; // 20 filas vacías si no hay datos
+    const numRows = includeData ? 0 : 20;
     if (includeData) {
       const budgets = await this.findAll();
       budgets.forEach((budget) => {
         presupuestosSheet.addRow({
           departamento: budget.departments?.name || '',
           periodo: budget.periods?.label || '',
-          monto: budget.assigned_amount,
+          monto: Number(budget.assigned_amount),
         });
       });
     } else {
       for (let i = 0; i < numRows; i++) {
-        presupuestosSheet.addRow({
-          departamento: '',
-          periodo: '',
-          monto: '',
-        });
+        presupuestosSheet.addRow({ departamento: '', periodo: '', monto: '' });
       }
     }
 
-    // ============ DATA VALIDATION (DROPDOWNS) ============
-    const totalRows = Math.max(presupuestosSheet.rowCount, 21); // Mínimo 20 filas de datos
+    const totalRows = Math.max(presupuestosSheet.rowCount, 21);
 
-    // Dropdown para Departamento (Columna A, filas 2 en adelante)
     if (departmentNames.length > 0) {
       for (let row = 2; row <= totalRows; row++) {
         presupuestosSheet.getCell(`A${row}`).dataValidation = {
@@ -236,7 +251,6 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
       }
     }
 
-    // Dropdown para Período (Columna B, filas 2 en adelante)
     if (periodLabels.length > 0) {
       for (let row = 2; row <= totalRows; row++) {
         presupuestosSheet.getCell(`B${row}`).dataValidation = {
@@ -254,14 +268,12 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
       }
     }
 
-    // Formato numérico para Monto Asignado
     for (let row = 2; row <= totalRows; row++) {
       const cell = presupuestosSheet.getCell(`C${row}`);
       cell.numFmt = '$#,##0.00';
       cell.alignment = { horizontal: 'right', vertical: 'middle' };
     }
 
-    // Aplicar bordes a todas las celdas de datos
     for (let row = 2; row <= totalRows; row++) {
       ['A', 'B', 'C'].forEach((col) => {
         const cell = presupuestosSheet.getCell(`${col}${row}`);
@@ -275,11 +287,17 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
       });
     }
 
-    // ============ HOJA 2: INSTRUCCIONES ============
+    // ============ HOJA 2: INSTRUCCIONES (idéntico al original) =============
     const instructionsSheet = workbook.addWorksheet('Instrucciones');
     instructionsSheet.columns = [{ header: '', key: 'texto', width: 100 }];
 
-    const instructions = [
+    const instructions: Array<{
+      texto: string;
+      bold?: boolean;
+      size?: number;
+      color?: string;
+      fill?: string;
+    }> = [
       { texto: '📋 INSTRUCCIONES PARA IMPORTAR PRESUPUESTOS', bold: true, size: 14, color: '1F2937', fill: 'DBEAFE' },
       { texto: '' },
       { texto: '✨ Cómo usar esta plantilla:', bold: true, size: 12, color: '374151' },
@@ -343,78 +361,74 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
           pattern: 'solid',
           fgColor: { argb: `FF${instruction.fill}` },
         };
-        row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+        row.getCell(1).alignment = {
+          horizontal: 'center',
+          vertical: 'middle',
+        };
         row.height = 30;
       }
 
-      row.getCell(1).alignment = { ...row.getCell(1).alignment, wrapText: true };
+      row.getCell(1).alignment = {
+        ...row.getCell(1).alignment,
+        wrapText: true,
+      };
     });
 
-    // Generar buffer
     const buffer = await workbook.xlsx.writeBuffer();
     return Buffer.from(buffer);
   }
 
   async importBudgets(fileBuffer: Buffer): Promise<ImportResult> {
-    const result: ImportResult = {
-      success: 0,
-      errors: [],
-      total: 0,
-    };
+    const result: ImportResult = { success: 0, errors: [], total: 0 };
 
     try {
-      // Leer archivo Excel
       const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
 
-      // Leer datos del Excel
-      const rawData = XLSX.utils.sheet_to_json(worksheet, {
-        defval: undefined,  // Valor por defecto para celdas vacías
-        blankrows: false,   // NO incluir filas completamente vacías
-        raw: true,          // Obtener valores en bruto (números como números, no strings)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rawData = XLSX.utils.sheet_to_json<any>(worksheet, {
+        defval: undefined,
+        blankrows: false,
+        raw: true,
       });
 
-      // Filtrar filas verdaderamente vacías (ignora celdas con solo espacios o valores vacíos)
-      // Esto es necesario porque ExcelJS crea celdas con strings vacíos y formato,
-      // que XLSX lee como filas no vacías
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const data = rawData.filter((row: any) => {
         const departmentName = (row['Departamento']?.toString() || '').trim();
         const periodLabel = (row['Período']?.toString() || '').trim();
         const amountRaw = row['Monto Asignado'];
         const assignedAmount = parseFloat(amountRaw);
-
-        // Fila válida si tiene al menos uno de los campos con datos reales
-        return departmentName || periodLabel || (!isNaN(assignedAmount) && amountRaw !== undefined && amountRaw !== '');
+        return (
+          departmentName ||
+          periodLabel ||
+          (!isNaN(assignedAmount) &&
+            amountRaw !== undefined &&
+            amountRaw !== '')
+        );
       });
 
-      // Cargar departamentos y períodos para validación
-      const { data: departments } = await this.supabase.db
-        .from('departments')
-        .select('id, name')
-        .eq('is_active', true);
+      const [departments, periods] = await Promise.all([
+        this.prisma.departments.findMany({
+          where: { is_active: true },
+          select: { id: true, name: true },
+        }),
+        this.prisma.periods.findMany({
+          where: { is_active: true },
+          select: { id: true, label: true },
+        }),
+      ]);
 
-      const { data: periods } = await this.supabase.db
-        .from('periods')
-        .select('id, label')
-        .eq('is_active', true);
-
-      if (!departments || !periods) {
-        throw new BadRequestException('Error al cargar catálogos');
-      }
-
-      // Procesar cada fila (las filas vacías ya fueron filtradas)
       for (let i = 0; i < data.length; i++) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const row: any = data[i];
-        const rowNumber = i + 2; // +2 porque Excel empieza en 1 y tiene header
+        const rowNumber = i + 2;
 
-        // Extraer y limpiar valores
         const departmentName = (row['Departamento']?.toString() || '').trim();
         const periodLabel = (row['Período']?.toString() || '').trim();
         const amountRaw = row['Monto Asignado'];
         const assignedAmount = parseFloat(amountRaw);
 
-        // Validar que los datos requeridos estén completos
         if (!departmentName || !periodLabel) {
           result.errors.push({
             row: rowNumber,
@@ -435,11 +449,10 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
           continue;
         }
 
-        // Buscar departamento (case-insensitive)
         const department = departments.find(
-          (d) => d.name.toLowerCase().trim() === departmentName.toLowerCase(),
+          (d) =>
+            d.name.toLowerCase().trim() === departmentName.toLowerCase(),
         );
-
         if (!department) {
           result.errors.push({
             row: rowNumber,
@@ -450,9 +463,7 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
           continue;
         }
 
-        // Buscar período (exact match)
         const period = periods.find((p) => p.label === periodLabel);
-
         if (!period) {
           result.errors.push({
             row: rowNumber,
@@ -463,27 +474,26 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
           continue;
         }
 
-        // Verificar duplicados
-        const { data: existing } = await this.supabase.db
-          .from('budgets')
-          .select('id')
-          .eq('department_id', department.id)
-          .eq('period_id', period.id)
-          .eq('is_active', true)
-          .limit(1)
-          .maybeSingle();
+        const existing = await this.prisma.budgets.findFirst({
+          where: {
+            department_id: department.id,
+            period_id: period.id,
+            is_active: true,
+          },
+          select: { id: true },
+        });
 
         if (existing) {
           result.errors.push({
             row: rowNumber,
             department: departmentName,
             period: periodLabel,
-            error: 'Ya existe un presupuesto activo para esta combinación de departamento y período',
+            error:
+              'Ya existe un presupuesto activo para esta combinación de departamento y período',
           });
           continue;
         }
 
-        // Crear presupuesto
         try {
           await this.create({
             department_id: department.id,
@@ -491,23 +501,23 @@ export class BudgetsService extends BaseCrudService<CreateBudgetDto, UpdateBudge
             assigned_amount: assignedAmount,
           });
           result.success++;
-        } catch (error) {
+        } catch (error: unknown) {
+          const msg = (error as { message?: string })?.message;
           result.errors.push({
             row: rowNumber,
             department: departmentName,
             period: periodLabel,
-            error: error.message || 'Error al crear presupuesto',
+            error: msg || 'Error al crear presupuesto',
           });
         }
       }
 
-      // Calcular total de filas procesadas (excluyendo filas vacías)
       result.total = result.success + result.errors.length;
-
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
+      const msg = (error as { message?: string })?.message;
       throw new BadRequestException(
-        `Error al procesar archivo: ${error.message || 'Formato inválido'}`,
+        `Error al procesar archivo: ${msg || 'Formato inválido'}`,
       );
     }
   }

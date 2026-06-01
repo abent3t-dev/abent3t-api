@@ -70,8 +70,8 @@ export class PersonnelController {
     await this.audit.log({
       action: 'create',
       entity_type: 'user',
-      entity_id: result.id,
-      entity_name: result.full_name,
+      entity_id: result?.id ?? '',
+      entity_name: result?.full_name ?? null,
       user_id: user.id,
       user_name: user.full_name,
       user_role: user.role,
@@ -101,7 +101,7 @@ export class PersonnelController {
       action: 'update',
       entity_type: 'user',
       entity_id: id,
-      entity_name: result.full_name,
+      entity_name: result.full_name ?? null,
       user_id: user.id,
       user_name: user.full_name,
       user_role: user.role,
@@ -110,7 +110,7 @@ export class PersonnelController {
         position: oldData.position,
         department_id: oldData.department_id,
       },
-      new_values: dto,
+      new_values: { ...dto },
     });
     return result;
   }
@@ -129,7 +129,7 @@ export class PersonnelController {
       action: 'delete',
       entity_type: 'user',
       entity_id: id,
-      entity_name: result.full_name,
+      entity_name: result.full_name ?? null,
       user_id: user.id,
       user_name: user.full_name,
       user_role: user.role,
@@ -152,7 +152,7 @@ export class PersonnelController {
       action: 'update',
       entity_type: 'user',
       entity_id: id,
-      entity_name: result.full_name,
+      entity_name: result.full_name ?? null,
       user_id: user.id,
       user_name: user.full_name,
       user_role: user.role,

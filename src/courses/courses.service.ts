@@ -1,26 +1,52 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { SupabaseService } from '../supabase/supabase.service';
-import { BaseCrudService } from '../common/services/base-crud.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { BaseCrudPrismaService } from '../common/services/base-crud-prisma.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 
 @Injectable()
-export class CoursesService extends BaseCrudService<CreateCourseDto, UpdateCourseDto> {
-  protected readonly tableName = 'courses';
-  protected readonly selectFields = '*, institutions(id, name), course_types(id, name), modalities(id, name)';
+export class CoursesService extends BaseCrudPrismaService<
+  CreateCourseDto,
+  UpdateCourseDto
+> {
+  protected get model() {
+    return this.prisma.courses;
+  }
   protected readonly orderField = 'name';
   protected readonly searchFields = ['name', 'description'];
+  protected readonly include = {
+    institutions: { select: { id: true, name: true } },
+    course_types: { select: { id: true, name: true } },
+    modalities: { select: { id: true, name: true } },
+  };
   private readonly logger = new Logger(CoursesService.name);
 
-  constructor(supabase: SupabaseService) {
-    super(supabase);
+  constructor(prisma: PrismaService) {
+    super(prisma);
   }
 
   private async validateFKs(dto: CreateCourseDto | UpdateCourseDto) {
     const checks: Promise<void>[] = [];
-    if (dto.institution_id) checks.push(this.validateFK('institutions', dto.institution_id, 'institution_id'));
-    if (dto.course_type_id) checks.push(this.validateFK('course_types', dto.course_type_id, 'course_type_id'));
-    if (dto.modality_id) checks.push(this.validateFK('modalities', dto.modality_id, 'modality_id'));
+    if (dto.institution_id)
+      checks.push(
+        this.validateFK(
+          this.prisma.institutions,
+          dto.institution_id,
+          'institution_id',
+        ),
+      );
+    if (dto.course_type_id)
+      checks.push(
+        this.validateFK(
+          this.prisma.course_types,
+          dto.course_type_id,
+          'course_type_id',
+        ),
+      );
+    if (dto.modality_id)
+      checks.push(
+        this.validateFK(this.prisma.modalities, dto.modality_id, 'modality_id'),
+      );
     await Promise.all(checks);
   }
 
@@ -28,17 +54,19 @@ export class CoursesService extends BaseCrudService<CreateCourseDto, UpdateCours
    * Override findAll para incluir el conteo de ediciones activas por curso.
    * Permite al frontend identificar cursos sin ediciones (no solicitables).
    */
-  async findAll(): Promise<any[]> {
-    const { data, error } = await this.supabase.db
-      .from(this.tableName)
-      .select(`${this.selectFields}, course_editions(id, is_active)`)
-      .order(this.orderField);
+  async findAll() {
+    const courses = await this.prisma.courses.findMany({
+      include: {
+        ...this.include,
+        course_editions: { select: { id: true, is_active: true } },
+      },
+      orderBy: { name: 'asc' },
+    });
 
-    if (error) throw error;
-
-    return (data ?? []).map((c: any) => {
+    return courses.map((c) => {
       const editions = c.course_editions ?? [];
-      const active_editions_count = editions.filter((e: any) => e.is_active).length;
+      const active_editions_count = editions.filter((e) => e.is_active).length;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { course_editions: _omit, ...rest } = c;
       return { ...rest, active_editions_count };
     });
@@ -61,113 +89,113 @@ export class CoursesService extends BaseCrudService<CreateCourseDto, UpdateCours
    * 3. Deactivate the course
    */
   async remove(id: string): Promise<{ message: string }> {
-    // 1. Get active editions
-    const { data: editions } = await this.supabase.db
-      .from('course_editions')
-      .select('id')
-      .eq('course_id', id)
-      .eq('is_active', true);
+    const editions = await this.prisma.course_editions.findMany({
+      where: { course_id: id, is_active: true },
+      select: { id: true },
+    });
 
-    if (editions && editions.length > 0) {
-      const editionIds = editions.map((e: any) => e.id);
+    if (editions.length > 0) {
+      const editionIds = editions.map((e) => e.id);
 
-      // 2. Get active non-cancelled enrollments on those editions
-      const { data: enrollments } = await this.supabase.db
-        .from('course_enrollments')
-        .select('id, profile_id, course_edition_id, status')
-        .in('course_edition_id', editionIds)
-        .eq('is_active', true)
-        .neq('status', 'cancelado');
+      const enrollments = await this.prisma.course_enrollments.findMany({
+        where: {
+          course_edition_id: { in: editionIds },
+          is_active: true,
+          status: { not: 'cancelado' },
+        },
+        select: { id: true, profile_id: true, course_edition_id: true },
+      });
 
-      // 3. Cancel those enrollments + adjust budgets
-      if (enrollments && enrollments.length > 0) {
-        const enrollmentIds = enrollments.map((e: any) => e.id);
+      if (enrollments.length > 0) {
+        await this.prisma.course_enrollments.updateMany({
+          where: { id: { in: enrollments.map((e) => e.id) } },
+          data: { is_active: false, status: 'cancelado' },
+        });
 
-        await this.supabase.db
-          .from('course_enrollments')
-          .update({ is_active: false, status: 'cancelado' })
-          .in('id', enrollmentIds);
-
-        // Adjust budgets (best-effort, don't block)
-        for (const e of enrollments as any[]) {
+        for (const e of enrollments) {
           try {
-            await this.adjustBudgetForCancellation(e.profile_id, e.course_edition_id);
+            await this.adjustBudgetForCancellation(
+              e.profile_id,
+              e.course_edition_id,
+            );
           } catch (err) {
-            this.logger.error(`Failed to adjust budget for enrollment ${e.id}`, err);
+            this.logger.error(
+              `Failed to adjust budget for enrollment ${e.id}`,
+              err,
+            );
           }
         }
 
-        this.logger.log(`Cascade: cancelled ${enrollments.length} enrollments for course ${id}`);
+        this.logger.log(
+          `Cascade: cancelled ${enrollments.length} enrollments for course ${id}`,
+        );
       }
 
-      // 4. Deactivate editions
-      await this.supabase.db
-        .from('course_editions')
-        .update({ is_active: false })
-        .in('id', editionIds);
+      await this.prisma.course_editions.updateMany({
+        where: { id: { in: editionIds } },
+        data: { is_active: false },
+      });
 
-      this.logger.log(`Cascade: deactivated ${editions.length} editions for course ${id}`);
+      this.logger.log(
+        `Cascade: deactivated ${editions.length} editions for course ${id}`,
+      );
     }
 
-    // 5. Deactivate the course itself
     return super.remove(id);
   }
 
   /**
-   * Replicates the budget subtraction logic from EnrollmentsService.
-   * Kept separate to avoid circular dependency.
-   * Uses effective cost: edition.cost_override ?? course.cost
+   * Resta el costo efectivo al `consumed_amount` del presupuesto del
+   * departamento del colaborador para el período activo. Best-effort: si
+   * algo no se encuentra (perfil sin departamento, sin período activo,
+   * sin presupuesto, costo 0), no hace nada. Idéntico a la lógica de
+   * EnrollmentsService — extraerlo a util compartido es trabajo de refactor
+   * posterior; por ahora se mantiene la duplicación 1:1 con el código viejo.
    */
   private async adjustBudgetForCancellation(
     profileId: string,
     courseEditionId: string,
   ): Promise<void> {
-    const { data: profile } = await this.supabase.db
-      .from('profiles')
-      .select('department_id')
-      .eq('id', profileId)
-      .single();
-
+    const profile = await this.prisma.profiles.findUnique({
+      where: { id: profileId },
+      select: { department_id: true },
+    });
     if (!profile?.department_id) return;
 
-    const { data: edition } = await this.supabase.db
-      .from('course_editions')
-      .select('cost_override, courses(cost)')
-      .eq('id', courseEditionId)
-      .single();
+    const edition = await this.prisma.course_editions.findUnique({
+      where: { id: courseEditionId },
+      select: { cost_override: true, courses: { select: { cost: true } } },
+    });
 
-    // Effective cost: edition override takes precedence over course base cost
-    const baseCost = (edition?.courses as any)?.cost ?? 0;
-    const cost = edition?.cost_override ?? baseCost;
+    const baseCost = Number(edition?.courses?.cost ?? 0);
+    const cost = Number(edition?.cost_override ?? baseCost);
     if (cost === 0) return;
 
-    const today = new Date().toISOString().split('T')[0];
-    const { data: period } = await this.supabase.db
-      .from('periods')
-      .select('id')
-      .eq('is_active', true)
-      .lte('start_date', today)
-      .gte('end_date', today)
-      .limit(1)
-      .maybeSingle();
-
+    const today = new Date();
+    const period = await this.prisma.periods.findFirst({
+      where: {
+        is_active: true,
+        start_date: { lte: today },
+        end_date: { gte: today },
+      },
+      select: { id: true },
+    });
     if (!period) return;
 
-    const { data: budget } = await this.supabase.db
-      .from('budgets')
-      .select('id, consumed_amount')
-      .eq('department_id', profile.department_id)
-      .eq('period_id', period.id)
-      .eq('is_active', true)
-      .limit(1)
-      .maybeSingle();
-
+    const budget = await this.prisma.budgets.findFirst({
+      where: {
+        department_id: profile.department_id,
+        period_id: period.id,
+        is_active: true,
+      },
+      select: { id: true, consumed_amount: true },
+    });
     if (!budget) return;
 
-    const newConsumed = Math.max(0, (Number(budget.consumed_amount) || 0) - cost);
-    await this.supabase.db
-      .from('budgets')
-      .update({ consumed_amount: newConsumed })
-      .eq('id', budget.id);
+    const newConsumed = Math.max(0, Number(budget.consumed_amount) - cost);
+    await this.prisma.budgets.update({
+      where: { id: budget.id },
+      data: { consumed_amount: newConsumed },
+    });
   }
 }
