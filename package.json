@@ -17,7 +17,15 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "crypto:migrate": "ts-node -T scripts/crypto-migrate.ts",
+    "maximo:seed-fixtures": "ts-node -T scripts/maximo-seed-fixtures.ts",
+    "maximo:seed-clear": "ts-node -T scripts/maximo-seed-clear.ts",
+    "maximo:remap": "ts-node -T scripts/maximo-remap.ts",
+    "contracts:check-expiry": "ts-node -T scripts/contracts-check-expiry.ts",
+    "contracts:import-excel": "ts-node -T scripts/contracts-import-xlsx.ts",
+    "expediting:check": "ts-node -T scripts/expediting-check.ts",
+    "sap:smoke": "node scripts/smoke-sap-b1.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",
@@ -39,6 +47,8 @@
     "cookie-parser": "^1.4.7",
     "exceljs": "^4.4.0",
     "helmet": "^8.2.0",
+    "joi": "^18.2.3",
+    "jose": "^5.10.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.3",

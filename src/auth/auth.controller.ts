@@ -14,7 +14,6 @@ import {
   HttpStatus,
   UnauthorizedException,
   ForbiddenException,
-  Redirect,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
@@ -49,6 +48,27 @@ function extractContext(req: Request) {
     null;
   const userAgent = (req.headers['user-agent'] as string) || null;
   return { ip_address: ip, user_agent: userAgent };
+}
+
+/**
+ * Base del frontend para los redirects del flujo OIDC. Se deriva del origen de
+ * `AZURE_AD_REDIRECT_URI` (el dominio configurado en Entra) — valor fijo y
+ * confiable, así el usuario regresa al MISMO host por el que entró. Si no está,
+ * cae a `FRONTEND_URL`.
+ */
+function oidcFrontendBase(): string {
+  const redirect = process.env.AZURE_AD_REDIRECT_URI;
+  if (redirect) {
+    try {
+      const u = new URL(redirect);
+      return `${u.protocol}//${u.host}`;
+    } catch {
+      /* valor inválido — usa el fallback */
+    }
+  }
+  return (
+    process.env.FRONTEND_URL?.split(',')[0]?.trim() || 'http://localhost:3000'
+  );
 }
 
 @Controller('auth')
@@ -194,47 +214,105 @@ export class AuthController {
   }
 
   /**
-   * OIDC — inicia el flujo de Microsoft Entra ID. Stub hasta que TI entregue
-   * las credenciales Azure. Devuelve 503 con un mensaje útil.
+   * OIDC — inicia el flujo de Microsoft Entra ID (Authorization Code).
+   * Genera state+nonce, los persiste en una cookie corta HttpOnly y redirige
+   * al endpoint de autorización de Entra. Si OIDC no está configurado, cae al
+   * login local.
    */
   @Public()
   @Get('login')
-  @Redirect()
-  loginOIDC() {
+  async loginOIDC(@Res() res: Response) {
+    const base = oidcFrontendBase();
+
     if (!this.oidc.isConfigured()) {
-      // Si OIDC no está configurado pero local sí, redirige al login local
-      if (this.local.isEnabled()) {
-        const frontendUrl =
-          process.env.FRONTEND_URL?.split(',')[0]?.trim() ||
-          'http://localhost:3000';
-        return { url: `${frontendUrl}/login`, statusCode: 302 };
-      }
-      throw new ForbiddenException(
-        'El login con Microsoft no está configurado y el login local está deshabilitado',
-      );
+      res.redirect(`${base}/login`);
+      return;
     }
 
-    // TODO Fase 2 (cuando llegue Azure): generar state aleatorio, persistirlo,
-    // y redirigir a `this.oidc.buildAuthorizationUrl(state)`.
-    throw new ForbiddenException('OIDC no implementado todavía');
+    try {
+      const { state, nonce } = this.oidc.createStateNonce();
+      // Cookie corta para revalidar state (CSRF) y nonce (replay) en el callback.
+      // Path /api/auth para que viaje al callback; SameSite=Lax permite el
+      // regreso por navegación top-level desde Microsoft.
+      res.cookie('oidc_state', JSON.stringify({ state, nonce }), {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax' as const,
+        maxAge: 10 * 60 * 1000,
+        path: '/api/auth',
+      });
+      const url = await this.oidc.buildAuthorizationUrl(state, nonce);
+      res.redirect(url);
+    } catch {
+      res.redirect(`${base}/login?error=oidc_init`);
+    }
   }
 
   /**
-   * OIDC callback — recibe `code` y `state` de Entra ID. Stub hasta Azure.
+   * OIDC callback — recibe `code` y `state` de Entra ID. Valida el state
+   * contra la cookie, procesa el intercambio + validación del id_token en el
+   * service, emite el JWT propio (cookies HttpOnly) y redirige al frontend.
+   * Cualquier error redirige a `/login?error=...` (nunca JSON crudo al usuario).
    */
   @Public()
   @Get('callback')
-  oidcCallback(@Query('code') _code: string, @Query('state') _state: string) {
+  async oidcCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Query('error') error: string,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const base = oidcFrontendBase();
+
     if (!this.oidc.isConfigured()) {
-      throw new ForbiddenException(
-        'OIDC no configurado. Usa el login local mientras tanto.',
-      );
+      res.redirect(`${base}/login?error=oidc_no_config`);
+      return;
     }
-    // TODO Fase 2 (cuando llegue Azure):
-    //   1) const { profileId, email } = await this.oidc.handleCallback(code, state, ctx);
-    //   2) const tokens = await this.jwtAuth.issueTokens(profileId, email, 'oidc');
-    //   3) setear cookies, redirigir al frontend a /home.
-    throw new ForbiddenException('OIDC no implementado todavía');
+    if (error) {
+      res.redirect(`${base}/login?error=oidc_denied`);
+      return;
+    }
+
+    // Validar state contra la cookie (anti-CSRF).
+    const rawState = (req as Request & { cookies?: Record<string, string> })
+      .cookies?.oidc_state;
+    let saved: { state: string; nonce: string } | null = null;
+    try {
+      saved = rawState ? JSON.parse(rawState) : null;
+    } catch {
+      saved = null;
+    }
+    res.clearCookie('oidc_state', { path: '/api/auth' });
+
+    if (!saved || !state || saved.state !== state) {
+      res.redirect(`${base}/login?error=oidc_state`);
+      return;
+    }
+
+    try {
+      const ctx = extractContext(req);
+      const { profileId, email } = await this.oidc.handleCallback(
+        code,
+        saved.nonce,
+        ctx,
+      );
+      const tokens = await this.jwtAuth.issueTokens(profileId, email, 'oidc');
+      res.cookie(
+        'access_token',
+        tokens.accessToken,
+        cookieOptions(tokens.expiresIn),
+      );
+      res.cookie(
+        'refresh_token',
+        tokens.refreshToken,
+        cookieOptions(7 * 24 * 3600, true),
+      );
+      res.redirect(`${base}/`);
+    } catch {
+      // El detalle del error queda en el log del service; al usuario solo el redirect.
+      res.redirect(`${base}/login?error=oidc_failed`);
+    }
   }
 
   /** Get current user's profile (requiere JwtAuthGuard). */
