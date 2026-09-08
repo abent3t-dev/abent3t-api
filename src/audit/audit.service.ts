@@ -23,7 +23,9 @@ export type AuditEntity =
   | 'fiscal_loss'
   | 'non_deductible'
   | 'shareholding'
-  | 'okr';
+  | 'okr'
+  // Compras (§16): primera entidad de compras auditada
+  | 'committee';
 
 export interface AuditLogEntry {
   action: AuditAction;
@@ -112,6 +114,7 @@ export class AuditService {
       non_deductible: 'gasto no deducible',
       shareholding: 'tenencia accionaria',
       okr: 'OKR',
+      committee: 'comité de compras',
     };
 
     const action = actionLabels[entry.action] || entry.action;
