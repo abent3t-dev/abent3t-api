@@ -2,7 +2,7 @@
 //
 // Smoke test READ-ONLY del SAP Business One Service Layer (ABENT 3T).
 // Hace Login → GET PurchaseOrders → GET PurchaseRequests → Logout, validando
-// que los 3 UDF de línea (U_ClasComp, U_ImptAhorroComp, U_ProcComp) sean
+// que los 3 UDF de línea (U_Clas_gts, U_Imp_ahorro, U_Proc_Comp) sean
 // legibles. No escribe NADA en SAP.
 //
 // Requisitos:
@@ -63,7 +63,7 @@ if (!SL_REJECT_UNAUTHORIZED) {
 }
 
 // ---- UDF a validar (nivel línea: POR1 / PRQ1) ------------------------------
-const UDF_FIELDS = ['U_ClasComp', 'U_ImptAhorroComp', 'U_ProcComp'];
+const UDF_FIELDS = ['U_Clas_gts', 'U_Imp_ahorro', 'U_Proc_Comp'];
 
 // Campos de línea que pedimos en el $expand. Incluimos los UDF + algunos
 // "anchors" para que la respuesta tenga sentido al imprimir.
@@ -255,9 +255,9 @@ function inspectDocuments(docs, entityLabel) {
         CardName: truncate(doc.CardName ?? '', 28),
         Line: line.LineNum ?? '?',
         Item: truncate(line.ItemCode ?? '', 14),
-        U_ClasComp: fmt(line.U_ClasComp),
-        U_ImptAhorroComp: fmt(line.U_ImptAhorroComp),
-        U_ProcComp: truncate(fmt(line.U_ProcComp), 28),
+        U_Clas_gts: fmt(line.U_Clas_gts),
+        U_Imp_ahorro: fmt(line.U_Imp_ahorro),
+        U_Proc_Comp: truncate(fmt(line.U_Proc_Comp), 28),
       });
     }
   }
@@ -285,9 +285,9 @@ function inspectDocuments(docs, entityLabel) {
         `${entityLabel}.${f}: presente pero sin datos en TEST (no es error de conexión).`,
       );
     }
-    if (f === 'U_ClasComp') checks.udfClasCompReadable = true;
-    if (f === 'U_ImptAhorroComp') checks.udfImptAhorroReadable = true;
-    if (f === 'U_ProcComp') checks.udfProcCompReadable = true;
+    if (f === 'U_Clas_gts') checks.udfClasCompReadable = true;
+    if (f === 'U_Imp_ahorro') checks.udfImptAhorroReadable = true;
+    if (f === 'U_Proc_Comp') checks.udfProcCompReadable = true;
   }
 }
 
@@ -381,9 +381,9 @@ async function main() {
   console.log(line(checks.loginOk, 'Login OK'));
   console.log(line(checks.sessionReused, 'Sesión reutilizada en GET'));
   console.log(line(checks.poResponds, 'PurchaseOrders responde'));
-  console.log(line(checks.udfClasCompReadable, 'U_ClasComp legible'));
-  console.log(line(checks.udfImptAhorroReadable, 'U_ImptAhorroComp legible'));
-  console.log(line(checks.udfProcCompReadable, 'U_ProcComp legible'));
+  console.log(line(checks.udfClasCompReadable, 'U_Clas_gts legible'));
+  console.log(line(checks.udfImptAhorroReadable, 'U_Imp_ahorro legible'));
+  console.log(line(checks.udfProcCompReadable, 'U_Proc_Comp legible'));
   console.log(line(checks.prResponds, 'PurchaseRequests responde (opcional)'));
   console.log(line(checks.logoutOk, 'Logout OK'));
 
