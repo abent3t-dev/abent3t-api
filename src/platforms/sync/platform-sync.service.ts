@@ -3,7 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CrehanaClient, CrehanaMapper } from '../clients/crehana';
 import { SyncType } from '../dto/sync-options.dto';
-import * as crypto from 'crypto';
+import { CryptoService } from '../../common/services/crypto.service';
 
 export interface SyncResult {
   success: boolean;
@@ -18,13 +18,10 @@ export interface SyncResult {
 export class PlatformSyncService {
   private readonly logger = new Logger(PlatformSyncService.name);
 
-  // Clave para desencriptar (debe coincidir con PlatformsService)
-  private readonly ENCRYPTION_KEY =
-    process.env.PLATFORM_ENCRYPTION_KEY || 'default-key-change-in-production-32';
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly crehanaClient: CrehanaClient,
+    private readonly cryptoService: CryptoService,
   ) {}
 
   /**
@@ -314,15 +311,14 @@ export class PlatformSyncService {
   // UTILIDADES
   // =====================================================
 
+  /**
+   * Descifra vía CryptoService preservando el comportamiento previo de este
+   * servicio: ante un ciphertext inválido devuelve '' (el caller lo traduce a
+   * "Faltan credenciales") en lugar de propagar la excepción.
+   */
   private decryptKey(encrypted: string): string {
     try {
-      const [ivHex, encryptedText] = encrypted.split(':');
-      const iv = Buffer.from(ivHex, 'hex');
-      const key = crypto.scryptSync(this.ENCRYPTION_KEY, 'salt', 32);
-      const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-      let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
-      return decrypted;
+      return this.cryptoService.decrypt(encrypted);
     } catch {
       return '';
     }

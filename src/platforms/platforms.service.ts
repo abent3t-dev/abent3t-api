@@ -15,7 +15,7 @@ import { CrehanaClient } from './clients/crehana';
 import { PlatformSyncService } from './sync/platform-sync.service';
 import { AuthUser } from '../common/decorators/current-user.decorator';
 import { isAdmin, isManager } from '../common/utils/roles.util';
-import * as crypto from 'crypto';
+import { CryptoService } from '../common/services/crypto.service';
 
 // Includes (equivalentes Prisma a los antiguos SELECTS de PostgREST)
 const INTEGRATION_INCLUDE = {
@@ -66,10 +66,6 @@ const ENROLLMENT_INCLUDE = {
 export class PlatformsService implements OnModuleInit {
   private readonly logger = new Logger(PlatformsService.name);
 
-  // Clave para encriptar/desencriptar (en producción usar variable de entorno)
-  private readonly ENCRYPTION_KEY = process.env.PLATFORM_ENCRYPTION_KEY || 'default-key-change-in-production-32';
-  private readonly ENCRYPTION_IV_LENGTH = 16;
-
   /** Sync logs/integraciones que llevan más de este tiempo en 'in_progress' se consideran zombies. */
   private readonly STALE_SYNC_THRESHOLD_MS = 30 * 60 * 1000;
 
@@ -77,6 +73,7 @@ export class PlatformsService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly crehanaClient: CrehanaClient,
     private readonly syncService: PlatformSyncService,
+    private readonly cryptoService: CryptoService,
   ) {}
 
   /**
@@ -225,7 +222,7 @@ export class PlatformsService implements OnModuleInit {
     };
 
     if (dto.private_key) {
-      insertData.private_key_encrypted = this.encryptKey(dto.private_key);
+      insertData.private_key_encrypted = this.cryptoService.encrypt(dto.private_key);
     }
 
     try {
@@ -254,7 +251,7 @@ export class PlatformsService implements OnModuleInit {
 
     // Encriptar nueva clave privada si se proporciona
     if ('private_key' in dto && dto.private_key) {
-      updateData.private_key_encrypted = this.encryptKey(dto.private_key);
+      updateData.private_key_encrypted = this.cryptoService.encrypt(dto.private_key);
       delete updateData.private_key;
     }
 
@@ -331,7 +328,7 @@ export class PlatformsService implements OnModuleInit {
       };
     }
 
-    const secretAccess = this.decryptKey(integration.private_key_encrypted);
+    const secretAccess = this.cryptoService.decrypt(integration.private_key_encrypted);
 
     this.crehanaClient.configure({
       api_url: integration.api_url,
@@ -1153,22 +1150,4 @@ export class PlatformsService implements OnModuleInit {
     return data;
   }
 
-  private encryptKey(text: string): string {
-    const iv = crypto.randomBytes(this.ENCRYPTION_IV_LENGTH);
-    const key = crypto.scryptSync(this.ENCRYPTION_KEY, 'salt', 32);
-    const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
-    let encrypted = cipher.update(text, 'utf8', 'hex');
-    encrypted += cipher.final('hex');
-    return iv.toString('hex') + ':' + encrypted;
-  }
-
-  private decryptKey(encrypted: string): string {
-    const [ivHex, encryptedText] = encrypted.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const key = crypto.scryptSync(this.ENCRYPTION_KEY, 'salt', 32);
-    const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
-    let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
-    decrypted += decipher.final('utf8');
-    return decrypted;
-  }
 }

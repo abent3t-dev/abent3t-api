@@ -4,6 +4,7 @@ import { PlatformsController } from './platforms.controller';
 import { PlatformsService } from './platforms.service';
 import { PlatformSyncService } from './sync/platform-sync.service';
 import { CrehanaClient } from './clients/crehana';
+import { CryptoService } from '../common/services/crypto.service';
 
 /**
  * Módulo de integración con plataformas de e-learning (Crehana, Udemy, etc.)
@@ -15,7 +16,7 @@ import { CrehanaClient } from './clients/crehana';
 @Module({
   imports: [ScheduleModule.forRoot()],
   controllers: [PlatformsController],
-  providers: [PlatformsService, PlatformSyncService, CrehanaClient],
+  providers: [PlatformsService, PlatformSyncService, CrehanaClient, CryptoService],
   exports: [PlatformsService, PlatformSyncService],
 })
 export class PlatformsModule {}

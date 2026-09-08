@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { LogLevel, ValidationPipe } from '@nestjs/common';
 import { json, urlencoded } from 'express';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -22,8 +22,20 @@ function getAllowedOrigins(): string[] {
     .filter(Boolean);
 }
 
+/**
+ * Niveles de log por entorno (mecanismo estándar de Nest: `logger: [...]`).
+ * En producción se excluyen `debug` y `verbose`: las integraciones externas
+ * emiten nombres de headers en debug y no aportan en operación. En el resto
+ * de entornos se conservan los cinco niveles (comportamiento previo).
+ */
+function getLogLevels(): LogLevel[] {
+  return process.env.NODE_ENV === 'production'
+    ? ['error', 'warn', 'log']
+    : ['error', 'warn', 'log', 'debug', 'verbose'];
+}
+
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { logger: getLogLevels() });
 
   app.setGlobalPrefix('api');
 
@@ -45,9 +57,7 @@ async function bootstrap() {
     credentials: true,
   });
 
-  app.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, transform: true }),
-  );
+  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
   await app.listen(process.env.PORT ?? 3001);
 }

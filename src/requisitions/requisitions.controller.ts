@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Controller,
   Get,
   Post,
@@ -7,8 +8,10 @@ import {
   Param,
   Body,
   Query,
+  ParseArrayPipe,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { RequisitionsService } from './requisitions.service';
 import type { RequisitionStatus } from './requisitions.service';
 import { CreateRequisitionDto } from './dto/create-requisition.dto';
@@ -20,6 +23,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 // Grupos de roles de compras
 const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
+const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 const PURCHASE_VIEWERS = [
   ...PURCHASE_TEAM,
   'aprobador_nivel_1',
@@ -31,7 +35,10 @@ const PURCHASE_VIEWERS = [
 
 @Controller('requisitions')
 export class RequisitionsController {
-  constructor(private readonly service: RequisitionsService) {}
+  constructor(
+    private readonly service: RequisitionsService,
+    private readonly configService: ConfigService,
+  ) {}
 
   @Roles(...PURCHASE_VIEWERS)
   @Get()
@@ -69,13 +76,32 @@ export class RequisitionsController {
     return this.service.create(dto, user.id);
   }
 
-  @Roles(...PURCHASE_TEAM)
+  /**
+   * Herramienta administrativa TRANSITORIA (Fase 0 — T3): import manual de
+   * RQs "de Maximo/SAP" vía payload. Quedará DEPRECADA cuando exista la
+   * integración pull real (Fase 4 de la auditoría de estructura).
+   * Cada elemento del lote se valida con class-validator (ParseArrayPipe) y
+   * el tamaño del lote se limita vía REQUISITIONS_IMPORT_MAX_BATCH.
+   */
+  @Roles(...PURCHASE_ADMINS)
   @Post('import')
   importFromExternal(
-    @Body('requisitions') requisitions: CreateRequisitionDto[],
+    @Body(
+      'requisitions',
+      new ParseArrayPipe({ items: CreateRequisitionDto, whitelist: true }),
+    )
+    requisitions: CreateRequisitionDto[],
     @Body('source') source: 'maximo' | 'sap',
     @CurrentUser() user: { id: string },
   ) {
+    const maxBatch = Number(
+      this.configService.get('REQUISITIONS_IMPORT_MAX_BATCH') ?? 500,
+    );
+    if (requisitions.length > maxBatch) {
+      throw new BadRequestException(
+        `El lote excede el máximo de ${maxBatch} elementos por petición (recibidos: ${requisitions.length}). Divide el import en lotes más pequeños.`,
+      );
+    }
     return this.service.importFromExternal(requisitions, source, user.id);
   }
 
