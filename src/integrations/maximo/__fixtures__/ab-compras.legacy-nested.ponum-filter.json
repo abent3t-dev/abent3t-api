@@ -1,0 +1,489 @@
+{
+  "QueryAB_COMPRASResponse": {
+    "rsStart": 0,
+    "rsCount": 1,
+    "AB_COMPRASSet": {
+      "PO": [
+        {
+          "rowstamp": "82785930",
+          "Attributes": {
+            "CURRENCYCODE": {
+              "content": "USD"
+            },
+            "DESCRIPTION": {
+              "content": "Configuración OPC para envio de datos al PI server"
+            },
+            "ORDERDATE": {
+              "content": "2019-07-01T23:29:54+00:00"
+            },
+            "PONUM": {
+              "content": "PO100012"
+            },
+            "PURCHASEAGENT": {
+              "content": "USR001"
+            },
+            "REVISIONNUM": {
+              "content": 0
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "TOTALCOST": {
+              "content": 7193.16
+            },
+            "VENDELIVERYDATE": {
+              "content": "2019-07-19T00:00:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "POLINE": [
+              {
+                "rowstamp": "158095365",
+                "Attributes": {
+                  "ENTERDATE": {
+                    "content": "2019-07-01T23:29:55+00:00"
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "158089307",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 1
+                        },
+                        "PRNUM": {
+                          "content": "PR100014"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "30985806",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2019-06-25T15:28:46+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR002"
+                              },
+                              "STATUSDATE": {
+                                "content": "2019-07-01T23:29:55+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "COMPANIES": [
+              {
+                "rowstamp": "407813964",
+                "Attributes": {
+                  "AB_ACTA": {
+                    "content": false
+                  },
+                  "AB_ACTIVA": {
+                    "content": false
+                  },
+                  "AB_COMPDOM": {
+                    "content": false
+                  },
+                  "AB_CUMPFISCAL": {
+                    "content": false
+                  },
+                  "AB_CV": {
+                    "content": false
+                  },
+                  "AB_CVTEC": {
+                    "content": false
+                  },
+                  "AB_DECLARACION": {
+                    "content": false
+                  },
+                  "AB_EDOCTA": {
+                    "content": false
+                  },
+                  "AB_EDOFIN": {
+                    "content": false
+                  },
+                  "AB_IDENTIFICACION": {
+                    "content": false
+                  },
+                  "AB_IMSS": {
+                    "content": false
+                  },
+                  "AB_NOTARIAL": {
+                    "content": false
+                  },
+                  "AB_REPSE": {
+                    "content": false
+                  },
+                  "AB_RFC": {
+                    "content": false
+                  },
+                  "AB_SHCP": {
+                    "content": false
+                  },
+                  "ADDRESS1": {
+                    "content": "Direccion demo"
+                  },
+                  "ADDRESS2": {
+                    "content": "Direccion demo"
+                  },
+                  "ADDRESS4": {
+                    "content": "Direccion demo"
+                  },
+                  "APCONTROLACC": {
+                    "content": "80-930"
+                  },
+                  "APSUSPENSEACC": {
+                    "content": "80-932"
+                  },
+                  "AUTOAPPROVEINV": {
+                    "content": false
+                  },
+                  "AUTORECEIVEONASN": {
+                    "content": false
+                  },
+                  "AUTOSENDPOCANCEL": {
+                    "content": false
+                  },
+                  "CELLPHONE": {
+                    "content": "0000000000"
+                  },
+                  "CHANGEBY": {
+                    "content": "MAXADMIN"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2024-08-30T11:55:22+00:00"
+                  },
+                  "COMPANIESID": {
+                    "content": 467,
+                    "resourceid": true
+                  },
+                  "COMPANY": {
+                    "content": "0001017912"
+                  },
+                  "CURRENCYCODE": {
+                    "content": "USD"
+                  },
+                  "DISABLED": {
+                    "content": false
+                  },
+                  "ECOMMERCEENABLED": {
+                    "content": false
+                  },
+                  "EXTERNALREFID": {
+                    "content": "P0000001"
+                  },
+                  "INCLUSIVE1": {
+                    "content": true
+                  },
+                  "INCLUSIVE2": {
+                    "content": true
+                  },
+                  "INCLUSIVE3": {
+                    "content": true
+                  },
+                  "INCLUSIVE4": {
+                    "content": true
+                  },
+                  "INCLUSIVE5": {
+                    "content": true
+                  },
+                  "INSPECTIONREQUIRED": {
+                    "content": false
+                  },
+                  "NAME": {
+                    "content": "ABB MEXICO SA DE CV"
+                  },
+                  "OCOMPRAS": {
+                    "content": "0307"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PAYMENTTERMS": {
+                    "content": "Z000"
+                  },
+                  "PAYONRECEIPT": {
+                    "content": false
+                  },
+                  "PHONE": {
+                    "content": "0000000000"
+                  },
+                  "PUNCHOUTENABLED": {
+                    "content": false
+                  },
+                  "RBNIACC": {
+                    "content": "80-931"
+                  },
+                  "REGISTRATION1": {
+                    "content": "XAXX010101000"
+                  },
+                  "STR_SUPPL1": {
+                    "content": "Direccion demo"
+                  },
+                  "TAX1CODE": {
+                    "content": "M3"
+                  },
+                  "TYPE": {
+                    "content": "V"
+                  },
+                  "USEPARENTREMITTO": {
+                    "content": false
+                  },
+                  "VENDORSENDSASN": {
+                    "content": false
+                  },
+                  "VENDORSENDSINV": {
+                    "content": false
+                  },
+                  "VENDORSENDSSTATUS": {
+                    "content": false
+                  },
+                  "ZFEC_VTO_HOMOL": {
+                    "content": "2019-12-31T00:00:00+00:00"
+                  },
+                  "ZHOMOLOG": {
+                    "content": false
+                  }
+                }
+              }
+            ],
+            "PERSON": [
+              {
+                "rowstamp": "160780065",
+                "Attributes": {
+                  "ACCEPTINGWFMAIL": {
+                    "content": true
+                  },
+                  "DEPARTMENT": {
+                    "content": "Administración"
+                  },
+                  "DEVICECLASS": {
+                    "content": 2
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 1"
+                  },
+                  "FIRSTNAME": {
+                    "content": "Nombre2"
+                  },
+                  "LANGUAGE": {
+                    "content": "ES"
+                  },
+                  "LASTNAME": {
+                    "content": "Apellido3"
+                  },
+                  "LOCALE": {
+                    "content": "en_US"
+                  },
+                  "LOCATIONORG": {
+                    "content": "N28"
+                  },
+                  "LOCATIONSITE": {
+                    "content": "A3T"
+                  },
+                  "LOCTOSERVREQ": {
+                    "content": true
+                  },
+                  "PERSONID": {
+                    "content": "USR001"
+                  },
+                  "PERSONUID": {
+                    "content": 9001,
+                    "resourceid": true
+                  },
+                  "PLUSGAUDITAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGBYPREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGCERTREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGCONFSPACEAUTH": {
+                    "content": false
+                  },
+                  "PLUSGFINAUTHORITY": {
+                    "content": false
+                  },
+                  "PLUSGGASTESTAUTH": {
+                    "content": false
+                  },
+                  "PLUSGHFAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGISCERTIFIED": {
+                    "content": false
+                  },
+                  "PLUSGISOLATIONAUTH": {
+                    "content": false
+                  },
+                  "PLUSGISOSPEC": {
+                    "content": false
+                  },
+                  "PLUSGMOCREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGPERAREAAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPERISSUEAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPERPERFAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPTWISSUECOUNTER": {
+                    "content": 0
+                  },
+                  "PLUSGPTWREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGRADIOSRCAUTH": {
+                    "content": false
+                  },
+                  "PLUSGRCFAAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGRISKREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGSITECHECKERAUTH": {
+                    "content": false
+                  },
+                  "PLUSGSOLNAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGTECHAUTHORITY": {
+                    "content": false
+                  },
+                  "STATUS": {
+                    "content": "INACTIVE"
+                  },
+                  "STATUSDATE": {
+                    "content": "2020-01-01T00:00:00+00:00"
+                  },
+                  "SUPERVISOR": {
+                    "content": "USR003"
+                  },
+                  "TIMEZONE": {
+                    "content": "Mexico/General"
+                  },
+                  "TITLE": {
+                    "content": "Puesto demo"
+                  },
+                  "TRANSEMAILELECTION": {
+                    "content": "NEVER"
+                  },
+                  "WFMAILELECTION": {
+                    "content": "PROCESS"
+                  }
+                }
+              }
+            ],
+            "POSTATUS": [
+              {
+                "rowstamp": "30985811",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR002"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2019-07-01T23:29:54+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "POSTATUSID": {
+                    "content": 661,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "32985036",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR001"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2019-07-15T23:55:08+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "POSTATUSID": {
+                    "content": 843,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  }
+                }
+              },
+              {
+                "rowstamp": "32456522",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR004"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2019-07-12T08:05:55+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "POSTATUSID": {
+                    "content": 803,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "82785931",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR003"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2020-04-25T00:23:30+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "POSTATUSID": {
+                    "content": 5218,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

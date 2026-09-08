@@ -1,0 +1,145 @@
+{
+  "member": [
+    {
+      "person_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/ab_comprador",
+      "revisionnum": 0,
+      "companies_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/vendor",
+      "currencycode": "MXN",
+      "orderdate": "2026-03-17T14:05:39+00:00",
+      "totalcost": 116000,
+      "_rowstamp": "483088249",
+      "companies": [
+        {
+          "_rowstamp": "454951171",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/vendor/0-4106",
+          "name": "MARAT SA DE CV",
+          "company": "P0000669",
+          "href": "http://childkey#UE8vQ09NUEFOSUVTL1AwMDAwNjY5L04yOA--",
+          "orgid": "N28"
+        }
+      ],
+      "postatus": [
+        {
+          "_rowstamp": "483083789",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/postatus/0-23172",
+          "changedate": "2026-03-17T14:05:39+00:00",
+          "href": "http://childkey#UE8vUE9TVEFUVVMvMjMxNzI-",
+          "postatusid": 23172,
+          "status": "WAPPR"
+        },
+        {
+          "_rowstamp": "483083831",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/postatus/1-23173",
+          "changedate": "2026-03-17T14:11:23+00:00",
+          "href": "http://childkey#UE8vUE9TVEFUVVMvMjMxNzM-",
+          "postatusid": 23173,
+          "status": "APPR"
+        }
+      ],
+      "postatus_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/postatus",
+      "poline_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/poline",
+      "ponum": "PO102239",
+      "siteid": "A3T",
+      "href": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-",
+      "vendeliverydate": "2026-03-20T00:00:00+00:00",
+      "poline": [
+        {
+          "itemnum": "2801011",
+          "prline_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/poline/0-18564/prline",
+          "_rowstamp": "483088195",
+          "item": [
+            {
+              "itemnum": "2801011",
+              "_rowstamp": "483073258",
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/poline/0-18564/item/0-17694",
+              "description": "~null~",
+              "itemsetid": "ITEMSET1",
+              "href": "http://childkey#UE8vUE9MSU5FL0lURU0vMjgwMTAxMS9JVEVNU0VUMQ--"
+            }
+          ],
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/poline/0-18564",
+          "enterdate": "2026-03-17T14:10:01+00:00",
+          "href": "http://childkey#UE8vUE9MSU5FLzEvUE8xMDIyMzkvMC9BM1Q-",
+          "item_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzkvMC9BM1Q-/poline/0-18564/item",
+          "polinenum": 1
+        }
+      ],
+      "pretaxtotal": 100000
+    },
+    {
+      "person_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/ab_comprador",
+      "revisionnum": 1,
+      "companies_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/vendor",
+      "currencycode": "USD",
+      "orderdate": "2026-03-14T14:57:24+00:00",
+      "totalcost": 2803.19,
+      "_rowstamp": "482596932",
+      "companies": [
+        {
+          "_rowstamp": "388406766",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/vendor/0-4114",
+          "name": "JOTACU INSTALACIONES SA DE CV",
+          "company": "P0000704",
+          "href": "http://childkey#UE8vQ09NUEFOSUVTL1AwMDAwNzA0L04yOA--",
+          "orgid": "N28"
+        }
+      ],
+      "postatus": [
+        {
+          "_rowstamp": "482596794",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/postatus/0-23157",
+          "changedate": "2026-03-14T19:06:35+00:00",
+          "href": "http://childkey#UE8vUE9TVEFUVVMvMjMxNTc-",
+          "postatusid": 23157,
+          "status": "PNDREV"
+        },
+        {
+          "_rowstamp": "482596824",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/postatus/1-23159",
+          "changedate": "2026-03-14T19:06:51+00:00",
+          "href": "http://childkey#UE8vUE9TVEFUVVMvMjMxNTk-",
+          "postatusid": 23159,
+          "status": "APPR"
+        }
+      ],
+      "postatus_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/postatus",
+      "poline_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/poline",
+      "ponum": "PO102238",
+      "siteid": "A3T",
+      "href": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-",
+      "vendeliverydate": "2026-03-20T00:00:00+00:00",
+      "poline": [
+        {
+          "itemnum": "2003462",
+          "prline_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/poline/0-18547/prline",
+          "_rowstamp": "482596821",
+          "item": [
+            {
+              "itemnum": "2003462",
+              "_rowstamp": "482593182",
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/poline/0-18547/item/0-17675",
+              "description": "~null~",
+              "itemsetid": "ITEMSET1",
+              "href": "http://childkey#UE8vUE9MSU5FL0lURU0vMjAwMzQ2Mi9JVEVNU0VUMQ--"
+            }
+          ],
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/poline/0-18547",
+          "enterdate": "2026-03-14T19:06:35+00:00",
+          "href": "http://childkey#UE8vUE9MSU5FLzEvUE8xMDIyMzgvMS9BM1Q-",
+          "item_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyMzgvMS9BM1Q-/poline/0-18547/item",
+          "polinenum": 1
+        }
+      ],
+      "pretaxtotal": 2803.19
+    }
+  ],
+  "href": "http://maximo.example:9080/maximo/oslc/os/AB_COMPRAS",
+  "responseInfo": {
+    "href": "http://maximo.example:9080/maximo/oslc/os/AB_COMPRAS?oslc.pageSize=2&pageno=1",
+    "nextPage": {
+      "href": "http://maximo.example:9080/maximo/oslc/os/AB_COMPRAS?oslc.pageSize=2&pageno=2"
+    },
+    "totalCount": 8,
+    "pagenum": 1
+  }
+}

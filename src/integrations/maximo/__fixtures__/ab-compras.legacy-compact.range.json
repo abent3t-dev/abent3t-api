@@ -1,0 +1,227 @@
+{
+  "QueryAB_COMPRASResponse": {
+    "rsStart": 0,
+    "rsCount": 3,
+    "AB_COMPRASSet": {
+      "PO": [
+        {
+          "rowstamp": "483088249",
+          "CURRENCYCODE": "MXN",
+          "ORDERDATE": "2026-03-17T14:05:39+00:00",
+          "PONUM": "PO102239",
+          "PRETAXTOTAL": 100000,
+          "REVISIONNUM": 0,
+          "SITEID": "A3T",
+          "TOTALCOST": 116000,
+          "VENDELIVERYDATE": "2026-03-20T00:00:00+00:00",
+          "POLINE": [
+            {
+              "rowstamp": "483088195",
+              "ENTERDATE": "2026-03-17T14:10:01+00:00",
+              "ITEMNUM": "2801011",
+              "POLINENUM": 1,
+              "ITEM": [
+                {
+                  "rowstamp": "483073258",
+                  "DESCRIPTION": "~null~",
+                  "ITEMNUM": "2801011",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ]
+            }
+          ],
+          "COMPANIES": [
+            {
+              "rowstamp": "454951171",
+              "COMPANY": "P0000669",
+              "NAME": "MARAT SA DE CV",
+              "ORGID": "N28"
+            }
+          ],
+          "POSTATUS": [
+            {
+              "rowstamp": "483083789",
+              "CHANGEDATE": "2026-03-17T14:05:39+00:00",
+              "POSTATUSID": 23172,
+              "STATUS": "WAPPR"
+            },
+            {
+              "rowstamp": "483083831",
+              "CHANGEDATE": "2026-03-17T14:11:23+00:00",
+              "POSTATUSID": 23173,
+              "STATUS": "APPR"
+            }
+          ]
+        },
+        {
+          "rowstamp": "489159275",
+          "CURRENCYCODE": "USD",
+          "ORDERDATE": "2026-05-07T11:41:47+00:00",
+          "PONUM": "TEST02",
+          "PRETAXTOTAL": 175000,
+          "REVISIONNUM": 0,
+          "SITEID": "A3T",
+          "TOTALCOST": 175000,
+          "VENDELIVERYDATE": "2026-05-08T00:00:00+00:00",
+          "POLINE": [
+            {
+              "rowstamp": "489107296",
+              "ENTERDATE": "2026-05-07T11:42:31+00:00",
+              "ITEMNUM": "2000653",
+              "POLINENUM": 1,
+              "ITEM": [
+                {
+                  "rowstamp": "388969561",
+                  "DESCRIPTION": "MOTOR, eléctrico, IP66, FS 1,25, 60Hz, 4600V, FP 0.87,min-1 1775 Servicio S1,, 44,76186(Q) kW",
+                  "ITEMNUM": "2000653",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ]
+            }
+          ],
+          "COMPANIES": [
+            {
+              "rowstamp": "272359532",
+              "COMPANY": "TEST3",
+              "NAME": "~null~",
+              "ORGID": "N28"
+            }
+          ],
+          "POSTATUS": [
+            {
+              "rowstamp": "489101873",
+              "CHANGEDATE": "2026-05-07T11:41:47+00:00",
+              "POSTATUSID": 23217,
+              "STATUS": "WAPPR"
+            },
+            {
+              "rowstamp": "489107299",
+              "CHANGEDATE": "2026-05-07T12:27:47+00:00",
+              "POSTATUSID": 23220,
+              "STATUS": "APPR"
+            },
+            {
+              "rowstamp": "489102469",
+              "CHANGEDATE": "2026-05-07T11:47:02+00:00",
+              "POSTATUSID": 23218,
+              "STATUS": "APPR1"
+            },
+            {
+              "rowstamp": "489107197",
+              "CHANGEDATE": "2026-05-07T12:26:55+00:00",
+              "POSTATUSID": 23219,
+              "STATUS": "APPR4"
+            },
+            {
+              "rowstamp": "489159276",
+              "CHANGEDATE": "2026-05-07T18:24:27+00:00",
+              "POSTATUSID": 23240,
+              "STATUS": "REVISD"
+            }
+          ]
+        },
+        {
+          "rowstamp": "493819741",
+          "AB_AHORRO": 27645,
+          "AB_CLASFPO": "CAPEX",
+          "AB_TIPOCOMP": "CL",
+          "CURRENCYCODE": "USD",
+          "ORDERDATE": "2026-06-05T12:38:27+00:00",
+          "PONUM": "PO102249",
+          "PRETAXTOTAL": 368085,
+          "PURCHASEAGENT": "USR006",
+          "REVISIONNUM": 0,
+          "SITEID": "A3T",
+          "TOTALCOST": 426978.6,
+          "VENDELIVERYDATE": "2026-07-22T00:00:00+00:00",
+          "POLINE": [
+            {
+              "rowstamp": "493732852",
+              "ENTERDATE": "2026-06-05T12:38:27+00:00",
+              "ITEMNUM": "2000684",
+              "POLINENUM": 1,
+              "PRNUM": "PR102826",
+              "ITEM": [
+                {
+                  "rowstamp": "388971135",
+                  "DESCRIPTION": "EMPAQUE, 2\", espirometálico 150#",
+                  "ITEMNUM": "2000684",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ],
+              "PRLINE": [
+                {
+                  "rowstamp": "493732848",
+                  "PRLINENUM": 1,
+                  "PRNUM": "PR102826",
+                  "PR": [
+                    {
+                      "rowstamp": "493732850",
+                      "ISSUEDATE": "2026-06-05T12:35:06+00:00",
+                      "REQUESTEDBY": "MAXADMIN",
+                      "STATUSDATE": "2026-06-05T12:38:27+00:00"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowstamp": "493732851",
+              "ENTERDATE": "2026-06-05T12:38:27+00:00",
+              "ITEMNUM": "2001277",
+              "POLINENUM": 2,
+              "PRNUM": "PR102826",
+              "ITEM": [
+                {
+                  "rowstamp": "121331571",
+                  "DESCRIPTION": "BOMBA, GE 323A5715AHP7 PUMP 3HP 50/60HZ 5.25 IN IMPL",
+                  "ITEMNUM": "2001277",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ],
+              "PRLINE": [
+                {
+                  "rowstamp": "493732849",
+                  "PRLINENUM": 2,
+                  "PRNUM": "PR102826",
+                  "PR": [
+                    {
+                      "rowstamp": "493732850",
+                      "ISSUEDATE": "2026-06-05T12:35:06+00:00",
+                      "REQUESTEDBY": "MAXADMIN",
+                      "STATUSDATE": "2026-06-05T12:38:27+00:00"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "COMPANIES": [
+            {
+              "rowstamp": "390705180",
+              "COMPANY": "P0000714",
+              "NAME": "FLUIDS TECH SA DE CV",
+              "ORGID": "N28"
+            }
+          ],
+          "PERSON": [
+            {
+              "rowstamp": "342438062",
+              "DEPARTMENT": "A3T",
+              "DISPLAYNAME": "Persona Demo 4",
+              "PERSONID": "USR006"
+            }
+          ],
+          "POSTATUS": [
+            {
+              "rowstamp": "493732857",
+              "CHANGEDATE": "2026-06-05T12:38:27+00:00",
+              "POSTATUSID": 23252,
+              "STATUS": "WAPPR"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

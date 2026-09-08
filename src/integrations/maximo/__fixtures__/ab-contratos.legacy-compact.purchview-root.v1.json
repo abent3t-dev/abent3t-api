@@ -1,0 +1,125 @@
+{
+  "QueryAB_CONTRATOSResponse": {
+    "rsStart": 0,
+    "rsCount": 2,
+    "AB_CONTRATOSSet": {
+      "PURCHVIEW": [
+        {
+          "rowstamp": "361390553,361390665",
+          "CONTRACTNUM": "1040",
+          "CURRENCYCODE": "MXN",
+          "ENDDATE": "2026-03-01T00:00:00+00:00",
+          "ORGID": "N28",
+          "REVISIONNUM": 0,
+          "STARTDATE": "2024-02-01T00:00:00+00:00",
+          "TOTALCOST": 62368.5,
+          "CONTRACTLINE": [
+            {
+              "rowstamp": "361390666",
+              "CONTRACTLINENUM": 1,
+              "ITEMNUM": "TST1ACIDO",
+              "ITEM": [
+                {
+                  "rowstamp": "361226923",
+                  "ITEMNUM": "TST1ACIDO",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ]
+            },
+            {
+              "rowstamp": "361390667",
+              "CONTRACTLINENUM": 2,
+              "ITEMNUM": "TST1AMINA",
+              "ITEM": [
+                {
+                  "rowstamp": "361226940",
+                  "ITEMNUM": "TST1AMINA",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ]
+            }
+          ],
+          "COMPANIES": [
+            {
+              "rowstamp": "195840827",
+              "COMPANY": "0001143412",
+              "NAME": "Proyectos Integradores de Recursos Ambientales S.A de C.V"
+            }
+          ],
+          "CONTRACTSTATUS": [
+            {
+              "rowstamp": "361390542",
+              "CHANGEDATE": "2024-03-01T09:35:32+00:00",
+              "CONTRACTSTATUSID": 151,
+              "STATUS": "DRAFT"
+            },
+            {
+              "rowstamp": "361390668",
+              "CHANGEDATE": "2024-03-01T09:39:43+00:00",
+              "CONTRACTSTATUSID": 152,
+              "STATUS": "APPR"
+            }
+          ]
+        },
+        {
+          "rowstamp": "391785821,391785874",
+          "CONTRACTNUM": "1040",
+          "CURRENCYCODE": "MXN",
+          "ENDDATE": "2026-03-01T00:00:00+00:00",
+          "MAXVOL": 62385,
+          "ORGID": "N28",
+          "REVISIONNUM": 1,
+          "STARTDATE": "2024-02-01T00:00:00+00:00",
+          "TOTALCOST": 62385,
+          "CONTRACTLINE": [
+            {
+              "rowstamp": "391785875",
+              "CONTRACTLINENUM": 1,
+              "ITEMNUM": "TST1ACIDO",
+              "ITEM": [
+                {
+                  "rowstamp": "361226923",
+                  "ITEMNUM": "TST1ACIDO",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ]
+            },
+            {
+              "rowstamp": "391785876",
+              "CONTRACTLINENUM": 2,
+              "ITEMNUM": "TST1AMINA",
+              "ITEM": [
+                {
+                  "rowstamp": "361226940",
+                  "ITEMNUM": "TST1AMINA",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ]
+            }
+          ],
+          "COMPANIES": [
+            {
+              "rowstamp": "195840827",
+              "COMPANY": "0001143412",
+              "NAME": "Proyectos Integradores de Recursos Ambientales S.A de C.V"
+            }
+          ],
+          "CONTRACTSTATUS": [
+            {
+              "rowstamp": "391785570",
+              "CHANGEDATE": "2024-08-29T11:00:46+00:00",
+              "CONTRACTSTATUSID": 321,
+              "STATUS": "PNDREV"
+            },
+            {
+              "rowstamp": "391785877",
+              "CHANGEDATE": "2024-08-29T11:03:09+00:00",
+              "CONTRACTSTATUSID": 322,
+              "STATUS": "WAPPR"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

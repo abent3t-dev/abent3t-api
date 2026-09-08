@@ -1,0 +1,12 @@
+{
+  "Error": {
+    "extendedError": {
+      "moreInfo": {
+        "href": "http://maximo.example:9080/maximo/oslc/error/messages/BMXAA8781E"
+      }
+    },
+    "reasonCode": "BMXAA8781E",
+    "message": "BMXAA8781E - This is an invalid query term. The property contractrefnum is not found under the namespace http://jazz.net/ns/ism/asset/smarter_physical_infrastructure#. You must review and update the query clause to use the correct property name.",
+    "statusCode": "400"
+  }
+}

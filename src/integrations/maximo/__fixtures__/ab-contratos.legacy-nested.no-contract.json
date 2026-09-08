@@ -1,0 +1,317 @@
+{
+  "QueryAB_CONTRATOSResponse": {
+    "rsStart": 0,
+    "rsCount": 2,
+    "rsTotal": 5098,
+    "AB_CONTRATOSSet": {
+      "PR": [
+        {
+          "rowstamp": "70140518",
+          "Attributes": {
+            "PRNUM": {
+              "content": "PR100026"
+            },
+            "REQUESTEDBY": {
+              "content": "USR007"
+            },
+            "SITEID": {
+              "content": "A3T"
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "303512189",
+                "Attributes": {
+                  "ACCEPTINGWFMAIL": {
+                    "content": true
+                  },
+                  "DELEGATE": {
+                    "content": "USR008"
+                  },
+                  "DEPARTMENT": {
+                    "content": "Mantenimiento"
+                  },
+                  "DEVICECLASS": {
+                    "content": 2
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 5"
+                  },
+                  "FIRSTNAME": {
+                    "content": "Nombre6"
+                  },
+                  "LANGUAGE": {
+                    "content": "ES"
+                  },
+                  "LASTNAME": {
+                    "content": "Apellido7"
+                  },
+                  "LOCALE": {
+                    "content": "en_US"
+                  },
+                  "LOCATIONORG": {
+                    "content": "N28"
+                  },
+                  "LOCATIONSITE": {
+                    "content": "A3T"
+                  },
+                  "LOCTOSERVREQ": {
+                    "content": true
+                  },
+                  "PERSONID": {
+                    "content": "USR007"
+                  },
+                  "PERSONUID": {
+                    "content": 9002,
+                    "resourceid": true
+                  },
+                  "PLUSGAUDITAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGBYPREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGCERTREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGCONFSPACEAUTH": {
+                    "content": false
+                  },
+                  "PLUSGFINAUTHORITY": {
+                    "content": false
+                  },
+                  "PLUSGGASTESTAUTH": {
+                    "content": false
+                  },
+                  "PLUSGHFAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGISCERTIFIED": {
+                    "content": false
+                  },
+                  "PLUSGISOLATIONAUTH": {
+                    "content": false
+                  },
+                  "PLUSGISOSPEC": {
+                    "content": false
+                  },
+                  "PLUSGMOCREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGPERAREAAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPERISSUEAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPERPERFAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPTWISSUECOUNTER": {
+                    "content": 0
+                  },
+                  "PLUSGPTWREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGRADIOSRCAUTH": {
+                    "content": false
+                  },
+                  "PLUSGRCFAAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGRISKREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGSITECHECKERAUTH": {
+                    "content": false
+                  },
+                  "PLUSGSOLNAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGTECHAUTHORITY": {
+                    "content": false
+                  },
+                  "STATUS": {
+                    "content": "INACTIVE"
+                  },
+                  "STATUSDATE": {
+                    "content": "2020-01-01T00:00:00+00:00"
+                  },
+                  "SUPERVISOR": {
+                    "content": "USR008"
+                  },
+                  "TIMEZONE": {
+                    "content": "Mexico/General"
+                  },
+                  "TITLE": {
+                    "content": "Puesto demo"
+                  },
+                  "TRANSEMAILELECTION": {
+                    "content": "NEVER"
+                  },
+                  "WFMAILELECTION": {
+                    "content": "PROCESS"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "44727366",
+          "Attributes": {
+            "PRNUM": {
+              "content": "PR100032"
+            },
+            "REQUESTEDBY": {
+              "content": "USR007"
+            },
+            "SITEID": {
+              "content": "A3T"
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "303512189",
+                "Attributes": {
+                  "ACCEPTINGWFMAIL": {
+                    "content": true
+                  },
+                  "DELEGATE": {
+                    "content": "USR008"
+                  },
+                  "DEPARTMENT": {
+                    "content": "Mantenimiento"
+                  },
+                  "DEVICECLASS": {
+                    "content": 2
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 5"
+                  },
+                  "FIRSTNAME": {
+                    "content": "Nombre6"
+                  },
+                  "LANGUAGE": {
+                    "content": "ES"
+                  },
+                  "LASTNAME": {
+                    "content": "Apellido7"
+                  },
+                  "LOCALE": {
+                    "content": "en_US"
+                  },
+                  "LOCATIONORG": {
+                    "content": "N28"
+                  },
+                  "LOCATIONSITE": {
+                    "content": "A3T"
+                  },
+                  "LOCTOSERVREQ": {
+                    "content": true
+                  },
+                  "PERSONID": {
+                    "content": "USR007"
+                  },
+                  "PERSONUID": {
+                    "content": 9002,
+                    "resourceid": true
+                  },
+                  "PLUSGAUDITAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGBYPREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGCERTREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGCONFSPACEAUTH": {
+                    "content": false
+                  },
+                  "PLUSGFINAUTHORITY": {
+                    "content": false
+                  },
+                  "PLUSGGASTESTAUTH": {
+                    "content": false
+                  },
+                  "PLUSGHFAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGISCERTIFIED": {
+                    "content": false
+                  },
+                  "PLUSGISOLATIONAUTH": {
+                    "content": false
+                  },
+                  "PLUSGISOSPEC": {
+                    "content": false
+                  },
+                  "PLUSGMOCREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGPERAREAAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPERISSUEAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPERPERFAUTH": {
+                    "content": false
+                  },
+                  "PLUSGPTWISSUECOUNTER": {
+                    "content": 0
+                  },
+                  "PLUSGPTWREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGRADIOSRCAUTH": {
+                    "content": false
+                  },
+                  "PLUSGRCFAAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGRISKREVAPP": {
+                    "content": false
+                  },
+                  "PLUSGSITECHECKERAUTH": {
+                    "content": false
+                  },
+                  "PLUSGSOLNAPPROVER": {
+                    "content": false
+                  },
+                  "PLUSGTECHAUTHORITY": {
+                    "content": false
+                  },
+                  "STATUS": {
+                    "content": "INACTIVE"
+                  },
+                  "STATUSDATE": {
+                    "content": "2020-01-01T00:00:00+00:00"
+                  },
+                  "SUPERVISOR": {
+                    "content": "USR008"
+                  },
+                  "TIMEZONE": {
+                    "content": "Mexico/General"
+                  },
+                  "TITLE": {
+                    "content": "Puesto demo"
+                  },
+                  "TRANSEMAILELECTION": {
+                    "content": "NEVER"
+                  },
+                  "WFMAILELECTION": {
+                    "content": "PROCESS"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

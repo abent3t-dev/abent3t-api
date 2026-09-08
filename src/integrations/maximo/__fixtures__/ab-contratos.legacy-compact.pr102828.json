@@ -1,0 +1,71 @@
+{
+  "QueryAB_CONTRATOSResponse": {
+    "rsStart": 0,
+    "rsCount": 1,
+    "AB_CONTRATOSSet": {
+      "PR": [
+        {
+          "rowstamp": "493821559",
+          "PRNUM": "PR102828",
+          "REQUESTEDBY": "MAXADMIN",
+          "SITEID": "A3T",
+          "PURCHVIEW": [
+            {
+              "rowstamp": "493821280,493821300",
+              "CONTRACTNUM": "1091",
+              "CURRENCYCODE": "MXN",
+              "ENDDATE": "2027-06-05T00:00:00+00:00",
+              "ORGID": "N28",
+              "REVISIONNUM": 0,
+              "STARTDATE": "2026-06-05T00:00:00+00:00",
+              "TOTALCOST": 58470.5,
+              "COMPANIES": [
+                {
+                  "rowstamp": "195840826",
+                  "COMPANY": "0001099428",
+                  "NAME": "Graco Mexicana S.A. de C.V."
+                }
+              ],
+              "CONTRACTSTATUS": [
+                {
+                  "rowstamp": "493821287",
+                  "CHANGEDATE": "2026-06-05T13:10:11+00:00",
+                  "CONTRACTSTATUSID": 581,
+                  "STATUS": "DRAFT"
+                },
+                {
+                  "rowstamp": "493821303",
+                  "CHANGEDATE": "2026-06-05T13:11:02+00:00",
+                  "CONTRACTSTATUSID": 582,
+                  "STATUS": "APPR"
+                }
+              ],
+              "CONTRACTLINE": [
+                {
+                  "rowstamp": "493821301",
+                  "CONTRACTLINENUM": 1,
+                  "DESCRIPTION": "AMINA, Triac-1800, mezcla customizada",
+                  "ITEMNUM": "2001259"
+                },
+                {
+                  "rowstamp": "493821302",
+                  "CONTRACTLINENUM": 2,
+                  "DESCRIPTION": "ÁCIDO, sulfúrico, H2SO4, 98.0 %",
+                  "ITEMNUM": "2000825"
+                }
+              ]
+            }
+          ],
+          "PERSON": [
+            {
+              "rowstamp": "493827969",
+              "DEPARTMENT": "TI",
+              "DISPLAYNAME": "MAXADMIN",
+              "PERSONID": "MAXADMIN"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

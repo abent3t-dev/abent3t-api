@@ -1,0 +1,144 @@
+{
+  "member": [
+    {
+      "ab_ahorro": 27645,
+      "person_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/ab_comprador",
+      "ab_clasfpo_description": null,
+      "purchaseagent": "USR006",
+      "revisionnum": 0,
+      "ab_tipocomp": "CL",
+      "companies_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/vendor",
+      "currencycode": "USD",
+      "orderdate": "2026-06-05T12:38:27+00:00",
+      "totalcost": 426978.6,
+      "_rowstamp": "493819741",
+      "companies": [
+        {
+          "_rowstamp": "390705180",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/vendor/0-4111",
+          "name": "FLUIDS TECH SA DE CV",
+          "company": "P0000714",
+          "href": "http://childkey#UE8vQ09NUEFOSUVTL1AwMDAwNzE0L04yOA--",
+          "orgid": "N28"
+        }
+      ],
+      "postatus": [
+        {
+          "_rowstamp": "493732857",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/postatus/0-23252",
+          "changedate": "2026-06-05T12:38:27+00:00",
+          "href": "http://childkey#UE8vUE9TVEFUVVMvMjMyNTI-",
+          "postatusid": 23252,
+          "status": "WAPPR"
+        }
+      ],
+      "person": [
+        {
+          "_rowstamp": "342438062",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/ab_comprador/0-728",
+          "displayname": "Persona Demo 4",
+          "personid": "USR006",
+          "href": "http://childkey#UE8vUEVSU09OL1VTUjAwNg--",
+          "department": "A3T"
+        }
+      ],
+      "postatus_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/postatus",
+      "poline_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline",
+      "ponum": "PO102249",
+      "siteid": "A3T",
+      "href": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-",
+      "ab_clasfpo": "CAPEX",
+      "vendeliverydate": "2026-07-22T00:00:00+00:00",
+      "ab_tipocomp_description": null,
+      "poline": [
+        {
+          "itemnum": "2000684",
+          "prline_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/0-18627/prline",
+          "prline": [
+            {
+              "_rowstamp": "493732848",
+              "prlinenum": 1,
+              "pr": [
+                {
+                  "requestedby": "MAXADMIN",
+                  "_rowstamp": "493732850",
+                  "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/0-18627/prline/0-25631/pr/0-22602",
+                  "href": "http://childkey#UE8vUE9MSU5FL1BSTElORS9QUi9QUjEwMjgyNi9BM1Q-",
+                  "issuedate": "2026-06-05T12:35:06+00:00",
+                  "statusdate": "2026-06-05T12:38:27+00:00"
+                }
+              ],
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/0-18627/prline/0-25631",
+              "pr_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/0-18627/prline/0-25631/pr",
+              "href": "http://childkey#UE8vUE9MSU5FL1BSTElORS8xL1BSMTAyODI2L0EzVA--",
+              "prnum": "PR102826"
+            }
+          ],
+          "_rowstamp": "493732852",
+          "item": [
+            {
+              "itemnum": "2000684",
+              "_rowstamp": "388971135",
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/0-18627/item/0-4038",
+              "description": "EMPAQUE, 2\", espirometálico 150#",
+              "itemsetid": "ITEMSET1",
+              "href": "http://childkey#UE8vUE9MSU5FL0lURU0vMjAwMDY4NC9JVEVNU0VUMQ--"
+            }
+          ],
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/0-18627",
+          "enterdate": "2026-06-05T12:38:27+00:00",
+          "href": "http://childkey#UE8vUE9MSU5FLzEvUE8xMDIyNDkvMC9BM1Q-",
+          "prnum": "PR102826",
+          "item_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/0-18627/item",
+          "polinenum": 1
+        },
+        {
+          "itemnum": "2001277",
+          "prline_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/1-18628/prline",
+          "prline": [
+            {
+              "_rowstamp": "493732849",
+              "prlinenum": 2,
+              "pr": [
+                {
+                  "requestedby": "MAXADMIN",
+                  "_rowstamp": "493732850",
+                  "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/1-18628/prline/0-25632/pr/0-22602",
+                  "href": "http://childkey#UE8vUE9MSU5FL1BSTElORS9QUi9QUjEwMjgyNi9BM1Q-",
+                  "issuedate": "2026-06-05T12:35:06+00:00",
+                  "statusdate": "2026-06-05T12:38:27+00:00"
+                }
+              ],
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/1-18628/prline/0-25632",
+              "pr_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/1-18628/prline/0-25632/pr",
+              "href": "http://childkey#UE8vUE9MSU5FL1BSTElORS8yL1BSMTAyODI2L0EzVA--",
+              "prnum": "PR102826"
+            }
+          ],
+          "_rowstamp": "493732851",
+          "item": [
+            {
+              "itemnum": "2001277",
+              "_rowstamp": "121331571",
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/1-18628/item/0-6581",
+              "description": "BOMBA, GE 323A5715AHP7 PUMP 3HP 50/60HZ 5.25 IN IMPL",
+              "itemsetid": "ITEMSET1",
+              "href": "http://childkey#UE8vUE9MSU5FL0lURU0vMjAwMTI3Ny9JVEVNU0VUMQ--"
+            }
+          ],
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/1-18628",
+          "enterdate": "2026-06-05T12:38:27+00:00",
+          "href": "http://childkey#UE8vUE9MSU5FLzIvUE8xMDIyNDkvMC9BM1Q-",
+          "prnum": "PR102826",
+          "item_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_compras/_UE8xMDIyNDkvMC9BM1Q-/poline/1-18628/item",
+          "polinenum": 2
+        }
+      ],
+      "pretaxtotal": 368085
+    }
+  ],
+  "href": "http://maximo.example:9080/maximo/oslc/os/AB_COMPRAS",
+  "responseInfo": {
+    "href": "http://maximo.example:9080/maximo/oslc/os/AB_COMPRAS?lean=1&oslc.select=%2A&oslc.where=ponum%3D%22PO102249%22"
+  }
+}

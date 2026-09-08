@@ -1,0 +1,77 @@
+{
+  "QueryAB_CONTRATOSResponse": {
+    "rsStart": 0,
+    "rsCount": 1,
+    "AB_CONTRATOSSet": {
+      "PR": [
+        {
+          "rowstamp": "900000001",
+          "PRNUM": "PR104531",
+          "REQUESTEDBY": "MAXADMIN",
+          "SITEID": "A3T",
+          "PURCHVIEW": [
+            {
+              "rowstamp": "493821280,493821300",
+              "CONTRACTNUM": "1104",
+              "CURRENCYCODE": "MXN",
+              "ENDDATE": "2027-06-30T00:00:00+00:00",
+              "ORGID": "N28",
+              "REVISIONNUM": 0,
+              "STARTDATE": "2026-07-01T00:00:00+00:00",
+              "TOTALCOST": 58470.5,
+              "COMPANIES": [
+                {
+                  "rowstamp": "195840826",
+                  "COMPANY": "0001099428",
+                  "NAME": "Graco Mexicana S.A. de C.V."
+                }
+              ],
+              "CONTRACTSTATUS": [
+                {
+                  "rowstamp": "900000010",
+                  "CHANGEDATE": "2026-06-20T10:00:00+00:00",
+                  "CONTRACTSTATUSID": 901,
+                  "STATUS": "DRAFT"
+                },
+                {
+                  "rowstamp": "900000011",
+                  "CHANGEDATE": "2026-06-21T09:30:00+00:00",
+                  "CONTRACTSTATUSID": 902,
+                  "STATUS": "WAPPR"
+                },
+                {
+                  "rowstamp": "900000012",
+                  "CHANGEDATE": "2026-06-25T16:45:00+00:00",
+                  "CONTRACTSTATUSID": 903,
+                  "STATUS": "APPR"
+                }
+              ],
+              "CONTRACTLINE": [
+                {
+                  "rowstamp": "493821301",
+                  "CONTRACTLINENUM": 1,
+                  "DESCRIPTION": "AMINA, Triac-1800, mezcla customizada",
+                  "ITEMNUM": "2001259"
+                },
+                {
+                  "rowstamp": "493821302",
+                  "CONTRACTLINENUM": 2,
+                  "DESCRIPTION": "ÁCIDO, sulfúrico, H2SO4, 98.0 %",
+                  "ITEMNUM": "2000825"
+                }
+              ]
+            }
+          ],
+          "PERSON": [
+            {
+              "rowstamp": "493827969",
+              "DEPARTMENT": "TI",
+              "DISPLAYNAME": "MAXADMIN",
+              "PERSONID": "MAXADMIN"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

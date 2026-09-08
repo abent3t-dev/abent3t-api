@@ -1,0 +1,89 @@
+{
+  "member": [
+    {
+      "requestedby": "MAXADMIN",
+      "purchview_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview",
+      "_rowstamp": "493821559",
+      "purchview": [
+        {
+          "contractline_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642/contractline",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642",
+          "contractstatus": [
+            {
+              "_rowstamp": "493821287",
+              "contractstatusid": 581,
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642/contractstatus/0-581",
+              "changedate": "2026-06-05T13:10:11+00:00",
+              "href": "http://childkey#UFIvUFVSQ0hWSUVXL0NPTlRSQUNUU1RBVFVTLzU4MQ--",
+              "status": "DRAFT"
+            },
+            {
+              "_rowstamp": "493821303",
+              "contractstatusid": 582,
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642/contractstatus/1-582",
+              "changedate": "2026-06-05T13:11:02+00:00",
+              "href": "http://childkey#UFIvUFVSQ0hWSUVXL0NPTlRSQUNUU1RBVFVTLzU4Mg--",
+              "status": "APPR"
+            }
+          ],
+          "revisionnum": 0,
+          "companies_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642/vendor",
+          "currencycode": "MXN",
+          "startdate": "2026-06-05T00:00:00+00:00",
+          "orgid": "N28",
+          "totalcost": 58470.5,
+          "_rowstamp": "493821280,493821300",
+          "companies": [
+            {
+              "_rowstamp": "195840826",
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642/vendor/0-486",
+              "name": "Graco Mexicana S.A. de C.V.",
+              "company": "0001099428",
+              "href": "http://childkey#UFIvUFVSQ0hWSUVXL0NPTVBBTklFUy8wMDAxMDk5NDI4L04yOA--"
+            }
+          ],
+          "contractline": [
+            {
+              "itemnum": "2001259",
+              "_rowstamp": "493821301",
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642/contractline/0-601",
+              "contractlinenum": 1,
+              "description": "AMINA, Triac-1800, mezcla customizada",
+              "href": "http://childkey#UFIvUFVSQ0hWSUVXL0NPTlRSQUNUTElORS8xLzEwOTEvTjI4LzA-"
+            },
+            {
+              "itemnum": "2000825",
+              "_rowstamp": "493821302",
+              "localref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642/contractline/1-602",
+              "contractlinenum": 2,
+              "description": "ÁCIDO, sulfúrico, H2SO4, 98.0 %",
+              "href": "http://childkey#UFIvUFVSQ0hWSUVXL0NPTlRSQUNUTElORS8yLzEwOTEvTjI4LzA-"
+            }
+          ],
+          "enddate": "2027-06-05T00:00:00+00:00",
+          "contractstatus_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/ab_purchview/0-642/contractstatus",
+          "href": "http://childkey#UFIvUFVSQ0hWSUVXLzEwOTEvTjI4LzA-",
+          "contractnum": "1091"
+        }
+      ],
+      "person_collectionref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/requestedby",
+      "person": [
+        {
+          "_rowstamp": "493827969",
+          "localref": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU/requestedby/0-3",
+          "displayname": "MAXADMIN",
+          "personid": "MAXADMIN",
+          "href": "http://childkey#UFIvUEVSU09OL01BWEFETUlO",
+          "department": "TI"
+        }
+      ],
+      "siteid": "A3T",
+      "href": "http://maximo.example:9080/maximo/oslc/os/ab_contratos/_UFIxMDI4MjgvQTNU",
+      "prnum": "PR102828"
+    }
+  ],
+  "href": "http://maximo.example:9080/maximo/oslc/os/AB_CONTRATOS",
+  "responseInfo": {
+    "href": "http://maximo.example:9080/maximo/oslc/os/AB_CONTRATOS?lean=1&oslc.select=%2A&oslc.where=prnum%3D%22PR102828%22"
+  }
+}

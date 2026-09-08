@@ -1,0 +1,111 @@
+{
+  "QueryAB_COMPRASResponse": {
+    "rsStart": 0,
+    "rsCount": 1,
+    "AB_COMPRASSet": {
+      "PO": [
+        {
+          "rowstamp": "493819741",
+          "AB_AHORRO": 27645,
+          "AB_CLASFPO": "CAPEX",
+          "AB_TIPOCOMP": "CL",
+          "CURRENCYCODE": "USD",
+          "ORDERDATE": "2026-06-05T12:38:27+00:00",
+          "PONUM": "PO102249",
+          "PRETAXTOTAL": 368085,
+          "PURCHASEAGENT": "USR006",
+          "REVISIONNUM": 0,
+          "SITEID": "A3T",
+          "TOTALCOST": 426978.6,
+          "VENDELIVERYDATE": "2026-07-22T00:00:00+00:00",
+          "POLINE": [
+            {
+              "rowstamp": "493732852",
+              "ENTERDATE": "2026-06-05T12:38:27+00:00",
+              "ITEMNUM": "2000684",
+              "POLINENUM": 1,
+              "PRNUM": "PR102826",
+              "ITEM": [
+                {
+                  "rowstamp": "388971135",
+                  "DESCRIPTION": "EMPAQUE, 2\", espirometálico 150#",
+                  "ITEMNUM": "2000684",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ],
+              "PRLINE": [
+                {
+                  "rowstamp": "493732848",
+                  "PRLINENUM": 1,
+                  "PRNUM": "PR102826",
+                  "PR": [
+                    {
+                      "rowstamp": "493732850",
+                      "ISSUEDATE": "2026-06-05T12:35:06+00:00",
+                      "REQUESTEDBY": "MAXADMIN",
+                      "STATUSDATE": "2026-06-05T12:38:27+00:00"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "rowstamp": "493732851",
+              "ENTERDATE": "2026-06-05T12:38:27+00:00",
+              "ITEMNUM": "2001277",
+              "POLINENUM": 2,
+              "PRNUM": "PR102826",
+              "ITEM": [
+                {
+                  "rowstamp": "121331571",
+                  "DESCRIPTION": "BOMBA, GE 323A5715AHP7 PUMP 3HP 50/60HZ 5.25 IN IMPL",
+                  "ITEMNUM": "2001277",
+                  "ITEMSETID": "ITEMSET1"
+                }
+              ],
+              "PRLINE": [
+                {
+                  "rowstamp": "493732849",
+                  "PRLINENUM": 2,
+                  "PRNUM": "PR102826",
+                  "PR": [
+                    {
+                      "rowstamp": "493732850",
+                      "ISSUEDATE": "2026-06-05T12:35:06+00:00",
+                      "REQUESTEDBY": "MAXADMIN",
+                      "STATUSDATE": "2026-06-05T12:38:27+00:00"
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "COMPANIES": [
+            {
+              "rowstamp": "390705180",
+              "COMPANY": "P0000714",
+              "NAME": "FLUIDS TECH SA DE CV",
+              "ORGID": "N28"
+            }
+          ],
+          "PERSON": [
+            {
+              "rowstamp": "342438062",
+              "DEPARTMENT": "A3T",
+              "DISPLAYNAME": "Persona Demo 4",
+              "PERSONID": "USR006"
+            }
+          ],
+          "POSTATUS": [
+            {
+              "rowstamp": "493732857",
+              "CHANGEDATE": "2026-06-05T12:38:27+00:00",
+              "POSTATUSID": 23252,
+              "STATUS": "WAPPR"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
