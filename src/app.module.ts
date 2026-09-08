@@ -30,6 +30,16 @@ import { RequisitionsModule } from './requisitions/requisitions.module';
 import { ApprovalsModule } from './approvals/approvals.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { PurchaseTypesModule } from './purchase-types/purchase-types.module';
+// Fase §15: repositorio documental de contratos (PDFs MinIO + alertas 30/7/0)
+import { ContractsModule } from './contracts/contracts.module';
+// Fase §16 (T7): directorio de usuarios de compras para selects
+import { PurchaseUsersModule } from './purchase-users/purchase-users.module';
+// Fase §16: Comité de Compras (workflow de aprobación data-driven)
+import { PurchaseCommitteesModule } from './purchase-committees/purchase-committees.module';
+// Fase Expeditación: seguimiento de entregas de POs propias + alertas
+import { ExpeditingModule } from './expediting/expediting.module';
+// Fase Reportes: agregación de solo lectura sobre compras + staging Maximo
+import { PurchaseReportsModule } from './purchase-reports/purchase-reports.module';
 // Modulo de Plataformas (Crehana, etc.)
 import { PlatformsModule } from './platforms/platforms.module';
 // Modulos de Email y Recordatorios
@@ -37,12 +47,31 @@ import { EmailModule } from './email/email.module';
 import { RemindersModule } from './reminders/reminders.module';
 // Modulo de Contabilidad y Compliance Fiscal
 import { ContabilidadModule } from './contabilidad/contabilidad.module';
+// Fase INT-1: infraestructura transversal de integraciones (GET-only)
+import { IntegrationsModule } from './integrations/integrations.module';
+// Fase INT-2: cliente Maximo (GET-only) + mapper; sin sync ni persistencia
+import { MaximoModule } from './integrations/maximo/maximo.module';
+// Fase INT-3: staging + sync engine + endpoints (gobernado por MAXIMO_SYNC_ENABLED)
+import { MaximoSyncModule } from './integrations/maximo/sync/maximo-sync.module';
+// Fase INT-5: lectura de dominio sobre el staging de Maximo (GET /maximo/*)
+import { MaximoRecordsModule } from './maximo-records/maximo-records.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import {
+  envValidationSchema,
+  envValidationOptions,
+} from './config/env.validation';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: ['.env.local', '.env'] }),
+    // Fase 0 (T1): validationSchema — si falta un secreto/conexión, la app
+    // NO arranca y el error nombra la(s) variable(s). Ver DEPLOY_ENV_CHECKLIST.md.
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: ['.env.local', '.env'],
+      validationSchema: envValidationSchema,
+      validationOptions: envValidationOptions,
+    }),
     // Rate limiting global. Defaults razonables: 100 requests por IP por
     // minuto. Configurable vía THROTTLE_TTL_MS y THROTTLE_LIMIT.
     ThrottlerModule.forRoot([
@@ -79,6 +108,17 @@ import { RolesGuard } from './common/guards/roles.guard';
     ApprovalsModule,
     PurchaseOrdersModule,
     PurchaseTypesModule,
+    // §15: lectura abierta a cualquier autenticado; mutaciones PURCHASE_TEAM
+    ContractsModule,
+    // §16 (T7): GET /compras/usuarios para selects (PURCHASE_TEAM + APPROVERS)
+    PurchaseUsersModule,
+    // §16: Comité de Compras — aprobación secuencial leída de
+    // committee_approval_levels (mapeo pendiente de confirmar con Ingrid)
+    PurchaseCommitteesModule,
+    // Expeditación: solo POs propias (el staging de Maximo no se expedita)
+    ExpeditingModule,
+    // Reportes de compras: consume fórmulas existentes, no crea variantes
+    PurchaseReportsModule,
     // Modulo de Plataformas
     PlatformsModule,
     // Modulos de Email y Recordatorios
@@ -86,6 +126,18 @@ import { RolesGuard } from './common/guards/roles.guard';
     RemindersModule,
     // Modulo de Contabilidad y Compliance Fiscal
     ContabilidadModule,
+    // Integraciones externas (Maximo/SAP) — Fase INT-1: solo infraestructura.
+    // Sin controllers, sin lectura de MAXIMO_*/SL_*, SOLO LECTURA (GET).
+    IntegrationsModule,
+    // Fase INT-2: MaximoClient + mapper. Arranca aunque MAXIMO_* estén vacías
+    // (los métodos fallan tipado sin red). Sin cron ni staging (Int-3).
+    MaximoModule,
+    // Fase INT-3: staging + sync + endpoints /integrations/maximo. Con
+    // MAXIMO_SYNC_ENABLED=false el cron no se registra y POST /sync → 503.
+    MaximoSyncModule,
+    // Fase INT-5: lectura de dominio del staging Maximo (GET /maximo/*),
+    // sin dependencia de integrations/ y sin escrituras.
+    MaximoRecordsModule,
   ],
   controllers: [AppController],
   providers: [
