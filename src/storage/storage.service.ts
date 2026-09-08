@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleInit, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  BadRequestException,
+} from '@nestjs/common';
 import {
   S3Client,
   PutObjectCommand,
@@ -34,12 +39,15 @@ export class StorageService implements OnModuleInit {
   readonly bucketEvidences: string;
   /** Bucket de adjuntos de propuestas (mismas reglas). */
   readonly bucketProposals: string;
+  /** Bucket de PDFs de contratos (§15; privado, 20 MB, solo PDF). */
+  readonly bucketContracts: string;
+  /** Bucket de PPT/PDF del Comité de Compras (§16; privado, 30 MB). */
+  readonly bucketCommittees: string;
 
   constructor() {
     const endpoint = process.env.MINIO_ENDPOINT || '127.0.0.1';
     const port = process.env.MINIO_PORT || '9000';
-    const useSSL =
-      (process.env.MINIO_USE_SSL || '').toLowerCase() === 'true';
+    const useSSL = (process.env.MINIO_USE_SSL || '').toLowerCase() === 'true';
     const protocol = useSSL ? 'https' : 'http';
 
     const accessKeyId = process.env.MINIO_ACCESS_KEY;
@@ -62,20 +70,27 @@ export class StorageService implements OnModuleInit {
       forcePathStyle: true,
     });
 
-    this.bucketEvidences =
-      process.env.MINIO_BUCKET_EVIDENCES || 'evidences';
+    this.bucketEvidences = process.env.MINIO_BUCKET_EVIDENCES || 'evidences';
     this.bucketProposals =
       process.env.MINIO_BUCKET_PROPOSALS || 'proposal-attachments';
+    this.bucketContracts = process.env.MINIO_BUCKET_CONTRACTS || 'contracts';
+    this.bucketCommittees =
+      process.env.MINIO_BUCKET_COMMITTEES || 'purchase-committees';
   }
 
   /**
-   * Al arrancar verifica que ambos buckets existan. NO los crea aquí (el
+   * Al arrancar verifica que los buckets existan. NO los crea aquí (el
    * `docker-compose.yml` se encarga con `createbuckets`). Si faltan, loguea
    * un warning pero NO rompe el arranque del server — los uploads fallarán
    * con error claro cuando se intenten.
    */
   async onModuleInit() {
-    for (const bucket of [this.bucketEvidences, this.bucketProposals]) {
+    for (const bucket of [
+      this.bucketEvidences,
+      this.bucketProposals,
+      this.bucketContracts,
+      this.bucketCommittees,
+    ]) {
       try {
         await this.s3.send(new HeadBucketCommand({ Bucket: bucket }));
         this.logger.log(`✓ Bucket "${bucket}" accesible`);
@@ -147,9 +162,7 @@ export class StorageService implements OnModuleInit {
    */
   async remove(bucket: string, key: string): Promise<void> {
     try {
-      await this.s3.send(
-        new DeleteObjectCommand({ Bucket: bucket, Key: key }),
-      );
+      await this.s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
     } catch (err: unknown) {
       // No relanzar: si era rollback de upload fallido, no queremos enmascarar
       // el error original.

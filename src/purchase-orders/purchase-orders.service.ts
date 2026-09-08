@@ -47,6 +47,9 @@ const PO_INCLUDE = {
   },
   profiles: { select: { id: true, full_name: true } },
   purchase_types: { select: { id: true, name: true, key: true } },
+  contracts: {
+    select: { id: true, contract_number: true, status: true },
+  },
 } as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,6 +61,7 @@ function aliasPO<T extends Record<string, any>>(row: T): T {
     supplier: row.suppliers ?? null,
     buyer: row.profiles ?? null,
     purchase_type: row.purchase_types ?? null,
+    contract: row.contracts ?? null,
   };
 }
 
@@ -88,12 +92,14 @@ export class PurchaseOrdersService {
 
     const where: Prisma.purchase_ordersWhereInput = { is_active: true };
     if (filters?.status)
-      where.status = filters.status as Prisma.purchase_ordersWhereInput['status'];
+      where.status =
+        filters.status as Prisma.purchase_ordersWhereInput['status'];
     if (filters?.supplier_id) where.supplier_id = filters.supplier_id;
     if (filters?.purchase_type_id)
       where.purchase_type_id = filters.purchase_type_id;
     if (filters?.expense_type)
-      where.expense_type = filters.expense_type as Prisma.purchase_ordersWhereInput['expense_type'];
+      where.expense_type =
+        filters.expense_type as Prisma.purchase_ordersWhereInput['expense_type'];
     if (filters?.date_from || filters?.date_to) {
       const range: Prisma.DateTimeNullableFilter = {};
       if (filters.date_from) range.gte = new Date(filters.date_from);
@@ -180,6 +186,35 @@ export class PurchaseOrdersService {
     }
   }
 
+  /**
+   * §15/A3 — Valida el vínculo PO→contrato: obligatorio cuando
+   * `purchase_types.requires_contract` es true; si se envía, el contrato
+   * debe existir, estar activo y en estatus `vigente`.
+   */
+  private async assertContractLink(
+    contractId: string | null | undefined,
+    requiresContract: boolean,
+  ): Promise<void> {
+    if (!contractId) {
+      if (requiresContract) {
+        throw new BadRequestException(
+          'Este tipo de compra requiere un contrato vigente: selecciona uno antes de continuar',
+        );
+      }
+      return;
+    }
+    const contract = await this.prisma.contracts.findFirst({
+      where: { id: contractId, is_active: true },
+      select: { status: true, contract_number: true },
+    });
+    if (!contract) throw new NotFoundException('Contrato no encontrado');
+    if (contract.status !== 'vigente') {
+      throw new BadRequestException(
+        `El contrato ${contract.contract_number} no está vigente (estatus: ${contract.status})`,
+      );
+    }
+  }
+
   async create(dto: CreatePurchaseOrderDto, userId: string) {
     const requisition = await this.prisma.requisitions.findFirst({
       where: { id: dto.requisition_id, is_active: true },
@@ -203,13 +238,27 @@ export class PurchaseOrdersService {
       );
     }
 
-    // Nota: el `contract_id` y la tabla `contracts` no existen en el schema
-    // actual (ver MIGRATION_AUDIT.md). Si en el futuro se agrega, validar
-    // aquí. El DTO tiene `contract_id` opcional — lo ignoramos por ahora.
+    // Vínculo con contrato (§15/A3): cuando el tipo de compra lo exige, la
+    // PO debe traer un contrato existente y vigente; si viene sin exigirse,
+    // igual se valida antes de persistir.
+    let requiresContract = false;
+    if (dto.purchase_type_id) {
+      const purchaseType = await this.prisma.purchase_types.findFirst({
+        where: { id: dto.purchase_type_id, is_active: true },
+        select: { requires_contract: true },
+      });
+      if (!purchaseType) {
+        throw new NotFoundException('Tipo de compra no encontrado');
+      }
+      requiresContract = purchaseType.requires_contract ?? false;
+    }
+    await this.assertContractLink(dto.contract_id ?? null, requiresContract);
 
     const poNumber = await this.generatePoNumber();
-    const { contract_id: _ignored, ...rest } = dto as CreatePurchaseOrderDto & {
-      contract_id?: string;
+    // `currency` viene en el DTO pero la tabla no tiene esa columna: se
+    // descarta para que Prisma no rechace el create.
+    const { currency: _currency, ...rest } = dto as CreatePurchaseOrderDto & {
+      currency?: string;
     };
 
     const created = await this.prisma.purchase_orders.create({
@@ -247,9 +296,32 @@ export class PurchaseOrdersService {
       );
     }
 
+    // Vínculo con contrato (§15/A3) sobre el estado RESULTANTE de la PO
+    const current = e as {
+      contract_id?: string | null;
+      purchase_type_id: string;
+    };
+    const nextContractId =
+      dto.contract_id !== undefined
+        ? dto.contract_id
+        : (current.contract_id ?? null);
+    const nextTypeId = dto.purchase_type_id ?? current.purchase_type_id;
+    const purchaseType = await this.prisma.purchase_types.findFirst({
+      where: { id: nextTypeId },
+      select: { requires_contract: true },
+    });
+    await this.assertContractLink(
+      nextContractId,
+      purchaseType?.requires_contract ?? false,
+    );
+
+    // `currency` no existe como columna (misma limpieza que en create)
+    const { currency: _currency, ...updateData } =
+      dto as UpdatePurchaseOrderDto & { currency?: string };
+
     const updated = await this.prisma.purchase_orders.update({
       where: { id },
-      data: dto as Prisma.purchase_ordersUpdateInput,
+      data: updateData as Prisma.purchase_ordersUpdateInput,
       include: PO_INCLUDE,
     });
 

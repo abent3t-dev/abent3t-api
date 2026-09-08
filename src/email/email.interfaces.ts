@@ -51,13 +51,15 @@ export interface IEmailService {
 
 // Tipos de plantillas de correo
 export type EmailTemplateType =
-  | 'evidence_reminder'           // Recordatorio de evidencia pendiente
+  | 'evidence_reminder' // Recordatorio de evidencia pendiente
   | 'evidence_reminder_escalation' // Escalamiento a RRHH
-  | 'evidence_approved'           // Evidencia aprobada
-  | 'evidence_rejected'           // Evidencia rechazada
-  | 'enrollment_notification'     // Notificación de inscripción
-  | 'course_starting_soon'        // Curso por iniciar
-  | 'course_completed';           // Curso completado
+  | 'evidence_approved' // Evidencia aprobada
+  | 'evidence_rejected' // Evidencia rechazada
+  | 'enrollment_notification' // Notificación de inscripción
+  | 'course_starting_soon' // Curso por iniciar
+  | 'course_completed' // Curso completado
+  | 'contract_expiring' // Contrato por vencer (§15: 30/7 días)
+  | 'contract_expired'; // Contrato vencido (§15: día 0)
 
 export interface EmailTemplateData {
   recipientName: string;

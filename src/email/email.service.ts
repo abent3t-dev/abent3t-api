@@ -9,6 +9,19 @@ import {
 } from './email.interfaces';
 
 /**
+ * Texto seguro para plantillas: EmailTemplateData admite `unknown` en sus
+ * campos extra, así que solo se interpolan primitivos ('' en cualquier otro
+ * caso — nunca "[object Object]").
+ */
+function asText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return '';
+}
+
+/**
  * Servicio de correo electrónico.
  *
  * ESTADO ACTUAL: Modo simulación (logging)
@@ -35,7 +48,9 @@ export class EmailService implements IEmailService {
     const tenantId = this.configService.get<string>('AZURE_TENANT_ID');
     const clientId = this.configService.get<string>('AZURE_CLIENT_ID');
     const clientSecret = this.configService.get<string>('AZURE_CLIENT_SECRET');
-    this.emailFrom = this.configService.get<string>('AZURE_EMAIL_FROM') || 'noreply@abent3t.com';
+    this.emailFrom =
+      this.configService.get<string>('AZURE_EMAIL_FROM') ||
+      'noreply@abent3t.com';
 
     this.isConfiguredFlag = !!(tenantId && clientId && clientSecret);
 
@@ -44,7 +59,7 @@ export class EmailService implements IEmailService {
     } else {
       this.logger.warn(
         '⚠️ Servicio de email en MODO SIMULACIÓN. ' +
-        'Configure AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET para habilitar envío real.',
+          'Configure AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET para habilitar envío real.',
       );
     }
   }
@@ -60,6 +75,8 @@ export class EmailService implements IEmailService {
     };
   }
 
+  // Sin await mientras el envio real por Graph siga comentado (modo simulacion)
+  // eslint-disable-next-line @typescript-eslint/require-await
   async sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
     const recipients = Array.isArray(options.to) ? options.to : [options.to];
     const recipientEmails = recipients.map((r) => r.email).join(', ');
@@ -132,8 +149,12 @@ export class EmailService implements IEmailService {
   /**
    * Renderiza una plantilla de correo
    */
-  renderTemplate(template: EmailTemplateType, data: EmailTemplateData): { subject: string; body: string } {
-    const baseUrl = this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
+  renderTemplate(
+    template: EmailTemplateType,
+    data: EmailTemplateData,
+  ): { subject: string; body: string } {
+    const baseUrl =
+      this.configService.get<string>('FRONTEND_URL') || 'http://localhost:3000';
 
     switch (template) {
       case 'evidence_reminder':
@@ -166,6 +187,19 @@ export class EmailService implements IEmailService {
           body: this.renderEnrollmentTemplate(data, baseUrl),
         };
 
+      case 'contract_expiring':
+        return {
+          // Asunto según la plantilla de §15
+          subject: `[ABENT 3T] Contrato ${asText(data.contractNumber)} - ${asText(data.serviceDescription)} vence en ${asText(data.daysLeft) || '?'} días`,
+          body: this.renderContractExpiryTemplate(data, baseUrl, false),
+        };
+
+      case 'contract_expired':
+        return {
+          subject: `[ABENT 3T] Contrato ${asText(data.contractNumber)} - ${asText(data.serviceDescription)} ha VENCIDO`,
+          body: this.renderContractExpiryTemplate(data, baseUrl, true),
+        };
+
       default:
         return {
           subject: 'Notificación de Capacitación',
@@ -174,7 +208,69 @@ export class EmailService implements IEmailService {
     }
   }
 
-  private renderEvidenceReminderTemplate(data: EmailTemplateData, baseUrl: string): string {
+  /**
+   * §15 — Alerta de vencimiento de contrato (30/7 días o vencido). El enlace
+   * apunta al listado de contratos: el detalle se abre en modal, no hay
+   * página por id.
+   */
+  private renderContractExpiryTemplate(
+    data: EmailTemplateData,
+    baseUrl: string,
+    expired: boolean,
+  ): string {
+    const s = (value: unknown): string => asText(value) || '—';
+    const amount =
+      data.totalAmount === null || data.totalAmount === undefined
+        ? '—'
+        : `${s(data.totalAmount)} ${s(data.currency ?? 'MXN')}`;
+    const headline = expired
+      ? `El contrato <strong>${s(data.contractNumber)}</strong> con el proveedor <strong>${s(data.supplierName)}</strong> venció el <strong>${s(data.endDate)}</strong>.`
+      : `El contrato <strong>${s(data.contractNumber)}</strong> con el proveedor <strong>${s(data.supplierName)}</strong> vence el <strong>${s(data.endDate)}</strong> (en ${s(data.daysLeft)} días).`;
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }
+    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: linear-gradient(135deg, ${expired ? '#c0392b, #e74c3c' : '#52AF32, #67B52E'}); color: white; padding: 20px; border-radius: 8px 8px 0 0; }
+    .content { background: #f9f9f9; padding: 20px; border-radius: 0 0 8px 8px; }
+    .btn { display: inline-block; background: #52AF32; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 15px; }
+    .footer { margin-top: 20px; font-size: 12px; color: #666; }
+    .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h2>${expired ? '⛔ Contrato vencido' : '📄 Contrato por vencer'}</h2>
+    </div>
+    <div class="content">
+      <p>Estimado/a <strong>${s(data.recipientName)}</strong>,</p>
+      <p>${headline}</p>
+      <div class="warning">
+        <strong>Servicio:</strong> ${s(data.serviceDescription)}<br>
+        <strong>Monto total:</strong> ${amount}<br>
+        <strong>Comprador:</strong> ${s(data.buyerName)}<br>
+        <strong>Usuario responsable:</strong> ${s(data.responsibleName)}
+      </div>
+      <a href="${baseUrl}/compras/contratos" class="btn">
+        Ver contrato
+      </a>
+      <div class="footer">
+        <p>Este es un mensaje automático del sistema de compras ABENT 3T.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+    `.trim();
+  }
+
+  private renderEvidenceReminderTemplate(
+    data: EmailTemplateData,
+    baseUrl: string,
+  ): string {
     return `
 <!DOCTYPE html>
 <html>
@@ -223,7 +319,10 @@ export class EmailService implements IEmailService {
     `.trim();
   }
 
-  private renderEscalationTemplate(data: EmailTemplateData, baseUrl: string): string {
+  private renderEscalationTemplate(
+    data: EmailTemplateData,
+    baseUrl: string,
+  ): string {
     return `
 <!DOCTYPE html>
 <html>
@@ -300,7 +399,10 @@ Equipo de Capacitación ABENT 3T
     `.trim();
   }
 
-  private renderEnrollmentTemplate(data: EmailTemplateData, baseUrl: string): string {
+  private renderEnrollmentTemplate(
+    data: EmailTemplateData,
+    baseUrl: string,
+  ): string {
     return `
 Hola ${data.recipientName},
 
