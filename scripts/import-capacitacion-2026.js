@@ -12,7 +12,9 @@
  *   --commit      Ejecuta la importación en una sola transacción y verifica conteos.
  *
  * Idempotente: re-correr con --commit no duplica (llaves naturales: name/email/
- * (year,semester)/(edition,profile) y marcador [import:EXXX] en notes de ediciones).
+ * (year,semester)/(edition,profile); ediciones por (course_id,start_date,end_date)).
+ * Nota: course_editions NO tiene columna notes — las notas de edición del workbook
+ * son informativas y ya están capturadas en payment_reference/prorate_cost.
  *
  * Ajustes acordados (chat 2026-09-10):
  *   - E041 "Mantenimiento" sin fechas → se omite edición + su inscripción (warning).
@@ -34,7 +36,6 @@ if (!FILE) {
   process.exit(1);
 }
 
-const EDITION_MARKER = (key) => `[import:${key}]`;
 const EMAIL_TYPO_FIX = { '@bent3t.com': '@abent3t.com' };
 const SKIP_EDITIONS = new Set(['E041']); // sin start_date (NOT NULL en BD)
 const TZ_OFFSET = '-06:00'; // CDMX para timestamptz
@@ -243,6 +244,13 @@ async function parseWorkbook(file) {
     if (dupCheck.has(k)) fatal.push(`Inscripción duplicada en el workbook: ${k}`);
     dupCheck.add(k);
   }
+  // La llave natural de edición (curso, start, end) debe ser única (es la llave de idempotencia en BD)
+  const edNatKeys = new Set();
+  for (const e of data.editions) {
+    const k = `${normName(e.course)}|${e.start_date}|${e.end_date ?? ''}`;
+    if (edNatKeys.has(k)) fatal.push(`Ediciones con misma llave natural (curso+fechas): ${e.edition_key} duplica a otra — no se pueden distinguir en BD`);
+    edNatKeys.add(k);
+  }
   if (fatal.length) {
     console.error('ERRORES FATALES en el workbook:');
     for (const f of fatal) console.error('  ✗ ' + f);
@@ -279,7 +287,7 @@ async function run() {
       prisma.periods.findMany(),
       prisma.profiles.findMany({ select: { id: true, email: true, department_id: true, position: true, role: true } }),
       prisma.courses.findMany({ select: { id: true, name: true } }),
-      prisma.course_editions.findMany({ select: { id: true, notes: true, course_id: true } }),
+      prisma.course_editions.findMany({ select: { id: true, course_id: true, start_date: true, end_date: true } }),
       prisma.budgets.findMany(),
     ]);
 
@@ -290,11 +298,10 @@ async function run() {
     const instByName = new Map(dbInsts.map((i) => [normName(i.name), i]));
     const profByEmail = new Map(dbProfiles.map((p) => [p.email.toLowerCase(), p]));
     const courseByName = new Map(dbCourses.map((c) => [normName(c.name), c]));
-    const editionByMarker = new Map();
-    for (const e of dbEditions) {
-      const m = e.notes && e.notes.match(/\[import:(E\d+)\]/);
-      if (m) editionByMarker.set(m[1], e);
-    }
+    // Llave natural de edición: course_id + start + end (verificado único en el workbook)
+    const ymd = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+    const editionKeyOf = (courseId, start, end) => `${courseId}|${ymd(start)}|${ymd(end)}`;
+    const editionByNatKey = new Map(dbEditions.map((e) => [editionKeyOf(e.course_id, e.start_date, e.end_date), e]));
     const periodByKey = new Map(dbPeriods.map((p) => [`${p.year}|${p.semester ?? ''}`, p]));
 
     for (const d of data.departments) mark(deptByName.has(normName(d.name)) ? 'reuse' : 'create', 'departments');
@@ -306,7 +313,11 @@ async function run() {
       else mark('create', 'profiles');
     }
     for (const c of data.courses) mark(courseByName.has(normName(c.name)) ? 'reuse' : 'create', 'courses');
-    for (const e of data.editions) mark(editionByMarker.has(e.edition_key) ? 'reuse' : 'create', 'course_editions');
+    for (const e of data.editions) {
+      const dbCourse = courseByName.get(normName(e.course));
+      const exists = dbCourse && editionByNatKey.has(editionKeyOf(dbCourse.id, e.start_date, e.end_date));
+      mark(exists ? 'reuse' : 'create', 'course_editions');
+    }
     // enrollments/budgets/user_roles se resuelven dentro de la transacción (necesitan IDs nuevos)
 
     console.log('\nPlan (catálogos/perfiles/cursos/ediciones):');
@@ -425,12 +436,14 @@ async function run() {
 
       const editionId = new Map();
       for (const e of data.editions) {
-        const marker = EDITION_MARKER(e.edition_key);
-        let row = await tx.course_editions.findFirst({ where: { notes: { contains: marker } } });
+        const cId = courseId.get(normName(e.course));
+        let row = await tx.course_editions.findFirst({
+          where: { course_id: cId, start_date: asDate(e.start_date), end_date: asDate(e.end_date) },
+        });
         if (!row) {
           row = await tx.course_editions.create({
             data: {
-              course_id: courseId.get(normName(e.course)),
+              course_id: cId,
               start_date: asDate(e.start_date),
               end_date: asDate(e.end_date),
               cost_override: e.cost_override,
@@ -439,7 +452,6 @@ async function run() {
               payment_reference: e.payment_reference,
               payment_date: asDate(e.payment_date),
               require_evidence_for_completion: e.require_evidence_for_completion,
-              notes: [e.notes, marker].filter(Boolean).join(' '),
             },
           });
         }
