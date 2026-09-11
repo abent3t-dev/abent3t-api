@@ -65,8 +65,8 @@ if (!SL_REJECT_UNAUTHORIZED) {
 // ---- UDF a validar (nivel línea: POR1 / PRQ1) ------------------------------
 const UDF_FIELDS = ['U_Clas_gts', 'U_Imp_ahorro', 'U_Proc_Comp'];
 
-// Campos de línea que pedimos en el $expand. Incluimos los UDF + algunos
-// "anchors" para que la respuesta tenga sentido al imprimir.
+// Campos de interés (el SL de este tenant no permite proyectarlos: ver nota
+// en main()). Se conservan como documentación de lo que consume Int-4.
 const LINE_SELECT = ['LineNum', 'ItemCode', 'ItemDescription', ...UDF_FIELDS].join(',');
 const HEADER_SELECT = 'DocEntry,DocNum,CardName,DocTotal,DocDate';
 
@@ -346,11 +346,10 @@ async function main() {
 
   // --- PurchaseOrders ---
   try {
-    const poPath =
-      `/PurchaseOrders` +
-      `?$top=5&$orderby=DocEntry desc` +
-      `&$select=${HEADER_SELECT}` +
-      `&$expand=DocumentLines($select=${LINE_SELECT})`;
+    // OJO (validado 2026-09-08 contra TEST_ABENT, SL Version 1000280):
+    // `$expand=DocumentLines(...)` responde 400 "invalid navigation property".
+    // DocumentLines viene EMBEBIDO en el documento, así que se pide completo.
+    const poPath = `/PurchaseOrders?$top=5&$orderby=DocEntry desc`;
     const poDocs = await getEntity(poPath, 'PurchaseOrders');
     checks.poResponds = true;
     inspectDocuments(poDocs, 'PurchaseOrders');
@@ -360,11 +359,7 @@ async function main() {
 
   // --- PurchaseRequests (opcional) ---
   try {
-    const prPath =
-      `/PurchaseRequests` +
-      `?$top=5&$orderby=DocEntry desc` +
-      `&$select=${HEADER_SELECT}` +
-      `&$expand=DocumentLines($select=${LINE_SELECT})`;
+    const prPath = `/PurchaseRequests?$top=5&$orderby=DocEntry desc`;
     const prDocs = await getEntity(prPath, 'PurchaseRequests');
     checks.prResponds = true;
     inspectDocuments(prDocs, 'PurchaseRequests');
