@@ -2,7 +2,10 @@
  * Tipos compartidos del sync de SAP (Fase INT-4). Los literales espejan los
  * enums de Postgres creados en `prisma/sql/0009_sap_staging.sql`.
  */
-export type SapSyncTarget = 'purchase_orders' | 'purchase_requests';
+export type SapSyncTarget =
+  | 'purchase_orders'
+  | 'purchase_requests'
+  | 'business_partners';
 export type SapSyncTrigger = 'cron' | 'manual';
 export type SapSyncRunStatus = 'running' | 'success' | 'partial' | 'failed';
 /**
@@ -14,6 +17,7 @@ export type SapSyncMode = 'full' | 'incremental';
 export const SAP_SYNC_TARGETS: readonly SapSyncTarget[] = [
   'purchase_orders',
   'purchase_requests',
+  'business_partners',
 ];
 
 /** Resultado de un upsert individual de staging. */

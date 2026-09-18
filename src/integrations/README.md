@@ -225,6 +225,17 @@ GET  /integrations/sap/status  → { enabled, intervalMinutes, pageSize, running
 GET  /integrations/sap/runs    ?target=&page=&limit= → historial paginado
 ```
 
+**Proveedores (BusinessPartners)** — tercer target del mismo sync
+(`business_partners`, migración `0010`): staging `sap_business_partners`
+(una fila por `CardCode`, filtro `CardType eq 'cSupplier'`; en PRD son 873).
+El **espejo al catálogo del dominio** (`suppliers`) NO lo hace esta capa:
+vive en `src/suppliers/supplier-sap-mirror.service.ts` (cron horario min 45 +
+`POST /suppliers/sap-mirror`), escribe SOLO los básicos (nombre, RFC, email,
+teléfono, contacto, moneda, flags informativos sap_valid/sap_frozen) con
+`source='sap'` + `external_id=CardCode`, y JAMÁS toca puntuación/bloqueo/
+is_active de ABENT. `tax_id` es UNIQUE y en SAP hay RFC repetidos (43 con el
+genérico XEXX010101000): cascada RFC → "RFC-CardCode" → CardCode.
+
 El dominio lee staging desde `src/sap-records/` (`GET /sap/purchase-orders`,
 `/sap/purchase-requests`, detalle por `:docEntry` con líneas derivadas del
 `raw`, y `/sap/summary` para el dashboard). Ese módulo no importa nada de

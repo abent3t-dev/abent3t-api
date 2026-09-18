@@ -51,6 +51,22 @@ export interface SapRawPurchaseRequest extends SapRawDocumentBase {
   RequriedDate?: unknown; // sic
 }
 
+export interface SapRawBusinessPartner {
+  CardCode?: unknown;
+  CardName?: unknown;
+  CardType?: unknown;
+  FederalTaxID?: unknown;
+  EmailAddress?: unknown;
+  Phone1?: unknown;
+  Phone2?: unknown;
+  ContactPerson?: unknown;
+  Website?: unknown;
+  Currency?: unknown; // '##' = multimoneda en SAP B1
+  Valid?: unknown; // 'tYES' | 'tNO'
+  Frozen?: unknown; // 'tYES' | 'tNO'
+  UpdateDate?: unknown;
+}
+
 /** Sobre estándar de colección OData del Service Layer. */
 export interface SapRawCollection {
   value?: unknown;

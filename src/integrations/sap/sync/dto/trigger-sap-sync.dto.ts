@@ -3,8 +3,12 @@ import { IsIn, IsOptional } from 'class-validator';
 /** Body de POST /integrations/sap/sync. */
 export class TriggerSapSyncDto {
   @IsOptional()
-  @IsIn(['purchase_orders', 'purchase_requests', 'all'])
-  target?: 'purchase_orders' | 'purchase_requests' | 'all';
+  @IsIn(['purchase_orders', 'purchase_requests', 'business_partners', 'all'])
+  target?:
+    | 'purchase_orders'
+    | 'purchase_requests'
+    | 'business_partners'
+    | 'all';
 
   /**
    * full = barrido completo; incremental = desde el último UpdateDate visto.

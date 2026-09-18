@@ -1,5 +1,6 @@
 import {
   sapRawHash,
+  toSapBusinessPartner,
   toSapPurchaseOrder,
   toSapPurchaseRequest,
 } from './sap.mapper';
@@ -122,6 +123,39 @@ describe('sap.mapper — PurchaseRequests', () => {
     expect(dto.docTotal).toBeNull();
     expect(dto.currency).toBeNull();
     expect(dto.linesTotal).toBe(0);
+  });
+});
+
+describe('sap.mapper — BusinessPartners (proveedores)', () => {
+  it('mapea básicos y convierte tYES/tNO a boolean; otros valores → null', () => {
+    const dto = toSapBusinessPartner({
+      CardCode: 'P0000788',
+      CardName: 'PROVEEDOR UNO SA DE CV',
+      CardType: 'cSupplier',
+      FederalTaxID: 'PUN010101AAA',
+      EmailAddress: 'ventas@proveedor.mx',
+      Phone1: '5511122233',
+      ContactPerson: 'María López',
+      Currency: '##',
+      Valid: 'tYES',
+      Frozen: 'tNO',
+      UpdateDate: '2026-09-01T00:00:00Z',
+    });
+    expect(dto.cardCode).toBe('P0000788');
+    expect(dto.federalTaxId).toBe('PUN010101AAA');
+    expect(dto.currency).toBe('##'); // multimoneda: el valor crudo se conserva
+    expect(dto.sapValid).toBe(true);
+    expect(dto.sapFrozen).toBe(false);
+
+    const nulos = toSapBusinessPartner({ CardCode: 'E1', Valid: 'quizas' });
+    expect(nulos.sapValid).toBeNull();
+    expect(nulos.federalTaxId).toBeNull();
+  });
+
+  it('CardCode ausente → SapMappingError', () => {
+    expect(() => toSapBusinessPartner({ CardName: 'X' })).toThrow(
+      SapMappingError,
+    );
   });
 });
 

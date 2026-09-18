@@ -19,7 +19,7 @@ import { SapSyncInProgressError } from './sap-sync.errors';
  * interval vía `SchedulerRegistry` en lugar de un `@Cron` estático. Gate
  * absoluto por `SAP_SYNC_ENABLED`: con false NO se registra nada. Jitter
  * inicial (30-60 s, distinto al de Maximo para no arrancar ambos syncs en
- * el mismo segundo del deploy). Orden por corrida: OC, luego solicitudes.
+ * el mismo segundo del deploy). Orden por corrida: OC, solicitudes, proveedores.
  * El cron siempre corre en modo default (incremental si hay datos).
  */
 export const SAP_SYNC_TIMEOUT_NAME = 'sap-sync-initial';
@@ -72,6 +72,9 @@ export class SapSyncScheduler implements OnApplicationBootstrap {
     );
     await this.run('purchase_requests', () =>
       this.syncService.syncPurchaseRequests('cron'),
+    );
+    await this.run('business_partners', () =>
+      this.syncService.syncBusinessPartners('cron'),
     );
   }
 

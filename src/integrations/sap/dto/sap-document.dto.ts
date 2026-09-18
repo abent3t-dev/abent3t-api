@@ -55,3 +55,24 @@ export interface SapPurchaseRequestDto extends SapDocumentBaseDto {
   /** Moneda de la primera línea; null si el doc no tiene líneas. */
   currency: string | null;
 }
+
+/**
+ * Proveedor (BusinessPartner cSupplier) canónico. El espejo al catálogo del
+ * dominio escribe SOLO estos básicos; puntuación/bloqueo son de ABENT.
+ */
+export interface SapBusinessPartnerDto {
+  cardCode: string;
+  cardName: string | null;
+  cardType: string | null;
+  federalTaxId: string | null;
+  email: string | null;
+  phone1: string | null;
+  phone2: string | null;
+  contactPerson: string | null;
+  website: string | null;
+  /** Moneda del BP; '##' = multimoneda (valor literal de SAP B1). */
+  currency: string | null;
+  sapValid: boolean | null;
+  sapFrozen: boolean | null;
+  updateDate: string | null;
+}

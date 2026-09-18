@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import {
+  SapBusinessPartnerDto,
   SapDocumentLineDto,
   SapPurchaseOrderDto,
   SapPurchaseRequestDto,
 } from './dto/sap-document.dto';
 import {
+  SapRawBusinessPartner,
   SapRawDocumentLine,
   SapRawPurchaseOrder,
   SapRawPurchaseRequest,
@@ -70,6 +72,29 @@ export function toSapPurchaseRequest(raw: unknown): SapPurchaseRequestDto {
     currency: lines.length > 0 ? lines[0].currency : null,
     lines,
     ...lineAggregates(lines),
+  };
+}
+
+export function toSapBusinessPartner(raw: unknown): SapBusinessPartnerDto {
+  const bp = asRecord(raw, 'BusinessPartners') as SapRawBusinessPartner;
+  const cardCode = toTextOrNull(bp.CardCode);
+  if (cardCode === null) {
+    throw new SapMappingError('CardCode ausente o vacío', 'CardCode');
+  }
+  return {
+    cardCode,
+    cardName: toTextOrNull(bp.CardName),
+    cardType: toTextOrNull(bp.CardType),
+    federalTaxId: toTextOrNull(bp.FederalTaxID),
+    email: toTextOrNull(bp.EmailAddress),
+    phone1: toTextOrNull(bp.Phone1),
+    phone2: toTextOrNull(bp.Phone2),
+    contactPerson: toTextOrNull(bp.ContactPerson),
+    website: toTextOrNull(bp.Website),
+    currency: toTextOrNull(bp.Currency),
+    sapValid: toSapBoolOrNull(bp.Valid),
+    sapFrozen: toSapBoolOrNull(bp.Frozen),
+    updateDate: toIsoOrNull(bp.UpdateDate),
   };
 }
 
@@ -179,6 +204,13 @@ function toIsoOrNull(value: unknown): string | null {
   if (typeof value !== 'string' || value.trim() === '') return null;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : value;
+}
+
+/** Booleanos de SAP B1: 'tYES' / 'tNO'. Cualquier otra cosa → null. */
+function toSapBoolOrNull(value: unknown): boolean | null {
+  if (value === 'tYES') return true;
+  if (value === 'tNO') return false;
+  return null;
 }
 
 function round2(value: number): number {

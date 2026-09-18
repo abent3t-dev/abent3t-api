@@ -10,8 +10,13 @@ import type { SapConfig } from './sap.config';
 import { SapNotConfiguredError, SapResponseShapeError } from './sap.errors';
 import { SapSessionManager } from './sap-session.manager';
 import { createSapFetch } from './sap-transport';
-import { toSapPurchaseOrder, toSapPurchaseRequest } from './sap.mapper';
 import {
+  toSapBusinessPartner,
+  toSapPurchaseOrder,
+  toSapPurchaseRequest,
+} from './sap.mapper';
+import {
+  SapBusinessPartnerDto,
   SapPurchaseOrderDto,
   SapPurchaseRequestDto,
 } from './dto/sap-document.dto';
@@ -62,6 +67,25 @@ const PR_SELECT = [
   'DocumentLines',
 ].join(',');
 
+const BP_SELECT = [
+  'CardCode',
+  'CardName',
+  'CardType',
+  'FederalTaxID',
+  'EmailAddress',
+  'Phone1',
+  'Phone2',
+  'ContactPerson',
+  'Website',
+  'Currency',
+  'Valid',
+  'Frozen',
+  'UpdateDate',
+].join(',');
+
+/** Solo proveedores; los clientes (cCustomer) no son de Compras. */
+const BP_TYPE_FILTER = "CardType%20eq%20'cSupplier'";
+
 export interface SapFetchParams {
   top: number;
   skip: number;
@@ -103,12 +127,45 @@ export class SapClient {
     return { records: raw.map(toSapPurchaseRequest), raw, http };
   }
 
+  /**
+   * Proveedores (BusinessPartners cSupplier). Sin `$orderby=DocEntry`: la
+   * clave/orden estable aquí es CardCode.
+   */
+  async fetchBusinessPartners(
+    params: SapFetchParams,
+  ): Promise<SapFetchResult<SapBusinessPartnerDto>> {
+    let path =
+      `BusinessPartners?$select=${BP_SELECT}` +
+      `&$orderby=CardCode&$top=${params.top}&$skip=${params.skip}` +
+      `&$filter=${BP_TYPE_FILTER}`;
+    if (params.updatedSince) {
+      path += `%20and%20${updateDateFilter(params.updatedSince)}`;
+    }
+    const { raw, http } = await this.getCollection(path);
+    return { records: raw.map(toSapBusinessPartner), raw, http };
+  }
+
   async countPurchaseOrders(updatedSince?: Date): Promise<number> {
     return this.getCount('PurchaseOrders', updatedSince);
   }
 
   async countPurchaseRequests(updatedSince?: Date): Promise<number> {
     return this.getCount('PurchaseRequests', updatedSince);
+  }
+
+  async countBusinessPartners(updatedSince?: Date): Promise<number> {
+    let path = `BusinessPartners/$count?$filter=${BP_TYPE_FILTER}`;
+    if (updatedSince) path += `%20and%20${updateDateFilter(updatedSince)}`;
+    const response = await this.getWithSession<string>(path, {
+      parseAs: 'text',
+    });
+    const parsed = Number(String(response.data).trim());
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new SapResponseShapeError(
+        '$count de BusinessPartners no devolvió un entero',
+      );
+    }
+    return parsed;
   }
 
   // -------------------------------------------------------------------------

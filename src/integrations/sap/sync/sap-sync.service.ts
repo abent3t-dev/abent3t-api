@@ -132,6 +132,21 @@ export class SapSyncService implements OnModuleInit {
     return this.process(state);
   }
 
+  /** Corrida completa de BusinessPartners/proveedores (espera a que termine). */
+  async syncBusinessPartners(
+    trigger: SapSyncTrigger,
+    userId: string | null = null,
+    mode?: SapSyncMode,
+  ): Promise<SapSyncRunSummary> {
+    const state = await this.beginRun(
+      'business_partners',
+      trigger,
+      userId,
+      mode,
+    );
+    return this.process(state);
+  }
+
   /** Disparo asíncrono: crea la corrida, devuelve el id, procesa en background. */
   async startTarget(
     target: SapSyncTarget,
@@ -247,9 +262,13 @@ export class SapSyncService implements OnModuleInit {
         ? await this.prisma.sap_purchase_orders.aggregate({
             _max: { update_date_source: true },
           })
-        : await this.prisma.sap_purchase_requests.aggregate({
-            _max: { update_date_source: true },
-          });
+        : target === 'purchase_requests'
+          ? await this.prisma.sap_purchase_requests.aggregate({
+              _max: { update_date_source: true },
+            })
+          : await this.prisma.sap_business_partners.aggregate({
+              _max: { update_date_source: true },
+            });
     const maxUpdate = agg._max.update_date_source;
     if (!maxUpdate) return { mode: 'full', sinceFilter: null };
     let since = new Date(maxUpdate.getTime() - INCREMENTAL_MARGIN_MS);
@@ -284,7 +303,9 @@ export class SapSyncService implements OnModuleInit {
         total =
           state.target === 'purchase_orders'
             ? await this.client.countPurchaseOrders(since)
-            : await this.client.countPurchaseRequests(since);
+            : state.target === 'purchase_requests'
+              ? await this.client.countPurchaseRequests(since)
+              : await this.client.countBusinessPartners(since);
         state.pagesTotal = Math.max(1, Math.ceil(total / pageSize));
       } catch (err: unknown) {
         this.logger.warn(
@@ -362,10 +383,23 @@ export class SapSyncService implements OnModuleInit {
       }
       return page;
     }
-    const page = await this.client.fetchPurchaseRequests(params);
+    if (state.target === 'purchase_requests') {
+      const page = await this.client.fetchPurchaseRequests(params);
+      for (let i = 0; i < page.records.length; i++) {
+        await this.upsertOne(state, () =>
+          this.staging.upsertPurchaseRequest(
+            page.records[i],
+            page.raw[i],
+            state.runId,
+          ),
+        );
+      }
+      return page;
+    }
+    const page = await this.client.fetchBusinessPartners(params);
     for (let i = 0; i < page.records.length; i++) {
       await this.upsertOne(state, () =>
-        this.staging.upsertPurchaseRequest(
+        this.staging.upsertBusinessPartner(
           page.records[i],
           page.raw[i],
           state.runId,

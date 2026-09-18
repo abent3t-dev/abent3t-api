@@ -712,6 +712,11 @@ model purchase_types {
   requires_contract Boolean?          @default(false)
   description       String?
   is_active         Boolean?          @default(true)
+  source            String            @default("manual") @db.VarChar(20)
+  external_id       String?           @db.VarChar(50)
+  currency          String?           @db.VarChar(10)
+  sap_valid         Boolean?
+  sap_frozen        Boolean?
   created_at        DateTime?         @default(now()) @db.Timestamptz(6)
   updated_at        DateTime?         @default(now()) @updatedAt @db.Timestamptz(6)
   purchase_orders   purchase_orders[]
@@ -847,7 +852,7 @@ model suppliers {
   id                String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   legal_name        String            @db.VarChar(255)
   commercial_name   String?           @db.VarChar(255)
-  tax_id            String            @unique @db.VarChar(20)
+  tax_id            String            @unique @db.VarChar(40)
   email             String?           @db.VarChar(255)
   phone             String?           @db.VarChar(50)
   address           String?
@@ -860,6 +865,11 @@ model suppliers {
   blocked_at        DateTime?         @db.Timestamptz(6)
   blocked_by        String?           @db.Uuid
   is_active         Boolean?          @default(true)
+  source            String            @default("manual") @db.VarChar(20)
+  external_id       String?           @db.VarChar(50)
+  currency          String?           @db.VarChar(10)
+  sap_valid         Boolean?
+  sap_frozen        Boolean?
   created_at        DateTime?         @default(now()) @db.Timestamptz(6)
   updated_at        DateTime?         @default(now()) @updatedAt @db.Timestamptz(6)
   purchase_orders   purchase_orders[]
@@ -1343,9 +1353,36 @@ model sap_purchase_requests {
   @@index([update_date_source], map: "idx_sap_pr_update_date")
 }
 
+model sap_business_partners {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  card_code          String    @unique(map: "uq_sap_bp_card_code") @db.VarChar(50)
+  card_name          String?   @db.VarChar(255)
+  card_type          String?   @db.VarChar(20)
+  federal_tax_id     String?   @db.VarChar(40)
+  email              String?   @db.VarChar(255)
+  phone1             String?   @db.VarChar(50)
+  phone2             String?   @db.VarChar(50)
+  contact_person     String?   @db.VarChar(255)
+  website            String?   @db.VarChar(255)
+  currency           String?   @db.VarChar(10)
+  sap_valid          Boolean?
+  sap_frozen         Boolean?
+  update_date_source DateTime? @db.Timestamptz(6)
+  raw_hash           String    @db.VarChar(64)
+  raw                Json
+  mapper_version     String
+  first_seen_at      DateTime  @default(now()) @db.Timestamptz(6)
+  last_seen_at       DateTime  @default(now()) @db.Timestamptz(6)
+  last_changed_at    DateTime? @db.Timestamptz(6)
+  last_sync_run_id   String?   @db.Uuid
+
+  @@index([update_date_source], map: "idx_sap_bp_update_date")
+}
+
 enum sap_sync_target {
   purchase_orders
   purchase_requests
+  business_partners
 }
 
 enum sap_sync_trigger {
