@@ -1254,6 +1254,113 @@ enum maximo_sync_status {
 }
 
 // ============================================================================
+// Staging de la integración SAP B1 (Fase INT-4, prisma/sql/0009_sap_staging.sql)
+// SOLO LECTURA desde SAP; el único escritor es SapStagingService. Clave
+// natural = doc_entry (sin revisiones: el doc de SAP se actualiza in place;
+// el cambio se detecta por raw_hash — UpdateDate tiene granularidad de día).
+// ============================================================================
+
+model sap_sync_runs {
+  id                   String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  target               sap_sync_target
+  triggered_by         sap_sync_trigger
+  triggered_by_user_id String?          @db.Uuid
+  mode                 String           @default("full") @db.VarChar(20)
+  since_filter         DateTime?        @db.Timestamptz(6)
+  started_at           DateTime         @default(now()) @db.Timestamptz(6)
+  finished_at          DateTime?        @db.Timestamptz(6)
+  status               sap_sync_status  @default(running)
+  pages_total          Int?
+  pages_ok             Int              @default(0)
+  records_fetched      Int              @default(0)
+  records_inserted     Int              @default(0)
+  records_updated      Int              @default(0)
+  records_unchanged    Int              @default(0)
+  records_failed       Int              @default(0)
+  error_summary        String?
+  mapper_version       String
+
+  @@index([target, started_at(sort: Desc)], map: "idx_sap_sync_runs_target_started")
+  @@index([status], map: "idx_sap_sync_runs_status")
+}
+
+model sap_purchase_orders {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  doc_entry          Int       @unique(map: "uq_sap_po_doc_entry")
+  doc_num            Int?
+  doc_date           DateTime? @db.Timestamptz(6)
+  doc_due_date       DateTime? @db.Timestamptz(6)
+  update_date_source DateTime? @db.Timestamptz(6)
+  document_status    String?   @db.VarChar(30)
+  comments           String?
+  card_code          String?   @db.VarChar(50)
+  card_name          String?   @db.VarChar(255)
+  doc_total          Decimal?  @db.Decimal(15, 2)
+  currency           String?   @db.VarChar(10)
+  lines_total        Int       @default(0)
+  lines_classified   Int       @default(0)
+  ahorro_total       Decimal?  @db.Decimal(15, 2)
+  raw_hash           String    @db.VarChar(64)
+  raw                Json
+  mapper_version     String
+  first_seen_at      DateTime  @default(now()) @db.Timestamptz(6)
+  last_seen_at       DateTime  @default(now()) @db.Timestamptz(6)
+  last_changed_at    DateTime? @db.Timestamptz(6)
+  last_sync_run_id   String?   @db.Uuid
+
+  @@index([doc_date], map: "idx_sap_po_doc_date")
+  @@index([document_status], map: "idx_sap_po_status")
+  @@index([update_date_source], map: "idx_sap_po_update_date")
+}
+
+model sap_purchase_requests {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  doc_entry          Int       @unique(map: "uq_sap_pr_doc_entry")
+  doc_num            Int?
+  doc_date           DateTime? @db.Timestamptz(6)
+  doc_due_date       DateTime? @db.Timestamptz(6)
+  required_date      DateTime? @db.Timestamptz(6)
+  update_date_source DateTime? @db.Timestamptz(6)
+  document_status    String?   @db.VarChar(30)
+  comments           String?
+  requester          String?   @db.VarChar(100)
+  requester_name     String?   @db.VarChar(255)
+  doc_total          Decimal?  @db.Decimal(15, 2)
+  currency           String?   @db.VarChar(10)
+  lines_total        Int       @default(0)
+  lines_classified   Int       @default(0)
+  ahorro_total       Decimal?  @db.Decimal(15, 2)
+  raw_hash           String    @db.VarChar(64)
+  raw                Json
+  mapper_version     String
+  first_seen_at      DateTime  @default(now()) @db.Timestamptz(6)
+  last_seen_at       DateTime  @default(now()) @db.Timestamptz(6)
+  last_changed_at    DateTime? @db.Timestamptz(6)
+  last_sync_run_id   String?   @db.Uuid
+
+  @@index([doc_date], map: "idx_sap_pr_doc_date")
+  @@index([document_status], map: "idx_sap_pr_status")
+  @@index([update_date_source], map: "idx_sap_pr_update_date")
+}
+
+enum sap_sync_target {
+  purchase_orders
+  purchase_requests
+}
+
+enum sap_sync_trigger {
+  cron
+  manual
+}
+
+enum sap_sync_status {
+  running
+  success
+  partial
+  failed
+}
+
+// ============================================================================
 // Gestión de Contratos (§15, prisma/sql/0006_contracts.sql) — repositorio
 // DOCUMENTAL (PDFs en MinIO + metadata + alertas 30/7/0). NO confundir con
 // maximo_contracts (staging de solo lectura): sin FKs ni sincronización entre

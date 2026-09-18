@@ -143,11 +143,62 @@ export const envValidationSchema = Joi.object({
     .default(60),
   MAXIMO_SYNC_PAGE_SIZE: Joi.number().integer().min(1).max(500).default(100),
 
-  // ===== SAP Business One Service Layer (Fase 5; aquí solo la configuración) =====
-  SL_BASE_URL: Joi.string().uri().allow('').optional(),
-  SL_COMPANY_DB: Joi.string().allow('').optional(),
-  SL_USER: Joi.string().allow('').optional(),
-  SL_PASSWORD: Joi.string().allow('').optional(),
+  // ===== SAP Business One Service Layer (Int-4) =====
+  SAP_SYNC_ENABLED: Joi.boolean().default(false),
+  // Con el sync encendido, las SL_* pasan a ser obligatorias (mismo patrón
+  // fail-fast que MAXIMO_*: `.invalid('')` porque el allow('') base
+  // sobrevive al concat del `then`).
+  SL_BASE_URL: Joi.string()
+    .uri()
+    .allow('')
+    .when('SAP_SYNC_ENABLED', {
+      is: true,
+      then: Joi.string().uri().invalid('').required().messages({
+        'any.required': 'SL_BASE_URL es requerida cuando SAP_SYNC_ENABLED=true',
+        'any.invalid':
+          'SL_BASE_URL no puede estar vacía cuando SAP_SYNC_ENABLED=true',
+      }),
+    }),
+  SL_COMPANY_DB: Joi.string()
+    .allow('')
+    .when('SAP_SYNC_ENABLED', {
+      is: true,
+      then: Joi.string().invalid('').required().messages({
+        'any.required':
+          'SL_COMPANY_DB es requerida cuando SAP_SYNC_ENABLED=true',
+        'any.invalid':
+          'SL_COMPANY_DB no puede estar vacía cuando SAP_SYNC_ENABLED=true',
+      }),
+    }),
+  SL_USER: Joi.string()
+    .allow('')
+    .when('SAP_SYNC_ENABLED', {
+      is: true,
+      then: Joi.string().invalid('').required().messages({
+        'any.required': 'SL_USER es requerida cuando SAP_SYNC_ENABLED=true',
+        'any.invalid':
+          'SL_USER no puede estar vacía cuando SAP_SYNC_ENABLED=true',
+      }),
+    }),
+  SL_PASSWORD: Joi.string()
+    .allow('')
+    .when('SAP_SYNC_ENABLED', {
+      is: true,
+      then: Joi.string().invalid('').required().messages({
+        'any.required': 'SL_PASSWORD es requerida cuando SAP_SYNC_ENABLED=true',
+        'any.invalid':
+          'SL_PASSWORD no puede estar vacía cuando SAP_SYNC_ENABLED=true',
+      }),
+    }),
+  // Sync a staging (Int-4). Mismo tope de intervalo que Maximo (overflow de
+  // setInterval sobre ~35 791 min). Página chica a propósito: cada documento
+  // pesa ~32 KB porque las líneas no se pueden proyectar.
+  SAP_SYNC_INTERVAL_MINUTES: Joi.number()
+    .integer()
+    .positive()
+    .max(10_080)
+    .default(60),
+  SAP_SYNC_PAGE_SIZE: Joi.number().integer().min(1).max(100).default(20),
   // Deshabilitar la verificación TLS solo se permite FUERA de producción.
   SL_REJECT_UNAUTHORIZED: Joi.boolean()
     .default(true)

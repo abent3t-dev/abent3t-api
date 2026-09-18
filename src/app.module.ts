@@ -55,6 +55,12 @@ import { MaximoModule } from './integrations/maximo/maximo.module';
 import { MaximoSyncModule } from './integrations/maximo/sync/maximo-sync.module';
 // Fase INT-5: lectura de dominio sobre el staging de Maximo (GET /maximo/*)
 import { MaximoRecordsModule } from './maximo-records/maximo-records.module';
+// Fase INT-4: cliente SAP B1 Service Layer (GET-only + login aislado T2)
+import { SapModule } from './integrations/sap/sap.module';
+// Fase INT-4: staging + sync + endpoints /integrations/sap (SAP_SYNC_ENABLED)
+import { SapSyncModule } from './integrations/sap/sync/sap-sync.module';
+// Fase INT-4: lectura de dominio sobre el staging de SAP (GET /sap/*)
+import { SapRecordsModule } from './sap-records/sap-records.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import {
@@ -138,6 +144,14 @@ import {
     // Fase INT-5: lectura de dominio del staging Maximo (GET /maximo/*),
     // sin dependencia de integrations/ y sin escrituras.
     MaximoRecordsModule,
+    // Fase INT-4: cliente SAP (SOLO LECTURA; POST /Login aislado, T2).
+    SapModule,
+    // Fase INT-4: staging + sync + endpoints /integrations/sap. Con
+    // SAP_SYNC_ENABLED=false el cron no se registra y POST /sync -> 503.
+    SapSyncModule,
+    // Fase INT-4: lectura de dominio del staging SAP (GET /sap/*),
+    // sin dependencia de integrations/ y sin escrituras.
+    SapRecordsModule,
   ],
   controllers: [AppController],
   providers: [

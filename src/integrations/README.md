@@ -184,9 +184,72 @@ Ese módulo NO importa nada de esta carpeta y NUNCA escribe staging — el
 además los endpoints de esta capa (`/integrations/maximo/*`) tal cual desde
 `/compras/integraciones` (estado, corridas y disparo manual).
 
+## Cliente, staging y sync de SAP (Fase INT-4)
+
+`src/integrations/sap/` espeja el stack de Maximo contra el **Service Layer de
+SAP B1** (OData, `SL_BASE_URL`). Piezas:
+
+- **`sap-transport.ts`** — transporte sobre `node:https` (permite
+  `SL_REJECT_UNAUTHORIZED=false` POR CONEXIÓN, solo fuera de producción;
+  jamás se toca `NODE_TLS_REJECT_UNAUTHORIZED` global). Expone el `FetchLike`
+  GET-only para Int-1 y **`postSapLogin` — el ÚNICO POST de toda la capa
+  (decisión T2)**: el path `/Login` es una constante interna, no existe
+  parámetro de path, así que es estructuralmente imposible escribir a SAP.
+- **`SapSessionManager`** — cachea las cookies `B1SESSION`/`ROUTEID` (30 min),
+  renueva con margen de 5 min, colapsa logins concurrentes; `invalidate()` +
+  reintento único ante 401 en un GET.
+- **`SapClient`** — GETs vía `IntegrationHttpClient`: `PurchaseOrders` y
+  `PurchaseRequests` con `$select` (validado en vivo 2026-09-17: `$expand`
+  da 400; las líneas llegan completas ~32 KB/doc), paginación
+  `$orderby=DocEntry` + `$top/$skip`, `/$count`, incremental
+  `$filter=UpdateDate ge YYYY-MM-DD`. `PurchaseRequests` no permite proyectar
+  CardCode/CardName/DocTotal → usa `Requester*` y suma de `LineTotal`.
+- **Mapper** — normaliza los 3 UDF de línea (`U_Clas_gts`, `U_Imp_ahorro`,
+  `U_Proc_Comp`): el placeholder `"SELECCIONAR"`/vacío/null = SIN DATO →
+  `null` (T10: el ahorro jamás se inventa como 0). `sapRawHash` (sha256) para
+  detección de cambios — `UpdateDate` tiene granularidad de día.
+
+Staging (`prisma/sql/0009_sap_staging.sql`): `sap_purchase_orders` y
+`sap_purchase_requests` (una fila por `DocEntry`; SAP no tiene revisiones,
+el cambio se detecta por `raw_hash`) + `sap_sync_runs` (con `mode`
+full/incremental y `since_filter`). Sin seed: no hay fixtures de SAP.
+
+**Endpoints** (`/integrations/sap`, roles PURCHASE_ADMINS; `status` también
+`executive`):
+
+```
+POST /integrations/sap/sync    body { target?: purchase_orders|purchase_requests|all,
+                                      mode?: full|incremental }   (default: incremental si hay datos)
+                               → 202 {runs:[{target,run_id}]} · 409 corrida en curso · 503 flag apagado
+GET  /integrations/sap/status  → { enabled, intervalMinutes, pageSize, running[], lastRuns{}, counts{} }
+GET  /integrations/sap/runs    ?target=&page=&limit= → historial paginado
+```
+
+El dominio lee staging desde `src/sap-records/` (`GET /sap/purchase-orders`,
+`/sap/purchase-requests`, detalle por `:docEntry` con líneas derivadas del
+`raw`, y `/sap/summary` para el dashboard). Ese módulo no importa nada de
+esta carpeta.
+
+**Plan de activación en producción (Servidor A)** — validado E2E contra
+`PRD_ABENT` el 2026-09-17 (3,359 OC + 309 PR, full en 83 s, 0 fallos):
+
+1. Aplicar la migración `prisma/sql/0009_sap_staging.sql` en la BD de prod (Servidor B).
+2. Env del servidor: `SL_BASE_URL`, `SL_COMPANY_DB=PRD_ABENT`, `SL_USER`, `SL_PASSWORD`.
+3. **`SL_REJECT_UNAUTHORIZED=true` (obligatorio: Joi no arranca con false en prod).**
+   Si el cert del Service Layer no valida contra CAs públicas: exportar la cadena y
+   arrancar la API con `NODE_EXTRA_CA_CERTS=/ruta/sap-ca.pem` (no relajar TLS).
+4. `SAP_SYNC_ENABLED=true` (+ opcionales `SAP_SYNC_INTERVAL_MINUTES=60`,
+   `SAP_SYNC_PAGE_SIZE=20`). Rebuild/redeploy de la imagen API.
+5. Primera corrida manual: `POST /integrations/sap/sync {"mode":"full"}` (~2 min).
+6. Verificar `GET /integrations/sap/status` (corridas `success`, counts ≈ 3.4k/0.3k)
+   y el dashboard de Compras (tarjeta SAP y pestañas Ordenes/Solicitudes SAP).
+7. Dejar el cron (incremental cada hora). Nada de esto escribe hacia SAP.
+
 ## Qué NO hacer
 
-- Agregar cualquier operación de escritura al cliente (ni "solo para login").
+- Agregar cualquier operación de escritura al cliente genérico ("ni solo para
+  login" — el login de SAP vive aislado en `sap-transport.ts` con path
+  constante, T2; no replicar ese patrón para nada más).
 - Importar `integrations/` desde el dominio de Compras.
 - Leer `MAXIMO_*` / `SL_*` desde este módulo (corresponde a los submódulos).
 - Loguear `res.headers` / `res.setCookie` (pueden traer cookies) ni cuerpos de respuesta.
