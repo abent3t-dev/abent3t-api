@@ -10,6 +10,7 @@ import {
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { SuppliersService } from './suppliers.service';
+import { SupplierSapMirrorService } from './supplier-sap-mirror.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
@@ -22,7 +23,20 @@ const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 
 @Controller('suppliers')
 export class SuppliersController {
-  constructor(private readonly service: SuppliersService) {}
+  constructor(
+    private readonly service: SuppliersService,
+    private readonly sapMirror: SupplierSapMirrorService,
+  ) {}
+
+  /**
+   * Espejo manual staging SAP → catálogo (además del cron horario). Ruta
+   * literal declarada antes de las rutas con :id (convención del repo).
+   */
+  @Roles(...PURCHASE_ADMINS)
+  @Post('sap-mirror')
+  runSapMirror() {
+    return this.sapMirror.runMirror();
+  }
 
   @Roles(...PURCHASE_TEAM)
   @Get()
@@ -36,7 +50,12 @@ export class SuppliersController {
       min_score: minScore ? parseInt(minScore, 10) : undefined,
     };
 
-    if (pagination.page || pagination.limit || pagination.search || Object.values(filters).some(v => v !== undefined)) {
+    if (
+      pagination.page ||
+      pagination.limit ||
+      pagination.search ||
+      Object.values(filters).some((v) => v !== undefined)
+    ) {
       return this.service.findAllFiltered(pagination, filters);
     }
     return this.service.findAll();

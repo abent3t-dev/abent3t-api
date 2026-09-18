@@ -93,7 +93,8 @@ export class SuppliersService extends BaseCrudPrismaService<
       (po) =>
         po.actual_delivery_date &&
         po.expected_delivery_date &&
-        new Date(po.actual_delivery_date) <= new Date(po.expected_delivery_date),
+        new Date(po.actual_delivery_date) <=
+          new Date(po.expected_delivery_date),
     );
 
     const totalAmount = pos.reduce(
@@ -109,9 +110,7 @@ export class SuppliersService extends BaseCrudPrismaService<
       delivered_orders: deliveredOrders.length,
       on_time_delivery_rate:
         deliveredOrders.length > 0
-          ? Math.round(
-              (onTimeDeliveries.length / deliveredOrders.length) * 100,
-            )
+          ? Math.round((onTimeDeliveries.length / deliveredOrders.length) * 100)
           : 0,
       total_amount: totalAmount,
       is_blocked: supplier.is_blocked,
@@ -190,8 +189,41 @@ export class SuppliersService extends BaseCrudPrismaService<
         blocked_by: null,
       },
     });
-    this.logger.log(`Proveedor ${supplierId} desbloqueado por usuario ${userId}`);
+    this.logger.log(
+      `Proveedor ${supplierId} desbloqueado por usuario ${userId}`,
+    );
     return data;
+  }
+
+  /** Básicos que el espejo de SAP mantiene: solo lectura para source='sap'. */
+  private static readonly SAP_SYNCED_FIELDS = [
+    'legal_name',
+    'tax_id',
+    'email',
+    'phone',
+    'contact_name',
+  ] as const;
+
+  async update(id: string, dto: UpdateSupplierDto) {
+    const existing = await this.prisma.suppliers.findFirst({
+      where: { id },
+      select: { source: true },
+    });
+    if (existing?.source === 'sap') {
+      const touched = SuppliersService.SAP_SYNCED_FIELDS.filter(
+        (field) => dto[field] !== undefined,
+      );
+      if (touched.length > 0) {
+        throw new BadRequestException(
+          `Proveedor sincronizado desde SAP: ${touched.join(', ')} son de solo lectura (se actualizan desde SAP). ` +
+            'Editables en ABENT: nombre comercial, dirección, contacto interno, puntuación y bloqueo.',
+        );
+      }
+    }
+    // BaseCrud tipa el retorno como any (deuda vieja del módulo): se fija
+    // a unknown para no propagarlo desde código nuevo.
+    const updated: unknown = await super.update(id, dto);
+    return updated;
   }
 
   async create(dto: CreateSupplierDto) {
