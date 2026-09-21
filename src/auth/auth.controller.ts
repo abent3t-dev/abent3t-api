@@ -43,7 +43,8 @@ function cookieOptions(maxAgeSeconds: number, isRefresh = false) {
 }
 
 function extractContext(req: Request) {
-  const ip = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+  const ip =
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
     req.socket?.remoteAddress ||
     null;
   const userAgent = (req.headers['user-agent'] as string) || null;
@@ -119,7 +120,11 @@ export class AuthController {
       'local',
     );
 
-    res.cookie('access_token', tokens.accessToken, cookieOptions(tokens.expiresIn));
+    res.cookie(
+      'access_token',
+      tokens.accessToken,
+      cookieOptions(tokens.expiresIn),
+    );
     res.cookie(
       'refresh_token',
       tokens.refreshToken,
@@ -156,7 +161,11 @@ export class AuthController {
       payload.origin,
     );
 
-    res.cookie('access_token', tokens.accessToken, cookieOptions(tokens.expiresIn));
+    res.cookie(
+      'access_token',
+      tokens.accessToken,
+      cookieOptions(tokens.expiresIn),
+    );
     res.cookie(
       'refresh_token',
       tokens.refreshToken,
@@ -180,10 +189,7 @@ export class AuthController {
   @Public()
   @Post('logout')
   @HttpCode(HttpStatus.OK)
-  async logout(
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const accessToken = (req as Request & { cookies?: Record<string, string> })
       .cookies?.access_token;
 
@@ -418,7 +424,8 @@ export class AuthController {
   @UseGuards(RolesGuard)
   @Roles('super_admin')
   createUser(
-    @Body() body: {
+    @Body()
+    body: {
       email: string;
       password: string;
       full_name: string;
@@ -451,53 +458,89 @@ export class AuthController {
     return { ok: true };
   }
 
-  /** Listar asignaciones de rol por módulo de un usuario. */
+  /**
+   * Listar asignaciones de rol por módulo de un usuario.
+   * lider_procura entra para el apartado de roles de Compras (autoservicio,
+   * junta 2026-09-17): ve TODAS las asignaciones (el modal pinta los módulos
+   * fuera de su alcance como solo lectura), pero solo puede tocar compras.
+   */
   @Get('users/:id/roles')
   @UseGuards(RolesGuard)
-  @Roles('super_admin', 'admin_rh')
+  @Roles('super_admin', 'admin_rh', 'lider_procura')
   listUserRoles(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.listUserRoles(id);
   }
 
-  /** Asignar un rol a un usuario en un módulo. */
+  /** Asignar un rol a un usuario en un módulo (con el alcance del actor). */
   @Post('users/:id/roles')
   @UseGuards(RolesGuard)
-  @Roles('super_admin', 'admin_rh')
+  @Roles('super_admin', 'admin_rh', 'lider_procura')
   assignUserRole(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { module: string; role: string },
     @CurrentUser() current: AuthUser,
   ) {
-    const isSuper = current.roles?.includes('super_admin');
-    const allowedModules = isSuper ? undefined : ['capacitacion'];
-    const allowedRoles = isSuper ? undefined : ['colaborador', 'jefe_area'];
+    const scope = resolveRoleManagementScope(current.roles ?? []);
     return this.service.assignUserRole(
       id,
       body.module,
       body.role,
       current.id,
-      allowedModules,
-      allowedRoles,
+      scope.allowedModules,
+      scope.allowedRoles,
     );
   }
 
-  /** Revocar una asignación de rol. */
+  /** Revocar una asignación de rol (con el alcance del actor). */
   @Put('users/:id/roles/:roleId/revoke')
   @UseGuards(RolesGuard)
-  @Roles('super_admin', 'admin_rh')
+  @Roles('super_admin', 'admin_rh', 'lider_procura')
   revokeUserRole(
     @Param('id', ParseUUIDPipe) _id: string,
     @Param('roleId', ParseUUIDPipe) roleId: string,
     @CurrentUser() current: AuthUser,
   ) {
-    const isSuper = current.roles?.includes('super_admin');
-    const allowedModules = isSuper ? undefined : ['capacitacion'];
-    const allowedRoles = isSuper ? undefined : ['colaborador', 'jefe_area'];
+    const scope = resolveRoleManagementScope(current.roles ?? []);
     return this.service.revokeUserRole(
       roleId,
       current.id,
-      allowedModules,
-      allowedRoles,
+      scope.allowedModules,
+      scope.allowedRoles,
     );
   }
+}
+
+/**
+ * Alcance de gestión de roles según los roles del ACTOR (se suman si tiene
+ * varios): super_admin sin restricción; admin_rh → capacitación
+ * (colaborador/jefe_area, como siempre); lider_procura → módulo compras
+ * (autoservicio de la junta 2026-09-17). lider_procura NO puede asignar ni
+ * revocar `lider_procura` — mismo criterio con el que admin_rh no se asigna
+ * admin_rh: nombrar a otro líder de compras sigue siendo de super_admin.
+ * Exportada para poder pinzarla con tests.
+ */
+export function resolveRoleManagementScope(actorRoles: string[]): {
+  allowedModules?: string[];
+  allowedRoles?: string[];
+} {
+  if (actorRoles.includes('super_admin')) return {};
+  const allowedModules: string[] = [];
+  const allowedRoles: string[] = [];
+  if (actorRoles.includes('admin_rh')) {
+    allowedModules.push('capacitacion');
+    allowedRoles.push('colaborador', 'jefe_area');
+  }
+  if (actorRoles.includes('lider_procura')) {
+    allowedModules.push('compras');
+    allowedRoles.push(
+      'solicitante',
+      'comprador',
+      'coordinador_compras',
+      'aprobador_nivel_1',
+      'aprobador_nivel_2',
+      'aprobador_nivel_3',
+      'director_general',
+    );
+  }
+  return { allowedModules, allowedRoles };
 }

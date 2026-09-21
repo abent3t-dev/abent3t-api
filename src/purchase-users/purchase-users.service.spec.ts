@@ -73,3 +73,124 @@ describe('PurchaseUsersService (T7)', () => {
     expect(result[0].role).toBe('director_general');
   });
 });
+
+/**
+ * Gestion de roles de Compras (autoservicio 2026-09): listado de TODOS los
+ * perfiles activos con sus roles de compras, busqueda y meta estandar.
+ */
+describe('PurchaseUsersService.findAllForRoleManagement', () => {
+  const count = jest.fn();
+  const findMany = jest.fn();
+  const prisma = { profiles: { count, findMany } } as unknown as PrismaService;
+  const service = new PurchaseUsersService(prisma);
+
+  beforeEach(() => {
+    count.mockReset();
+    findMany.mockReset();
+  });
+
+  it('lista perfiles activos con sus roles de compras y meta estándar', async () => {
+    count.mockResolvedValue(42);
+    findMany.mockResolvedValue([
+      {
+        id: 'u1',
+        full_name: 'Ana López',
+        email: 'ana@abent3t.com',
+        position: 'Analista',
+        departments: { name: 'Procura' },
+        user_roles_user_roles_profile_idToprofiles: [
+          { role: 'comprador' },
+          { role: 'solicitante' },
+        ],
+      },
+      {
+        id: 'u2',
+        full_name: 'Beto Ruiz',
+        email: 'beto@abent3t.com',
+        position: null,
+        departments: null,
+        user_roles_user_roles_profile_idToprofiles: [],
+      },
+    ]);
+
+    const result = await service.findAllForRoleManagement(2, 20);
+
+    expect(result.data).toEqual([
+      {
+        id: 'u1',
+        full_name: 'Ana López',
+        email: 'ana@abent3t.com',
+        position: 'Analista',
+        department: 'Procura',
+        purchase_roles: ['comprador', 'solicitante'],
+      },
+      {
+        id: 'u2',
+        full_name: 'Beto Ruiz',
+        email: 'beto@abent3t.com',
+        position: null,
+        department: null,
+        purchase_roles: [],
+      },
+    ]);
+    expect(result.meta).toEqual({
+      total: 42,
+      page: 2,
+      limit: 20,
+      totalPages: 3,
+      hasNext: true,
+      hasPrev: true,
+    });
+
+    // Solo perfiles ACTIVOS y solo roles de compras vigentes.
+    const args = (
+      findMany.mock.calls[0] as [
+        {
+          where: { is_active: boolean };
+          select: {
+            user_roles_user_roles_profile_idToprofiles: {
+              where: { is_active: boolean; module: string };
+            };
+          };
+          skip: number;
+          take: number;
+        },
+      ]
+    )[0];
+    expect(args.where.is_active).toBe(true);
+    expect(
+      args.select.user_roles_user_roles_profile_idToprofiles.where,
+    ).toEqual({ is_active: true, module: 'compras' });
+    expect(args.skip).toBe(20);
+    expect(args.take).toBe(20);
+  });
+
+  it('aplica la búsqueda por nombre o email (insensitive)', async () => {
+    count.mockResolvedValue(0);
+    findMany.mockResolvedValue([]);
+
+    await service.findAllForRoleManagement(1, 20, '  ingrid ');
+
+    const where = (findMany.mock.calls[0] as [{ where: { OR: unknown } }])[0]
+      .where;
+    expect(where.OR).toEqual([
+      { full_name: { contains: 'ingrid', mode: 'insensitive' } },
+      { email: { contains: 'ingrid', mode: 'insensitive' } },
+    ]);
+  });
+
+  it('sin resultados: totalPages mínimo 1 y sin páginas vecinas', async () => {
+    count.mockResolvedValue(0);
+    findMany.mockResolvedValue([]);
+
+    const result = await service.findAllForRoleManagement(1, 20, 'nadie');
+    expect(result.meta).toEqual({
+      total: 0,
+      page: 1,
+      limit: 20,
+      totalPages: 1,
+      hasNext: false,
+      hasPrev: false,
+    });
+  });
+});

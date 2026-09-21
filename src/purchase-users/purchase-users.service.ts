@@ -77,4 +77,67 @@ export class PurchaseUsersService {
       };
     });
   }
+
+  /**
+   * Listado para el APARTADO de gestión de roles de Compras (autoservicio,
+   * junta 2026-09-17): TODOS los perfiles activos del sistema — no solo los
+   * que ya tienen rol de compras, porque el punto es poder asignárselo —
+   * con sus roles de compras vigentes. Paginado con búsqueda por
+   * nombre/email.
+   */
+  async findAllForRoleManagement(page: number, limit: number, search?: string) {
+    const term = search?.trim();
+    const where = {
+      is_active: true,
+      ...(term
+        ? {
+            OR: [
+              { full_name: { contains: term, mode: 'insensitive' as const } },
+              { email: { contains: term, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
+    const [total, rows] = await Promise.all([
+      this.prisma.profiles.count({ where }),
+      this.prisma.profiles.findMany({
+        where,
+        select: {
+          id: true,
+          full_name: true,
+          email: true,
+          position: true,
+          departments: { select: { name: true } },
+          user_roles_user_roles_profile_idToprofiles: {
+            where: { is_active: true, module: 'compras' },
+            select: { role: true },
+          },
+        },
+        orderBy: { full_name: 'asc' },
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    return {
+      data: rows.map((row) => ({
+        id: row.id,
+        full_name: row.full_name,
+        email: row.email,
+        position: row.position,
+        department: row.departments?.name ?? null,
+        purchase_roles: row.user_roles_user_roles_profile_idToprofiles.map(
+          (r) => r.role,
+        ),
+      })),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    };
+  }
 }
