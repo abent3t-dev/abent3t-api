@@ -341,8 +341,12 @@ export class MaximoSyncService implements OnModuleInit {
               terminated = true;
             }
           } else {
+            // Sin rsTotal no hay forma de distinguir "última página" de un
+            // server-cap sobre `_maxItems` (lección Int-4/SAP): se termina en
+            // página corta, pero avanzando lo REALMENTE recibido para no
+            // saltar registros si el escaneo continúa por otra razón.
             if (got < pageSize) terminated = true; // última página
-            rsStart += pageSize;
+            rsStart += got > 0 ? got : pageSize;
           }
         } catch (error: unknown) {
           state.pagesFailed += 1;

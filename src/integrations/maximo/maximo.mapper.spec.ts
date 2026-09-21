@@ -412,7 +412,7 @@ describe('toContract (AB_CONTRATOS)', () => {
     expect(tricky.approvedDate).toBeNull();
   });
 
-  it('estructura previa (raíz PURCHVIEW, con MAXVOL): maxVol se mapea, contractValue NO', () => {
+  it('estructura previa (raíz PURCHVIEW, con MAXVOL): maxVol se mapea, contractValue = TOTALCOST', () => {
     // Dos revisiones del contrato 1040: solo la revisión 1 trae MAXVOL.
     const contracts = legacyRecords(
       'ab-contratos.legacy-compact.purchview-root.v1.json',
@@ -423,8 +423,9 @@ describe('toContract (AB_CONTRATOS)', () => {
       expect(c.hasContract).toBe(true);
       expect(c.prnum).toBeNull();
       expect(c.contractNum).toBe('1040');
-      expect(c.contractValue).toBeNull(); // §20.2: nunca desde MAXVOL
-      expect(c.contractRefNum).toBeNull(); // §20.2: nunca desde CONTRACTNUM
+      // §20.2 resuelta (Isaac): valor desde TOTALCOST, ref desde CONTRACTNUM.
+      expect(c.contractValue).toBe(c.totalCost);
+      expect(c.contractRefNum).toBe('1040');
       expect(c.lines).toHaveLength(2);
       expect(c.lines[0].itemNum).toBe('TST1ACIDO');
     }
@@ -546,19 +547,27 @@ describe('toContract (AB_CONTRATOS)', () => {
     ]);
   });
 
-  it('CONTRACTREFNUM / CONTRACTVALUE quedan null con TODOS los fixtures actuales', () => {
+  it('§20.2 resuelta: CONTRACTREFNUM/CONTRACTVALUE se derivan de CONTRACTNUM/TOTALCOST', () => {
+    // Confirmación de Isaac (2026-09-21): con contrato, ref = contractNum y
+    // valor = totalCost; sin contrato (PR sin PURCHVIEW), ambos null.
     for (const c of allContractFixtures()) {
-      expect(c.contractRefNum).toBeNull();
-      expect(c.contractValue).toBeNull();
+      if (c.hasContract) {
+        expect(c.contractRefNum).toBe(c.contractNum);
+        expect(c.contractValue).toBe(c.totalCost);
+      } else {
+        expect(c.contractRefNum).toBeNull();
+        expect(c.contractValue).toBeNull();
+      }
     }
   });
 
-  it('CONTRACTREFNUM / CONTRACTVALUE se mapean SOLO si llegan con ese nombre exacto', () => {
+  it('los nombres literales CONTRACTREFNUM / CONTRACTVALUE tienen precedencia si llegan', () => {
     const c = toContract({
       PRNUM: 'PR-Y',
       PURCHVIEW: [
         {
           CONTRACTNUM: '77',
+          TOTALCOST: 999,
           CONTRACTREFNUM: 'REF-77',
           CONTRACTVALUE: '1200.5',
         },
@@ -567,6 +576,15 @@ describe('toContract (AB_CONTRATOS)', () => {
     expect(c.contractRefNum).toBe('REF-77');
     expect(c.contractValue).toBe(1200.5);
     expect(c.contractNum).toBe('77');
+  });
+
+  it('sin los literales, la derivación usa el PURCHVIEW (no la raíz PR)', () => {
+    const c = toContract({
+      PRNUM: 'PR-Z',
+      PURCHVIEW: [{ CONTRACTNUM: '88', TOTALCOST: '450.25' }],
+    });
+    expect(c.contractRefNum).toBe('88');
+    expect(c.contractValue).toBe(450.25);
   });
 
   it('campos omitidos aparecen como null (nunca undefined) en todos los fixtures', () => {

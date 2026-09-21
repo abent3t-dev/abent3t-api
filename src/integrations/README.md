@@ -162,16 +162,45 @@ los fixtures sanitizados por el MISMO camino de upsert (corridas
 `triggered_by='seed'`; idempotente; aborta con `NODE_ENV=production`).
 `npm run maximo:seed-clear` lo retira.
 
-**Checklist de activación en producción** (en orden; hoy TODO apagado):
+**Plan de activación en producción** (actualizado 2026-09-21; prerequisitos
+YA CUMPLIDOS: credenciales prod del correo de Isaac 3-ago probadas el
+2026-09-21 — HTTP 200, AB_COMPRAS con 5,001 POs —; egress `maxapp:9080` desde
+el Servidor A confirmado el 2026-09-17; §20.2 resuelta:
+CONTRACTVALUE=TOTALCOST y CONTRACTREFNUM=CONTRACTNUM ya en el mapper
+`2026.09.21-1`):
 
-1. OS cerradas con Isaac/CIISA (§20.A.2/7/9: CONTRACTREFNUM/CONTRACTVALUE, APPR1..4, smoke OSLC en prod).
-2. Salida NSG a `maxapp:9080` autorizada con César.
-3. `MAXIMO_BASE_URL`, `MAXIMO_OSLC_URL`, `MAXIMO_AUTH_TOKEN` en env del servidor.
-4. `MAXIMO_SYNC_ENABLED=true` (reinicio).
-5. Disparo manual `POST /integrations/maximo/sync {"target":"purchase_orders"}`.
-6. Verificar `GET /integrations/maximo/status` (corrida `success`, counts creciendo).
-7. Dejar correr el cron (`MAXIMO_SYNC_INTERVAL_MINUTES`, default 60).
-8. Contratos después, con `MAXIMO_CONTRACTS_ENABLED=true` (tras cerrar §20.A.2).
+1. En `.env.prod` del Servidor A (los valores viven en el correo de Isaac del
+   3-ago / gestor de secretos — NUNCA aquí):
+   - `MAXIMO_BASE_URL` → REST legacy, termina en `/maxrest/rest/os`.
+   - `MAXIMO_OSLC_URL` → mismo host, termina en `/maximo/oslc/os`. El full
+     scan NO la usa (es legacy), pero Joi la exige con el sync prendido; se
+     usa solo en consultas puntuales por rango/prnum.
+   - `MAXIMO_AUTH_TOKEN` → el token del header `MAXAUTH` (Base64), tal cual.
+   - `MAXIMO_CONTRACTS_ENABLED=true` (default false: sin esto la corrida de
+     contratos falla con `MaximoContractsDisabledError`).
+   - `MAXIMO_SYNC_ENABLED=true` (con true, Joi exige las 3 primeras — el boot
+     falla temprano si falta alguna, a propósito).
+   - Opcionales: `MAXIMO_SYNC_INTERVAL_MINUTES` (default 60),
+     `MAXIMO_SYNC_PAGE_SIZE` (default 100).
+2. `git pull` + rebuild + recreate del contenedor de la API (patrón SAP del
+   18-sep; NO hay migraciones nuevas — el staging `0005` ya está en prod).
+3. Disparo manual: `POST /integrations/maximo/sync {"target":"all"}` (202).
+   Con 5,001 POs a 100 por página son ~51 páginas; esperar unos minutos.
+4. Verificar `GET /integrations/maximo/status` → corridas `success` y counts
+   poblados; `GET /maximo/summary` → totales por estatus; pestañas "Ordenes
+   Maximo" (en /compras/ordenes) y "Contratos Maximo" (en /compras/contratos)
+   con datos paginados.
+5. Dejar correr el cron (cada `MAXIMO_SYNC_INTERVAL_MINUTES`).
+6. **Esperado, no error:** Ahorro / Clasificación / Tipo compra (AB_AHORRO /
+   AB_CLASFPO / AB_TIPOCOMP) y MAXVOL salen como **"No disponible"** — la
+   Object Structure aún no expone esos campos (ajuste de definición pendiente
+   con CIISA, validado 13-ago). Cuando CIISA los exponga: el siguiente sync
+   los trae y la UI los pinta sin cambios de código (las filas ya
+   sincronizadas se refrescan por `rowstamp`, o en bloque con
+   `npm run maximo:remap`).
+7. Si el staging de prod ya tuviera filas de una corrida previa al mapper
+   `2026.09.21-1`, correr `npm run maximo:remap` una vez para re-derivar
+   `contract_value`/`contract_ref_num` sin re-descargar.
 
 ## Consumo desde dominio (Fase INT-5)
 

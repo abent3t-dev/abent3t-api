@@ -22,10 +22,12 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
 /**
  * Versión del mapper. Se persiste por fila de staging (Int-3): permite saber
  * qué reglas produjeron las columnas mapeadas y re-mapear (`maximo:remap`)
- * cuando cambien (p. ej. cuando Isaac confirme CONTRACTREFNUM/APPR1..4).
- * Subirla en CADA cambio de reglas de mapeo.
+ * cuando cambien. Subirla en CADA cambio de reglas de mapeo.
+ * 2026-09-21: Isaac confirmó CONTRACTVALUE=TOTALCOST y
+ * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
+ * `maximo:remap` para re-derivar las filas ya sincronizadas.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.08.31-1';
+export const MAXIMO_MAPPER_VERSION = '2026.09.21-1';
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -408,19 +410,20 @@ function buildContractDto(
   const history = mapStatusHistory(children(pv, 'CONTRACTSTATUS'));
   const createdDate = firstChangeDate(history, 'WAPPR');
 
-  // §20.2: CONTRACTREFNUM / CONTRACTVALUE solo si llegan con ese nombre
-  // exacto (en PURCHVIEW o en la raíz PR). Hoy no llegan → null. Prohibido
-  // derivarlos de MAXVOL / CONTRACTNUM hasta confirmación de Isaac.
+  // §20.2 RESUELTA (Isaac, correo 2026-09; registrado en HANDOFF 2026-09-21):
+  // CONTRACTVALUE ≡ TOTALCOST y CONTRACTREFNUM ≡ CONTRACTNUM. Si algún día la
+  // Object Structure expusiera los nombres literales, esos tienen precedencia;
+  // mientras, se derivan de los campos equivalentes del PURCHVIEW.
   const contractRefNum = hasKey(pv, 'CONTRACTREFNUM')
     ? str(pv, 'CONTRACTREFNUM')
     : hasKey(pr, 'CONTRACTREFNUM')
       ? str(pr, 'CONTRACTREFNUM')
-      : null;
+      : str(pv, 'CONTRACTNUM');
   const contractValue = hasKey(pv, 'CONTRACTVALUE')
     ? num(pv, 'CONTRACTVALUE')
     : hasKey(pr, 'CONTRACTVALUE')
       ? num(pr, 'CONTRACTVALUE')
-      : null;
+      : num(pv, 'TOTALCOST');
 
   return {
     erp: MAXIMO_ERP,

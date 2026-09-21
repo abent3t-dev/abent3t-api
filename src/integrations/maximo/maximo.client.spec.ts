@@ -346,7 +346,8 @@ describe('MaximoClient', () => {
       expect(res.api).toBe('oslc');
       expect(res.records).toHaveLength(1);
       expect(res.records[0].contractNum).toBe('1091');
-      expect(res.records[0].contractRefNum).toBeNull();
+      // §20.2 resuelta: la referencia se deriva de CONTRACTNUM.
+      expect(res.records[0].contractRefNum).toBe('1091');
       expect(res.filterCheck.kind).toBe('equality');
     });
 
