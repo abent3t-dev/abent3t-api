@@ -17,8 +17,9 @@ import { PaginationDto } from '../common/dto/pagination.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
-// Roles de compras
-const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
+// Roles de compras. Modelo de acceso (junta 2026-09-17): los GET de consulta
+// van SIN @Roles = cualquier autenticado (precedente §15 Contratos); las
+// mutaciones conservan roles estrictos.
 const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 
 @Controller('suppliers')
@@ -38,7 +39,7 @@ export class SuppliersController {
     return this.sapMirror.runMirror();
   }
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get()
   findAll(
     @Query() pagination: PaginationDto,
@@ -61,19 +62,19 @@ export class SuppliersController {
     return this.service.findAll();
   }
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);
   }
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':id/performance')
   getPerformance(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.getPerformance(id);
   }
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':id/purchase-orders')
   getPurchaseOrders(
     @Param('id', ParseUUIDPipe) id: string,

@@ -24,14 +24,6 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 // Grupos de roles de compras
 const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
 const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
-const PURCHASE_VIEWERS = [
-  ...PURCHASE_TEAM,
-  'aprobador_nivel_1',
-  'aprobador_nivel_2',
-  'aprobador_nivel_3',
-  'director_general',
-  'solicitante',
-];
 
 @Controller('requisitions')
 export class RequisitionsController {
@@ -40,13 +32,16 @@ export class RequisitionsController {
     private readonly configService: ConfigService,
   ) {}
 
-  @Roles(...PURCHASE_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get()
-  findAll(@Query() pagination: PaginationDto, @Query() filters: FilterRequisitionDto) {
+  findAll(
+    @Query() pagination: PaginationDto,
+    @Query() filters: FilterRequisitionDto,
+  ) {
     return this.service.findAll(pagination, filters);
   }
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('stats')
   getStats(
     @Query('date_from') dateFrom?: string,
@@ -55,13 +50,13 @@ export class RequisitionsController {
     return this.service.getStats({ date_from: dateFrom, date_to: dateTo });
   }
 
-  @Roles(...PURCHASE_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);
   }
 
-  @Roles(...PURCHASE_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':id/history')
   getHistory(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.getHistory(id);

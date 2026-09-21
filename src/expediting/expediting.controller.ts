@@ -19,13 +19,6 @@ import {
 
 // Roles de compras (§Roles y Permisos)
 const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
-const APPROVERS = [
-  'aprobador_nivel_1',
-  'aprobador_nivel_2',
-  'aprobador_nivel_3',
-  'director_general',
-];
-const EXPEDITING_VIEWERS = [...PURCHASE_TEAM, ...APPROVERS, 'executive'];
 
 /**
  * Fase Expeditación — seguimiento de entregas de POs propias. Lectura para
@@ -36,19 +29,19 @@ const EXPEDITING_VIEWERS = [...PURCHASE_TEAM, ...APPROVERS, 'executive'];
 export class ExpeditingController {
   constructor(private readonly service: ExpeditingService) {}
 
-  @Roles(...EXPEDITING_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get()
   findAll(@Query() query: ExpeditingQueryDto) {
     return this.service.findAll(query);
   }
 
-  @Roles(...EXPEDITING_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('stats')
   getStats() {
     return this.service.getStats();
   }
 
-  @Roles(...EXPEDITING_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':poId')
   findOne(@Param('poId', ParseUUIDPipe) poId: string) {
     return this.service.findOne(poId);

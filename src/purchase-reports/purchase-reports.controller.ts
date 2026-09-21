@@ -1,17 +1,8 @@
 import { Controller, Get, Query } from '@nestjs/common';
-import { Roles } from '../common/decorators/roles.decorator';
 import { PurchaseReportsService } from './purchase-reports.service';
 import { ReportPeriodDto } from './dto/report-period.dto';
 
 // Roles de compras (§Roles y Permisos)
-const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
-const APPROVERS = [
-  'aprobador_nivel_1',
-  'aprobador_nivel_2',
-  'aprobador_nivel_3',
-  'director_general',
-];
-const REPORT_VIEWERS = [...PURCHASE_TEAM, ...APPROVERS, 'executive'];
 
 /**
  * Fase Reportes — SOLO lectura/agregación sobre datos propios + staging
@@ -22,55 +13,55 @@ const REPORT_VIEWERS = [...PURCHASE_TEAM, ...APPROVERS, 'executive'];
 export class PurchaseReportsController {
   constructor(private readonly service: PurchaseReportsService) {}
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('resumen')
   getResumen(@Query() query: ReportPeriodDto) {
     return this.service.getResumen(query);
   }
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('requisiciones')
   getRequisiciones(@Query() query: ReportPeriodDto) {
     return this.service.getRequisiciones(query);
   }
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('ordenes')
   getOrdenes(@Query() query: ReportPeriodDto) {
     return this.service.getOrdenes(query);
   }
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('aprobaciones')
   getAprobaciones() {
     return this.service.getAprobaciones();
   }
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('entregas')
   getEntregas() {
     return this.service.getEntregas();
   }
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('contratos')
   getContratos() {
     return this.service.getContratos();
   }
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('comite')
   getComite() {
     return this.service.getComite();
   }
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('maximo')
   getMaximo(@Query() query: ReportPeriodDto) {
     return this.service.getMaximo(query);
   }
 
-  @Roles(...REPORT_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('ahorro')
   getAhorro(@Query() query: ReportPeriodDto) {
     return this.service.getAhorro(query);

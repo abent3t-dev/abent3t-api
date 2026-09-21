@@ -34,7 +34,6 @@ const APPROVERS = [
 ];
 // APPROVERS_COMITE (§17): lider_procura es el nivel 1 de la cadena
 const APPROVERS_COMITE = ['lider_procura', ...APPROVERS];
-const COMMITTEE_VIEWERS = [...PURCHASE_TEAM, ...APPROVERS, 'executive'];
 const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 
 /**
@@ -46,7 +45,7 @@ const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 export class PurchaseCommitteesController {
   constructor(private readonly service: PurchaseCommitteesService) {}
 
-  @Roles(...COMMITTEE_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get()
   findAll(@Query() query: CommitteeQueryDto, @CurrentUser() user: AuthUser) {
     return this.service.findAll(query, user);
@@ -58,7 +57,7 @@ export class PurchaseCommitteesController {
     return this.service.pendingForMe(user);
   }
 
-  @Roles(...PURCHASE_TEAM, 'executive')
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('dashboard/tiempos')
   dashboardTiempos() {
     return this.service.dashboardTiempos();
@@ -81,7 +80,7 @@ export class PurchaseCommitteesController {
     return this.service.updateLevel(id, dto, user);
   }
 
-  @Roles(...COMMITTEE_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':id')
   findOne(
     @Param('id', ParseUUIDPipe) id: string,
@@ -90,7 +89,7 @@ export class PurchaseCommitteesController {
     return this.service.findOne(id, user);
   }
 
-  @Roles(...COMMITTEE_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':id/versions/:versionId/download')
   download(
     @Param('id', ParseUUIDPipe) id: string,

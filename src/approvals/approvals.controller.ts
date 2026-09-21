@@ -8,14 +8,21 @@ import {
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { ApprovalsService } from './approvals.service';
-import { ApproveRequisitionDto, RejectRequisitionDto } from './dto/approve-requisition.dto';
+import {
+  ApproveRequisitionDto,
+  RejectRequisitionDto,
+} from './dto/approve-requisition.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 // Roles de aprobadores
-const APPROVERS = ['aprobador_nivel_1', 'aprobador_nivel_2', 'aprobador_nivel_3', 'director_general'];
+const APPROVERS = [
+  'aprobador_nivel_1',
+  'aprobador_nivel_2',
+  'aprobador_nivel_3',
+  'director_general',
+];
 const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
-const ALL_PURCHASE_ROLES = [...PURCHASE_TEAM, ...APPROVERS];
 
 @Controller('approvals')
 export class ApprovalsController {
@@ -41,13 +48,13 @@ export class ApprovalsController {
     );
   }
 
-  @Roles(...ALL_PURCHASE_ROLES)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('requisition/:rqId')
   getWorkflowByRequisition(@Param('rqId', ParseUUIDPipe) rqId: string) {
     return this.service.getWorkflowByRequisition(rqId);
   }
 
-  @Roles(...ALL_PURCHASE_ROLES)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('stats')
   getStats() {
     return this.service.getStats();
@@ -68,7 +75,12 @@ export class ApprovalsController {
     @Body() dto: ApproveRequisitionDto,
     @CurrentUser() user: { id: string; role: string },
   ) {
-    return this.service.approve(dto.requisition_id, user.id, user.role, dto.comments);
+    return this.service.approve(
+      dto.requisition_id,
+      user.id,
+      user.role,
+      dto.comments,
+    );
   }
 
   @Roles(...APPROVERS)
@@ -77,6 +89,11 @@ export class ApprovalsController {
     @Body() dto: RejectRequisitionDto,
     @CurrentUser() user: { id: string; role: string },
   ) {
-    return this.service.reject(dto.requisition_id, user.id, user.role, dto.rejection_reason);
+    return this.service.reject(
+      dto.requisition_id,
+      user.id,
+      user.role,
+      dto.rejection_reason,
+    );
   }
 }

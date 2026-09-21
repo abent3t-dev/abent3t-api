@@ -1,5 +1,4 @@
 import { Controller, Get, Param, ParseIntPipe, Query } from '@nestjs/common';
-import { Roles } from '../common/decorators/roles.decorator';
 // TS1272: tipos en firmas decoradas van con `import type` (isolatedModules
 // + emitDecoratorMetadata).
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -9,15 +8,7 @@ import { SapDocQueryDto } from './dto/sap-doc-query.dto';
 import { SapRecordsService } from './sap-records.service';
 
 // Roles de compras (§Roles y Permisos de CLAUDE_COMPRAS.md)
-const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
-const APPROVERS = [
-  'aprobador_nivel_1',
-  'aprobador_nivel_2',
-  'aprobador_nivel_3',
-  'director_general',
-];
 // Lectores de datos SAP; super_admin bypassa RolesGuard.
-const SAP_VIEWERS = [...PURCHASE_TEAM, ...APPROVERS, 'executive'];
 // El `raw` del detalle solo viaja a los admins de compras.
 const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 
@@ -31,19 +22,19 @@ const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 export class SapRecordsController {
   constructor(private readonly service: SapRecordsService) {}
 
-  @Roles(...SAP_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('summary')
   getSummary() {
     return this.service.getSummary();
   }
 
-  @Roles(...SAP_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('purchase-orders')
   listPurchaseOrders(@Query() query: SapDocQueryDto) {
     return this.service.listPurchaseOrders(query);
   }
 
-  @Roles(...SAP_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('purchase-orders/:docEntry')
   getPurchaseOrder(
     @Param('docEntry', ParseIntPipe) docEntry: number,
@@ -55,13 +46,13 @@ export class SapRecordsController {
     );
   }
 
-  @Roles(...SAP_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('purchase-requests')
   listPurchaseRequests(@Query() query: SapDocQueryDto) {
     return this.service.listPurchaseRequests(query);
   }
 
-  @Roles(...SAP_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('purchase-requests/:docEntry')
   getPurchaseRequest(
     @Param('docEntry', ParseIntPipe) docEntry: number,

@@ -1,5 +1,4 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
-import { Roles } from '../common/decorators/roles.decorator';
 // TS1272: tipos en firmas decoradas van con `import type` (isolatedModules
 // + emitDecoratorMetadata).
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -10,15 +9,7 @@ import { MaximoPoQueryDto } from './dto/maximo-po-query.dto';
 import { MaximoRecordsService } from './maximo-records.service';
 
 // Roles de compras (§Roles y Permisos de CLAUDE_COMPRAS.md)
-const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
-const APPROVERS = [
-  'aprobador_nivel_1',
-  'aprobador_nivel_2',
-  'aprobador_nivel_3',
-  'director_general',
-];
 // Lectores de datos Maximo; super_admin bypassa RolesGuard.
-const MAXIMO_VIEWERS = [...PURCHASE_TEAM, ...APPROVERS, 'executive'];
 // El `raw` del detalle solo viaja a los admins de compras.
 const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 
@@ -31,19 +22,19 @@ const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 export class MaximoRecordsController {
   constructor(private readonly service: MaximoRecordsService) {}
 
-  @Roles(...MAXIMO_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('summary')
   getSummary() {
     return this.service.getSummary();
   }
 
-  @Roles(...MAXIMO_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('purchase-orders')
   listPurchaseOrders(@Query() query: MaximoPoQueryDto) {
     return this.service.listPurchaseOrders(query);
   }
 
-  @Roles(...MAXIMO_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('purchase-orders/:ponum')
   getPurchaseOrder(
     @Param('ponum') ponum: string,
@@ -55,13 +46,13 @@ export class MaximoRecordsController {
     );
   }
 
-  @Roles(...MAXIMO_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('contracts')
   listContracts(@Query() query: MaximoContractQueryDto) {
     return this.service.listContracts(query);
   }
 
-  @Roles(...MAXIMO_VIEWERS)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('contracts/:key')
   getContract(@Param('key') key: string, @CurrentUser() user: AuthUser) {
     return this.service.getContract(key, hasAnyRole(user, ...PURCHASE_ADMINS));

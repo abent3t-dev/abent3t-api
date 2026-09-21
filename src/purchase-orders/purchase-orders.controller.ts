@@ -24,7 +24,7 @@ const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
 export class PurchaseOrdersController {
   constructor(private readonly service: PurchaseOrdersService) {}
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get()
   findAll(
     @Query() pagination: PaginationDto,
@@ -45,7 +45,7 @@ export class PurchaseOrdersController {
     });
   }
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('stats')
   getStats(
     @Query('date_from') dateFrom?: string,
@@ -59,13 +59,13 @@ export class PurchaseOrdersController {
     });
   }
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get(':id')
   findOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.service.findOne(id);
   }
 
-  @Roles(...PURCHASE_TEAM)
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('requisition/:rqId')
   findByRequisition(@Param('rqId', ParseUUIDPipe) rqId: string) {
     return this.service.findByRequisition(rqId);
