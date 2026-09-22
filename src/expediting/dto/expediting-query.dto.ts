@@ -35,4 +35,9 @@ export class ExpeditingQueryDto extends PaginationDto {
   @IsISO8601()
   @IsOptional()
   expected_to?: string;
+
+  /** Sprint 2026-09-22 (B6): acotar a una fuente. Default: las tres. */
+  @IsIn(['abent', 'sap', 'maximo'])
+  @IsOptional()
+  source?: 'abent' | 'sap' | 'maximo';
 }

@@ -36,6 +36,30 @@ import {
  */
 
 const SAFETY_SCAN_LIMIT = 2000;
+/** Tope por fuente ERP al derivar en memoria (B6): OC abiertas SAP ~750 en prod. */
+const ERP_SCAN_LIMIT = 5000;
+
+/**
+ * Sprint 2026-09-22 (B6): fila de expeditación de una OC del ERP (SAP
+ * abierta / Maximo APPR-INPRG). Misma forma que las propias para la tabla;
+ * `purchase_order_id` null = sin acciones (solo lectura, badge de origen).
+ */
+interface ErpRow {
+  source: 'sap' | 'maximo';
+  external_key: string;
+  po_number: string;
+  po_status: string | null;
+  supplier_name: string | null;
+  amount: unknown;
+  currency: string | null;
+  expected_date: Date | null;
+  requested_by: string | null;
+}
+
+const CURRENT_MAXIMO_POS = Prisma.sql`
+  SELECT DISTINCT ON (ponum, coalesce(siteid, '')) *
+  FROM maximo_purchase_orders
+  ORDER BY ponum, coalesce(siteid, ''), coalesce(revisionnum, 0) DESC`;
 
 const PO_INCLUDE = {
   suppliers: { select: { id: true, legal_name: true, email: true } },
@@ -78,6 +102,14 @@ export class ExpeditingService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
     const today = cdmxDateUtc();
+    const source = query.source;
+
+    // B6: OC abiertas de los ERPs (solo lectura) entran a la misma lista.
+    // Se derivan en memoria como las propias (mismo motor de estatus).
+    const erpItems =
+      !query.buyer_id && !query.supplier_id && source !== 'abent'
+        ? await this.loadErpItems(today, query, source)
+        : [];
 
     const where: Prisma.purchase_ordersWhereInput = {
       is_active: true,
@@ -111,7 +143,16 @@ export class ExpeditingService {
       take: SAFETY_SCAN_LIMIT,
     });
 
-    const mapped = rows.map((row) => this.toListItem(row, today));
+    const ownItems =
+      source && source !== 'abent'
+        ? []
+        : rows.map((row) => this.toListItem(row, today));
+    const mapped = [...ownItems, ...erpItems].sort((a, b) => {
+      const da = a.effective_expected_date?.getTime() ?? Infinity;
+      const db = b.effective_expected_date?.getTime() ?? Infinity;
+      if (da !== db) return da - db;
+      return a.po_number.localeCompare(b.po_number);
+    });
     const filtered = query.status
       ? mapped.filter((item) => item.delivery_status === query.status)
       : mapped;
@@ -175,11 +216,14 @@ export class ExpeditingService {
 
   async getStats() {
     const today = cdmxDateUtc();
-    const rows = await this.prisma.purchase_orders.findMany({
-      where: { is_active: true, status: { not: 'cancelada' } },
-      include: PO_INCLUDE,
-      take: SAFETY_SCAN_LIMIT,
-    });
+    const [rows, erpItems] = await Promise.all([
+      this.prisma.purchase_orders.findMany({
+        where: { is_active: true, status: { not: 'cancelada' } },
+        include: PO_INCLUDE,
+        take: SAFETY_SCAN_LIMIT,
+      }),
+      this.loadErpItems(today, {}, undefined),
+    ]);
 
     const counts: Record<DerivedDeliveryStatus, number> = {
       sin_fecha: 0,
@@ -189,6 +233,16 @@ export class ExpeditingService {
       parcial: 0,
       entregada: 0,
     };
+    // B6: las OC abiertas de los ERPs suman al semáforo (por fuente aparte).
+    const bySource = {
+      abent: { ...counts },
+      sap: { ...counts },
+      maximo: { ...counts },
+    };
+    for (const item of erpItems) {
+      counts[item.delivery_status] += 1;
+      bySource[item.source][item.delivery_status] += 1;
+    }
     let lateDeliveredDays = 0;
     let lateDeliveredCount = 0;
     const bySupplier = new Map<string, { name: string; late: number }>();
@@ -196,6 +250,7 @@ export class ExpeditingService {
     for (const row of rows) {
       const status = this.deriveFor(row, today);
       counts[status] += 1;
+      bySource.abent[status] += 1;
 
       const expectedOriginal = row.expected_delivery_date;
       const isLateDelivered =
@@ -222,6 +277,7 @@ export class ExpeditingService {
 
     return {
       counts,
+      by_source: bySource,
       avg_delay_days: lateDeliveredCount
         ? Math.round((lateDeliveredDays / lateDeliveredCount) * 10) / 10
         : null,
@@ -533,6 +589,107 @@ export class ExpeditingService {
     });
   }
 
+  /**
+   * B6: OC abiertas de SAP (bost_Open no canceladas, fecha = DocDueDate) y
+   * de Maximo (APPR/INPRG vigentes, fecha = VENDELIVERYDATE del raw; si no
+   * viene → sin_fecha). Agregado en SQL, derivación de semáforo en memoria
+   * con el MISMO motor que las propias. Solo lectura.
+   */
+  private async loadErpItems(
+    today: Date,
+    query: { search?: string; expected_from?: string; expected_to?: string },
+    source: 'abent' | 'sap' | 'maximo' | undefined,
+  ) {
+    const term = query.search ? `%${query.search}%` : null;
+    const from = query.expected_from ? new Date(query.expected_from) : null;
+    const to = query.expected_to ? new Date(query.expected_to) : null;
+    const [sapRows, maximoRows] = await Promise.all([
+      source === 'maximo'
+        ? Promise.resolve([] as ErpRow[])
+        : this.prisma.$queryRaw<ErpRow[]>(Prisma.sql`
+            SELECT 'sap'::text AS source,
+                   doc_entry::text AS external_key,
+                   coalesce(doc_num::text, doc_entry::text) AS po_number,
+                   document_status AS po_status,
+                   card_name AS supplier_name,
+                   doc_total AS amount,
+                   currency,
+                   doc_due_date AS expected_date,
+                   NULL::text AS requested_by
+            FROM sap_purchase_orders
+            WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true
+              AND (${term}::text IS NULL OR card_name ILIKE ${term} OR doc_num::text ILIKE ${term})
+              AND (${from}::timestamptz IS NULL OR doc_due_date >= ${from})
+              AND (${to}::timestamptz IS NULL OR doc_due_date <= ${to})
+            ORDER BY doc_due_date ASC NULLS LAST
+            LIMIT ${ERP_SCAN_LIMIT}`),
+      source === 'sap'
+        ? Promise.resolve([] as ErpRow[])
+        : this.prisma.$queryRaw<ErpRow[]>(Prisma.sql`
+            WITH current AS (${CURRENT_MAXIMO_POS})
+            SELECT 'maximo'::text AS source,
+                   ponum AS external_key,
+                   ponum AS po_number,
+                   status AS po_status,
+                   vendor_name AS supplier_name,
+                   total_cost AS amount,
+                   currency,
+                   NULLIF(coalesce(raw->'Attributes'->'VENDELIVERYDATE'->>'content',
+                                   raw->>'VENDELIVERYDATE'), '')::timestamptz AS expected_date,
+                   requested_by
+            FROM current
+            WHERE status IN ('APPR', 'INPRG')
+              AND (${term}::text IS NULL OR vendor_name ILIKE ${term} OR ponum ILIKE ${term})
+            ORDER BY ponum ASC
+            LIMIT ${ERP_SCAN_LIMIT}`),
+    ]);
+    return [...sapRows, ...maximoRows]
+      .filter((row) => {
+        if (row.source !== 'maximo') return true;
+        const d = row.expected_date;
+        if (from && (!d || d < from)) return false;
+        if (to && (!d || d > to)) return false;
+        return true;
+      })
+      .map((row) => {
+        const expected = row.expected_date ? new Date(row.expected_date) : null;
+        const status = deriveDeliveryStatus(
+          {
+            expected_date: expected,
+            actual_delivery_date: null,
+            po_status: null,
+            tracking_status: null,
+          },
+          today,
+        );
+        return {
+          purchase_order_id: null as string | null,
+          source: row.source,
+          external_key: row.external_key,
+          po_number: row.po_number,
+          po_status: row.po_status,
+          supplier: row.supplier_name
+            ? {
+                id: null as string | null,
+                legal_name: row.supplier_name,
+                email: null as string | null,
+              }
+            : null,
+          buyer: null,
+          requisition: null,
+          amount: toNumber(row.amount),
+          currency: row.currency,
+          expected_delivery_date: expected,
+          effective_expected_date: expected,
+          actual_delivery_date: null,
+          delivery_status: status,
+          days_left: expected ? daysUntilDate(expected, today) : null,
+          tracking: null,
+          requested_by: row.requested_by,
+        };
+      });
+  }
+
   private deriveFor(row: PoRow, today: Date): DerivedDeliveryStatus {
     return deriveDeliveryStatus(
       {
@@ -551,10 +708,18 @@ export class ExpeditingService {
       row.delivery_tracking?.expected_date ?? row.expected_delivery_date;
     const status = this.deriveFor(row, today);
     return {
-      purchase_order_id: row.id,
+      purchase_order_id: row.id as string | null,
+      source: 'abent' as const,
+      external_key: row.id,
       po_number: row.po_number,
-      po_status: row.status,
-      supplier: row.suppliers,
+      po_status: row.status as string | null,
+      supplier: row.suppliers as {
+        id: string | null;
+        legal_name: string;
+        email: string | null;
+      } | null,
+      currency: 'MXN' as string | null,
+      requested_by: null as string | null,
       buyer: row.profiles,
       requisition: row.requisitions,
       amount: toNumber(row.amount),
