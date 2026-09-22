@@ -26,6 +26,9 @@ import { UpdateContractDto } from './dto/update-contract.dto';
 const MAX_PDF_SIZE = 20 * 1024 * 1024; // 20 MB (§15)
 const DOWNLOAD_TTL_SECONDS = 300; // 5 min (§15)
 
+/** Tope del export (B1). */
+const EXPORT_MAX_ROWS = 20_000;
+
 const CONTRACT_INCLUDE = {
   suppliers: { select: { id: true, legal_name: true, tax_id: true } },
   profiles_contracts_buyer_profile_idToprofiles: {
@@ -71,11 +74,19 @@ function aliasContract(row: ContractRow) {
     suppliers,
     profiles_contracts_buyer_profile_idToprofiles: buyer,
     total_amount,
+    consumed_amount,
     ...rest
   } = row;
+  const total = total_amount === null ? null : Number(total_amount);
+  const consumed = consumed_amount === null ? null : Number(consumed_amount);
   return {
     ...rest,
-    total_amount: total_amount === null ? null : Number(total_amount),
+    total_amount: total,
+    consumed_amount: consumed,
+    // Saldo = total - consumido, calculado (B4). null si falta cualquiera:
+    // "No disponible" en la UI, nunca 0.
+    balance_amount:
+      total === null || consumed === null ? null : total - consumed,
     supplier: suppliers,
     buyer,
   };
@@ -90,10 +101,8 @@ export class ContractsService {
     private readonly storage: StorageService,
   ) {}
 
-  async findAll(query: ContractQueryDto) {
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
-
+  /** WHERE del listado (compartido con el export). */
+  private buildWhere(query: ContractQueryDto): Prisma.contractsWhereInput {
     const where: Prisma.contractsWhereInput = { is_active: true };
     if (query.status) where.status = query.status;
     if (query.supplier_id) where.supplier_id = query.supplier_id;
@@ -117,6 +126,13 @@ export class ContractsService {
         },
       ];
     }
+    return where;
+  }
+
+  async findAll(query: ContractQueryDto) {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const where = this.buildWhere(query);
 
     const [total, rows] = await Promise.all([
       this.prisma.contracts.count({ where }),
@@ -143,6 +159,21 @@ export class ContractsService {
       data: rows.map(aliasContract),
       meta,
     } satisfies PaginatedResponse<ReturnType<typeof aliasContract>>;
+  }
+
+  /** Export (B1): mismos filtros que findAll, sin paginar, con tope. */
+  async findAllForExport(query: ContractQueryDto) {
+    const where = this.buildWhere(query);
+    const rows = await this.prisma.contracts.findMany({
+      where,
+      include: CONTRACT_INCLUDE,
+      orderBy: [{ end_date: 'asc' }, { contract_number: 'asc' }],
+      take: EXPORT_MAX_ROWS + 1,
+    });
+    return {
+      rows: rows.slice(0, EXPORT_MAX_ROWS).map(aliasContract),
+      truncated: rows.length > EXPORT_MAX_ROWS,
+    };
   }
 
   async findOne(id: string) {

@@ -6,6 +6,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  IsUrl,
   IsUUID,
   MaxLength,
   Min,
@@ -69,6 +70,19 @@ export class CreateContractDto {
   @IsOptional()
   @MaxLength(10)
   currency?: string;
+
+  /** Consumido capturado por Compras (sprint 2026-09-22, B4). El saldo se calcula. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  consumed_amount?: number;
+
+  /** Expediente en SharePoint (lo cargan ellos). */
+  @IsOptional()
+  @IsUrl({ require_protocol: true, protocols: ['http', 'https'] })
+  @MaxLength(2000)
+  external_link?: string;
 
   @IsUUID()
   @IsOptional()
