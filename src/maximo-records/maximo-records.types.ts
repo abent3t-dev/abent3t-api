@@ -26,6 +26,10 @@ export interface MaximoPurchaseOrderView {
   requested_by: string | null;
   department: string | null;
   approved_at: Date | null;
+  /** Usuario Maximo que aprobó (CHANGEBY del primer APPR); null si no aplica. */
+  approved_by: string | null;
+  /** Primer WAPPR; approved_at - waiting_approval_at = días de aprobación. */
+  waiting_approval_at: Date | null;
   created_at_source: Date | null;
   last_changed_at: Date | null;
   last_seen_at: Date;
@@ -63,6 +67,7 @@ export interface MaximoContractView {
   requested_by: string | null;
   department: string | null;
   approved_at: Date | null;
+  approved_by: string | null;
   created_at_source: Date | null;
   contract_ref_num: string | null;
   contract_value: number | null;

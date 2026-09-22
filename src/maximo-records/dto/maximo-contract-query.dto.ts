@@ -5,7 +5,9 @@ import {
   IsString,
   MaxLength,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { PaginationDto } from '../../common/dto/pagination.dto';
+import { toStatusList } from '../../sap-records/dto/sap-doc-query.dto';
 
 /**
  * Fase INT-5 — Filtros del listado de contratos de Maximo (vista actual).
@@ -13,10 +15,12 @@ import { PaginationDto } from '../../common/dto/pagination.dto';
  * description de contrato — desviación documentada en el cierre de fase).
  */
 export class MaximoContractQueryDto extends PaginationDto {
+  /** Uno o varios estatus separados por coma (A5: multi-selección). */
   @IsOptional()
-  @IsString()
-  @MaxLength(30)
-  status?: string;
+  @Transform(({ value }) => toStatusList(value))
+  @IsString({ each: true })
+  @MaxLength(30, { each: true })
+  status?: string[];
 
   @IsOptional()
   @IsIn(['true', 'false'])

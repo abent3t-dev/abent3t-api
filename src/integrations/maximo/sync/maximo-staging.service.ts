@@ -51,6 +51,8 @@ export class MaximoStagingService {
       requested_by: dto.requestedBy,
       department: dto.area,
       approved_at: toDate(dto.approvedDate),
+      approved_by: dto.approvedBy,
+      waiting_approval_at: toDate(dto.waitingApprovalDate),
       created_at_source: toDate(dto.orderDate),
       rowstamp: dto.rowstamp,
     };
@@ -116,9 +118,10 @@ export class MaximoStagingService {
       requested_by: dto.requestedBy,
       department: dto.area,
       approved_at: toDate(dto.approvedDate),
+      approved_by: dto.approvedBy,
       created_at_source: toDate(dto.createdDate),
-      contract_ref_num: dto.contractRefNum, // §20.A.2: hoy siempre null
-      contract_value: dto.contractValue, //   idem
+      contract_ref_num: dto.contractRefNum, // §20.2 resuelta: = CONTRACTNUM
+      contract_value: dto.contractValue, //   = TOTALCOST
       purchview_count: dto.purchviewCount,
       has_contract: dto.hasContract,
       pr_rowstamp: dto.rowstamp,

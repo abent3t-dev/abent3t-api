@@ -27,7 +27,7 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
  * `maximo:remap` para re-derivar las filas ya sincronizadas.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.09.21-1';
+export const MAXIMO_MAPPER_VERSION = '2026.09.22-1'; // 22-1: approvedBy (CHANGEBY del primer APPR), sprint B3
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -198,6 +198,14 @@ function firstChangeDate(
   return history.find((h) => h.status === status)?.changeDate ?? null;
 }
 
+/** Usuario (CHANGEBY) del primer cambio al estatus indicado: quién aprobó. */
+function firstChangeBy(
+  history: MaximoStatusChangeDto[],
+  status: string,
+): string | null {
+  return history.find((h) => h.status === status)?.changedBy ?? null;
+}
+
 /**
  * Solo campos de negocio de PERSON. PERSON.STATUS / STATUSDATE / SUPERVISOR /
  * etc. se ignoran a propósito (PERSON.STATUS es el estatus de la persona).
@@ -280,6 +288,7 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
 
     orderDate: str(r, 'ORDERDATE'),
     approvedDate: firstChangeDate(history, 'APPR'),
+    approvedBy: firstChangeBy(history, 'APPR'),
     waitingApprovalDate: firstChangeDate(history, 'WAPPR'),
     statusHistory: history,
 
@@ -454,6 +463,7 @@ function buildContractDto(
     createdDate,
     createdDateRule: createdDate !== null ? 'WAPPR' : null,
     approvedDate: firstChangeDate(history, 'APPR'),
+    approvedBy: firstChangeBy(history, 'APPR'),
 
     vendor: mapVendor(first(pv, 'COMPANIES')),
     lines: children(pv, 'CONTRACTLINE').map(mapContractLine),

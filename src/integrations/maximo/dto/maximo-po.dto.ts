@@ -75,6 +75,8 @@ export interface MaximoPurchaseOrderDto {
    * de contratos) NO se infieren — pendiente confirmar con Isaac (Int-3).
    */
   approvedDate: string | null;
+  /** CHANGEBY del primer POSTATUS=APPR (usuario Maximo que aprobó); null si nunca. */
+  approvedBy: string | null;
   /** Primera POSTATUS con STATUS=WAPPR (se registra por separado, sin derivar nada). */
   waitingApprovalDate: string | null;
   /** Historial completo ordenado por CHANGEDATE ascendente (desempate por POSTATUSID). */

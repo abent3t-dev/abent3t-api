@@ -51,13 +51,17 @@ const CURRENT_CONTRACTS = Prisma.sql`
 const PO_LIST_COLUMNS = Prisma.sql`
   id, ponum, siteid, revisionnum, status, description, vendor_id, vendor_name,
   total_cost, currency, ab_ahorro, ab_tipocomp, ab_clasfpo, requested_by,
-  department, approved_at, created_at_source, last_changed_at, last_seen_at`;
+  department, approved_at, approved_by, waiting_approval_at, created_at_source,
+  last_changed_at, last_seen_at`;
 
 const CONTRACT_LIST_COLUMNS = Prisma.sql`
   id, prnum, contractnum, revisionnum, status, maxvol, total_cost, currency,
   start_date, end_date, vendor_id, vendor_name, requested_by, department,
-  approved_at, created_at_source, contract_ref_num, contract_value,
+  approved_at, approved_by, created_at_source, contract_ref_num, contract_value,
   purchview_count, has_contract, last_changed_at, last_seen_at`;
+
+/** Tope del export (B1). */
+const EXPORT_MAX_ROWS = 20_000;
 
 /** Filas crudas del driver: numerics llegan como Prisma.Decimal. */
 type PoSqlRow = Omit<
@@ -95,14 +99,12 @@ export class MaximoRecordsService {
 
   // ── Purchase orders ─────────────────────────────────────────────────────
 
-  async listPurchaseOrders(
-    query: MaximoPoQueryDto,
-  ): Promise<PaginatedResponse<MaximoPurchaseOrderView>> {
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
-
+  /** WHERE del listado de POs (compartido con el export). */
+  private poWhere(query: MaximoPoQueryDto): Prisma.Sql {
     const conditions: Prisma.Sql[] = [];
-    if (query.status) conditions.push(Prisma.sql`c.status = ${query.status}`);
+    if (query.status && query.status.length > 0) {
+      conditions.push(Prisma.sql`c.status IN (${Prisma.join(query.status)})`);
+    }
     if (query.department)
       conditions.push(Prisma.sql`c.department = ${query.department}`);
     if (query.vendor_name)
@@ -125,9 +127,17 @@ export class MaximoRecordsService {
         Prisma.sql`(c.ponum ILIKE ${term} OR c.description ILIKE ${term})`,
       );
     }
-    const where = conditions.length
+    return conditions.length
       ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`
       : Prisma.empty;
+  }
+
+  async listPurchaseOrders(
+    query: MaximoPoQueryDto,
+  ): Promise<PaginatedResponse<MaximoPurchaseOrderView>> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const where = this.poWhere(query);
 
     const [rows, counts] = await Promise.all([
       this.prisma.$queryRaw<PoSqlRow[]>(Prisma.sql`
@@ -145,6 +155,44 @@ export class MaximoRecordsService {
     return {
       data: rows.map((row) => this.mapPoRow(row)),
       meta: buildMeta(counts[0]?.count ?? 0, page, limit),
+    };
+  }
+
+  /** Export (B1): mismos filtros que el listado, sin paginar, con tope. */
+  async listPurchaseOrdersForExport(
+    query: MaximoPoQueryDto,
+  ): Promise<{ rows: MaximoPurchaseOrderView[]; truncated: boolean }> {
+    const where = this.poWhere(query);
+    const rows = await this.prisma.$queryRaw<PoSqlRow[]>(Prisma.sql`
+        WITH current AS (${CURRENT_POS})
+        SELECT ${PO_LIST_COLUMNS}
+        FROM current c
+        ${where}
+        ORDER BY c.approved_at DESC NULLS LAST, c.ponum ASC
+        LIMIT ${EXPORT_MAX_ROWS + 1}`);
+    return {
+      rows: rows.slice(0, EXPORT_MAX_ROWS).map((row) => this.mapPoRow(row)),
+      truncated: rows.length > EXPORT_MAX_ROWS,
+    };
+  }
+
+  async listContractsForExport(
+    query: MaximoContractQueryDto,
+  ): Promise<{ rows: MaximoContractView[]; truncated: boolean }> {
+    const where = this.contractWhere(query);
+    const rows = await this.prisma.$queryRaw<ContractSqlRow[]>(Prisma.sql`
+        WITH current AS (${CURRENT_CONTRACTS})
+        SELECT ${CONTRACT_LIST_COLUMNS}
+        FROM current c
+        ${where}
+        ORDER BY c.end_date DESC NULLS LAST,
+          coalesce(c.prnum, '') ASC, coalesce(c.contractnum, '') ASC
+        LIMIT ${EXPORT_MAX_ROWS + 1}`);
+    return {
+      rows: rows
+        .slice(0, EXPORT_MAX_ROWS)
+        .map((row) => this.mapContractRow(row)),
+      truncated: rows.length > EXPORT_MAX_ROWS,
     };
   }
 
@@ -181,14 +229,12 @@ export class MaximoRecordsService {
 
   // ── Contracts ───────────────────────────────────────────────────────────
 
-  async listContracts(
-    query: MaximoContractQueryDto,
-  ): Promise<PaginatedResponse<MaximoContractView>> {
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
-
+  /** WHERE del listado de contratos (compartido con el export). */
+  private contractWhere(query: MaximoContractQueryDto): Prisma.Sql {
     const conditions: Prisma.Sql[] = [];
-    if (query.status) conditions.push(Prisma.sql`c.status = ${query.status}`);
+    if (query.status && query.status.length > 0) {
+      conditions.push(Prisma.sql`c.status IN (${Prisma.join(query.status)})`);
+    }
     if (query.has_contract)
       conditions.push(
         Prisma.sql`c.has_contract = ${query.has_contract === 'true'}`,
@@ -209,9 +255,17 @@ export class MaximoRecordsService {
         Prisma.sql`(c.prnum ILIKE ${term} OR c.contractnum ILIKE ${term} OR c.vendor_name ILIKE ${term})`,
       );
     }
-    const where = conditions.length
+    return conditions.length
       ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`
       : Prisma.empty;
+  }
+
+  async listContracts(
+    query: MaximoContractQueryDto,
+  ): Promise<PaginatedResponse<MaximoContractView>> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const where = this.contractWhere(query);
 
     const [rows, counts] = await Promise.all([
       this.prisma.$queryRaw<ContractSqlRow[]>(Prisma.sql`
@@ -379,6 +433,8 @@ export class MaximoRecordsService {
       requested_by: row.requested_by,
       department: row.department,
       approved_at: row.approved_at,
+      approved_by: row.approved_by,
+      waiting_approval_at: row.waiting_approval_at,
       created_at_source: row.created_at_source,
       last_changed_at: row.last_changed_at,
       last_seen_at: row.last_seen_at,
@@ -402,6 +458,7 @@ export class MaximoRecordsService {
       requested_by: row.requested_by,
       department: row.department,
       approved_at: row.approved_at,
+      approved_by: row.approved_by,
       created_at_source: row.created_at_source,
       contract_ref_num: row.contract_ref_num,
       contract_value: toNumber(row.contract_value),

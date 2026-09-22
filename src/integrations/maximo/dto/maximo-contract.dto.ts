@@ -83,6 +83,8 @@ export interface MaximoContractDto {
   createdDateRule: 'WAPPR' | null;
   /** Primera CONTRACTSTATUS con STATUS=APPR literal (APPR1..4 no cuentan, ver arriba). */
   approvedDate: string | null;
+  /** CHANGEBY del primer CONTRACTSTATUS=APPR (quién aprobó); null si nunca. */
+  approvedBy: string | null;
 
   vendor: MaximoVendorDto | null;
   lines: MaximoContractLineDto[];
