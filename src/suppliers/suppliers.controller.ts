@@ -8,7 +8,15 @@ import {
   Body,
   Query,
   ParseUUIDPipe,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
+import {
+  buildExcel,
+  excelFilename,
+  sendExcel,
+} from '../common/utils/excel-export.util';
+import type { ExcelColumn } from '../common/utils/excel-export.util';
 import { SuppliersService } from './suppliers.service';
 import { SupplierSapMirrorService } from './supplier-sap-mirror.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
@@ -21,6 +29,50 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 // van SIN @Roles = cualquier autenticado (precedente §15 Contratos); las
 // mutaciones conservan roles estrictos.
 const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
+
+type SupplierExportRow = Awaited<
+  ReturnType<SuppliersService['findAllForExport']>
+>['rows'][number];
+
+/** Columnas del export = tabla de /compras/proveedores (B1). */
+const SUPPLIER_COLUMNS: ExcelColumn<SupplierExportRow>[] = [
+  { header: 'Razón social', value: (r) => r.legal_name, width: 40 },
+  { header: 'Nombre comercial', value: (r) => r.commercial_name, width: 30 },
+  { header: 'RFC', value: (r) => r.tax_id, width: 18 },
+  {
+    header: 'Origen',
+    value: (r) => (r.source === 'sap' ? 'SAP' : 'ABENT'),
+    width: 10,
+  },
+  { header: 'Código SAP', value: (r) => r.external_id, width: 12 },
+  { header: 'Contacto', value: (r) => r.contact_name, width: 24 },
+  { header: 'Email', value: (r) => r.contact_email ?? r.email, width: 28 },
+  { header: 'Teléfono', value: (r) => r.contact_phone ?? r.phone, width: 16 },
+  {
+    header: 'Moneda',
+    value: (r) => (r.currency === '##' ? 'Multi' : r.currency),
+    width: 10,
+  },
+  {
+    header: 'Puntuación',
+    value: (r) =>
+      r.performance_score === null ? null : Number(r.performance_score),
+    kind: 'int',
+    width: 12,
+  },
+  {
+    header: 'Estado ABENT',
+    value: (r) => (r.is_blocked ? 'Bloqueado' : 'Activo'),
+    width: 14,
+  },
+  {
+    header: 'Inactivo en SAP',
+    value: (r) =>
+      r.sap_valid === false ? 'Sí' : r.sap_valid === null ? '' : 'No',
+    width: 14,
+  },
+  { header: 'Motivo bloqueo', value: (r) => r.blocked_reason, width: 30 },
+];
 
 @Controller('suppliers')
 export class SuppliersController {
@@ -37,6 +89,27 @@ export class SuppliersController {
   @Post('sap-mirror')
   runSapMirror() {
     return this.sapMirror.runMirror();
+  }
+
+  // Export Excel (B1): mismos filtros que el listado; ruta literal antes de ':id'.
+  @Get('export')
+  async exportExcel(
+    @Query() pagination: PaginationDto,
+    @Res() res: Response,
+    @Query('is_blocked') isBlocked?: string,
+    @Query('min_score') minScore?: string,
+  ) {
+    const { rows, truncated } = await this.service.findAllForExport(
+      pagination,
+      {
+        is_blocked: isBlocked !== undefined ? isBlocked === 'true' : undefined,
+        min_score: minScore ? parseInt(minScore, 10) : undefined,
+      },
+    );
+    const buffer = await buildExcel('Proveedores', SUPPLIER_COLUMNS, rows, {
+      truncated,
+    });
+    sendExcel(res, buffer, excelFilename('proveedores'));
   }
 
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").

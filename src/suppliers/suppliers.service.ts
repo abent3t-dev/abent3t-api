@@ -6,6 +6,9 @@ import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 
+/** Tope del export (B1). */
+const SUPPLIERS_EXPORT_MAX = 20_000;
+
 @Injectable()
 export class SuppliersService extends BaseCrudPrismaService<
   CreateSupplierDto,
@@ -27,14 +30,11 @@ export class SuppliersService extends BaseCrudPrismaService<
     super(prisma);
   }
 
-  async findAllFiltered(
+  /** WHERE del listado filtrado (compartido con el export, B1). */
+  private filteredWhere(
     pagination: PaginationDto,
     filters?: { is_blocked?: boolean; min_score?: number },
-  ) {
-    const page = pagination.page ?? 1;
-    const limit = pagination.limit ?? 20;
-    const skip = (page - 1) * limit;
-
+  ): Prisma.suppliersWhereInput {
     const where: Prisma.suppliersWhereInput = { is_active: true };
     if (filters?.is_blocked !== undefined)
       where.is_blocked = filters.is_blocked;
@@ -47,6 +47,34 @@ export class SuppliersService extends BaseCrudPrismaService<
         [f]: { contains: term, mode: 'insensitive' },
       })) as Prisma.suppliersWhereInput['OR'];
     }
+    return where;
+  }
+
+  /** Export (B1): mismos filtros, sin paginar, con tope. */
+  async findAllForExport(
+    pagination: PaginationDto,
+    filters?: { is_blocked?: boolean; min_score?: number },
+  ) {
+    const where = this.filteredWhere(pagination, filters);
+    const rows = await this.prisma.suppliers.findMany({
+      where,
+      orderBy: { legal_name: 'asc' },
+      take: SUPPLIERS_EXPORT_MAX + 1,
+    });
+    return {
+      rows: rows.slice(0, SUPPLIERS_EXPORT_MAX),
+      truncated: rows.length > SUPPLIERS_EXPORT_MAX,
+    };
+  }
+
+  async findAllFiltered(
+    pagination: PaginationDto,
+    filters?: { is_blocked?: boolean; min_score?: number },
+  ) {
+    const page = pagination.page ?? 1;
+    const limit = pagination.limit ?? 20;
+    const skip = (page - 1) * limit;
+    const where = this.filteredWhere(pagination, filters);
 
     const [data, total] = await this.prisma.$transaction([
       this.prisma.suppliers.findMany({
