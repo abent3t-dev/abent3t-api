@@ -13,6 +13,20 @@ import { ReportPeriodDto } from './dto/report-period.dto';
 export class PurchaseReportsController {
   constructor(private readonly service: PurchaseReportsService) {}
 
+  // Sprint 2026-09-22 (B2): volumen y montos de SAP + Maximo por periodo.
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
+  @Get('erp')
+  getErp(@Query() query: ReportPeriodDto) {
+    return this.service.getErp(query);
+  }
+
+  // Sprint 2026-09-22 (B3): tiempos de aprobación de SAP y Maximo.
+  // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
+  @Get('tiempos-aprobacion')
+  getTiemposAprobacion() {
+    return this.service.getTiemposAprobacion();
+  }
+
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('resumen')
   getResumen(@Query() query: ReportPeriodDto) {

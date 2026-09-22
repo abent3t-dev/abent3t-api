@@ -559,6 +559,270 @@ export class PurchaseReportsService {
     };
   }
 
+  // ── SAP + Maximo por periodo (sprint 2026-09-22, B2) ────────────────────
+
+  /**
+   * Volumen, estatus y montos POR MONEDA de los dos ERPs en el periodo (SAP
+   * por doc_date; Maximo OC por created_at_source y contratos por
+   * start_date). Nada se suma entre monedas ni entre fuentes.
+   */
+  async getErp(dto: ReportPeriodDto) {
+    const period = this.resolvePeriod(dto);
+    type MonthAmount = {
+      month: Date | null;
+      currency: string | null;
+      count: number;
+      monto: unknown;
+    };
+    type StatusRow = { status: string | null; count: number };
+    type VendorRow = {
+      proveedor: string | null;
+      currency: string | null;
+      count: number;
+      monto: unknown;
+    };
+    const [
+      sapPoSerie,
+      sapPrSerie,
+      sapPoStatus,
+      sapPrStatus,
+      sapTop,
+      maximoPoSerie,
+      maximoPoStatus,
+      maximoContractStatus,
+      maximoTop,
+    ] = await Promise.all([
+      this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
+        SELECT date_trunc('month', doc_date) AS month, currency, count(*)::int AS count,
+               coalesce(sum(doc_total), 0) AS monto
+        FROM sap_purchase_orders
+        WHERE cancelled IS DISTINCT FROM true
+          AND doc_date BETWEEN ${period.from} AND ${period.to}
+        GROUP BY 1, 2 ORDER BY 1`),
+      this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
+        SELECT date_trunc('month', doc_date) AS month, currency, count(*)::int AS count,
+               coalesce(sum(doc_total), 0) AS monto
+        FROM sap_purchase_requests
+        WHERE cancelled IS DISTINCT FROM true
+          AND doc_date BETWEEN ${period.from} AND ${period.to}
+        GROUP BY 1, 2 ORDER BY 1`),
+      this.prisma.$queryRaw<StatusRow[]>(Prisma.sql`
+        SELECT CASE WHEN cancelled = true THEN 'cancelled'
+                    WHEN document_status = 'bost_Open' THEN 'open'
+                    WHEN document_status = 'bost_Close' THEN 'close'
+                    ELSE coalesce(document_status, 'sin_estatus') END AS status,
+               count(*)::int AS count
+        FROM sap_purchase_orders
+        WHERE doc_date BETWEEN ${period.from} AND ${period.to}
+        GROUP BY 1 ORDER BY count DESC`),
+      this.prisma.$queryRaw<StatusRow[]>(Prisma.sql`
+        SELECT CASE WHEN cancelled = true THEN 'cancelled'
+                    WHEN document_status = 'bost_Open' THEN 'open'
+                    WHEN document_status = 'bost_Close' THEN 'close'
+                    ELSE coalesce(document_status, 'sin_estatus') END AS status,
+               count(*)::int AS count
+        FROM sap_purchase_requests
+        WHERE doc_date BETWEEN ${period.from} AND ${period.to}
+        GROUP BY 1 ORDER BY count DESC`),
+      this.prisma.$queryRaw<VendorRow[]>(Prisma.sql`
+        SELECT card_name AS proveedor, currency, count(*)::int AS count,
+               coalesce(sum(doc_total), 0) AS monto
+        FROM sap_purchase_orders
+        WHERE cancelled IS DISTINCT FROM true
+          AND doc_date BETWEEN ${period.from} AND ${period.to}
+        GROUP BY card_name, currency ORDER BY monto DESC LIMIT 10`),
+      this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
+        WITH current AS (${CURRENT_MAXIMO_POS})
+        SELECT date_trunc('month', created_at_source) AS month, currency, count(*)::int AS count,
+               coalesce(sum(total_cost), 0) AS monto
+        FROM current
+        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
+          AND created_at_source BETWEEN ${period.from} AND ${period.to}
+        GROUP BY 1, 2 ORDER BY 1`),
+      this.prisma.$queryRaw<StatusRow[]>(Prisma.sql`
+        WITH current AS (${CURRENT_MAXIMO_POS})
+        SELECT coalesce(status, 'sin_estatus') AS status, count(*)::int AS count
+        FROM current
+        WHERE created_at_source IS NULL
+           OR created_at_source BETWEEN ${period.from} AND ${period.to}
+        GROUP BY 1 ORDER BY count DESC`),
+      this.prisma.$queryRaw<StatusRow[]>(Prisma.sql`
+        WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
+        SELECT coalesce(status, 'sin_estatus') AS status, count(*)::int AS count
+        FROM current
+        WHERE start_date IS NULL OR start_date BETWEEN ${period.from} AND ${period.to}
+        GROUP BY 1 ORDER BY count DESC`),
+      this.prisma.$queryRaw<VendorRow[]>(Prisma.sql`
+        WITH current AS (${CURRENT_MAXIMO_POS})
+        SELECT vendor_name AS proveedor, currency, count(*)::int AS count,
+               coalesce(sum(total_cost), 0) AS monto
+        FROM current
+        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL') AND vendor_name IS NOT NULL
+          AND created_at_source BETWEEN ${period.from} AND ${period.to}
+        GROUP BY vendor_name, currency ORDER BY monto DESC LIMIT 10`),
+    ]);
+
+    // Serie mensual por moneda, zero-filled dentro del periodo.
+    const serie = (rows: MonthAmount[]) => {
+      const currencies = Array.from(
+        new Set(rows.map((r) => r.currency ?? 'sin_moneda')),
+      );
+      const months = zeroFilledMonths(period);
+      const index = new Map<string, { count: number; monto: number }>();
+      for (const r of rows) {
+        if (!r.month) continue;
+        index.set(`${monthKey(r.month)}|${r.currency ?? 'sin_moneda'}`, {
+          count: Number(r.count),
+          monto: toNumber(r.monto) ?? 0,
+        });
+      }
+      return {
+        monedas: currencies,
+        meses: months.map((month) => ({
+          month,
+          count: currencies.reduce(
+            (sum, c) => sum + (index.get(`${month}|${c}`)?.count ?? 0),
+            0,
+          ),
+          por_moneda: currencies.map((currency) => ({
+            currency,
+            count: index.get(`${month}|${currency}`)?.count ?? 0,
+            monto: index.get(`${month}|${currency}`)?.monto ?? 0,
+          })),
+        })),
+      };
+    };
+    const vendors = (rows: VendorRow[]) =>
+      rows.map((r) => ({
+        proveedor: r.proveedor ?? 'Sin proveedor',
+        currency: r.currency,
+        count: Number(r.count),
+        monto: toNumber(r.monto) ?? 0,
+      }));
+
+    return {
+      periodo: this.periodOut(period),
+      sap: {
+        ordenes: { serie_mensual: serie(sapPoSerie), por_estatus: sapPoStatus },
+        solicitudes: {
+          serie_mensual: serie(sapPrSerie),
+          por_estatus: sapPrStatus,
+        },
+        top_proveedores: vendors(sapTop),
+      },
+      maximo: {
+        ordenes: {
+          serie_mensual: serie(maximoPoSerie),
+          por_estatus: maximoPoStatus,
+        },
+        contratos: { por_estatus: maximoContractStatus },
+        top_proveedores: vendors(maximoTop),
+      },
+      generated_at: new Date().toISOString(),
+    };
+  }
+
+  // ── Tiempos de aprobación SAP + Maximo (sprint 2026-09-22, B3) ──────────
+
+  /**
+   * Maximo: OC = approved_at − waiting_approval_at (primer WAPPR; fallback
+   * created_at_source), por aprobador = CHANGEBY del primer APPR; contratos
+   * = approved_at − created_at_source. SAP: desde la cola de autorización
+   * (B5): solicitudes aprobadas = fecha de la última decisión − creación; por
+   * aprobador = líneas ardApproved. null = sin base (nunca 0).
+   */
+  async getTiemposAprobacion() {
+    type AvgRow = { dias: unknown; total: number };
+    type ByRow = { aprobador: string | null; dias: unknown; total: number };
+    const [maximoPo, maximoPoBy, maximoContracts, sapAll, sapBy, sapPending] =
+      await Promise.all([
+        this.prisma.$queryRaw<AvgRow[]>(Prisma.sql`
+          WITH current AS (${CURRENT_MAXIMO_POS})
+          SELECT avg(extract(epoch FROM (approved_at - coalesce(waiting_approval_at, created_at_source))) / 86400) AS dias,
+                 count(*)::int AS total
+          FROM current
+          WHERE approved_at IS NOT NULL
+            AND coalesce(waiting_approval_at, created_at_source) IS NOT NULL
+            AND approved_at >= coalesce(waiting_approval_at, created_at_source)`),
+        this.prisma.$queryRaw<ByRow[]>(Prisma.sql`
+          WITH current AS (${CURRENT_MAXIMO_POS})
+          SELECT approved_by AS aprobador,
+                 avg(extract(epoch FROM (approved_at - coalesce(waiting_approval_at, created_at_source))) / 86400) AS dias,
+                 count(*)::int AS total
+          FROM current
+          WHERE approved_at IS NOT NULL AND approved_by IS NOT NULL
+            AND coalesce(waiting_approval_at, created_at_source) IS NOT NULL
+            AND approved_at >= coalesce(waiting_approval_at, created_at_source)
+          GROUP BY approved_by ORDER BY total DESC LIMIT 15`),
+        this.prisma.$queryRaw<AvgRow[]>(Prisma.sql`
+          WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
+          SELECT avg(extract(epoch FROM (approved_at - created_at_source)) / 86400) AS dias,
+                 count(*)::int AS total
+          FROM current
+          WHERE approved_at IS NOT NULL AND created_at_source IS NOT NULL
+            AND approved_at >= created_at_source`),
+        this.prisma.$queryRaw<AvgRow[]>(Prisma.sql`
+          SELECT avg(extract(epoch FROM (d.decided_at - r.creation_date)) / 86400) AS dias,
+                 count(*)::int AS total
+          FROM sap_approval_requests r
+          JOIN LATERAL (
+            SELECT max((a->>'update_date')::timestamptz) AS decided_at
+            FROM jsonb_array_elements(coalesce(r.approvers, '[]'::jsonb)) a
+            WHERE a->>'status' = 'ardApproved'
+          ) d ON true
+          WHERE r.status = 'arsApproved' AND r.creation_date IS NOT NULL
+            AND d.decided_at IS NOT NULL AND d.decided_at >= r.creation_date`),
+        this.prisma.$queryRaw<ByRow[]>(Prisma.sql`
+          SELECT a->>'user_name' AS aprobador,
+                 avg(extract(epoch FROM ((a->>'update_date')::timestamptz - r.creation_date)) / 86400) AS dias,
+                 count(*)::int AS total
+          FROM sap_approval_requests r,
+               jsonb_array_elements(coalesce(r.approvers, '[]'::jsonb)) a
+          WHERE a->>'status' = 'ardApproved' AND r.creation_date IS NOT NULL
+            AND (a->>'update_date') IS NOT NULL
+            AND (a->>'update_date')::timestamptz >= r.creation_date
+          GROUP BY 1 ORDER BY total DESC LIMIT 15`),
+        this.prisma.$queryRaw<
+          Array<{ total: number; dias: unknown }>
+        >(Prisma.sql`
+          SELECT count(*)::int AS total,
+                 avg(extract(epoch FROM (now() - creation_date)) / 86400) AS dias
+          FROM sap_approval_requests WHERE status = 'arsPending'`),
+      ]);
+    const avg = (rows: AvgRow[]) => {
+      const v = toNumber(rows[0]?.dias);
+      return {
+        promedio_dias: v === null ? null : Math.round(v * 10) / 10,
+        total: Number(rows[0]?.total ?? 0),
+      };
+    };
+    const by = (rows: ByRow[]) =>
+      rows.map((r) => ({
+        aprobador: r.aprobador ?? 'Sin nombre',
+        promedio_dias: Math.round((toNumber(r.dias) ?? 0) * 10) / 10,
+        total: Number(r.total),
+      }));
+    return {
+      maximo: {
+        ordenes: avg(maximoPo),
+        ordenes_por_aprobador: by(maximoPoBy),
+        contratos: avg(maximoContracts),
+      },
+      sap: {
+        solicitudes_autorizadas: avg(sapAll),
+        por_aprobador: by(sapBy),
+        pendientes: {
+          total: Number(sapPending[0]?.total ?? 0),
+          dias_esperando_promedio:
+            toNumber(sapPending[0]?.dias) === null
+              ? null
+              : Math.round(Number(sapPending[0]?.dias) * 10) / 10,
+        },
+      },
+      generated_at: new Date().toISOString(),
+    };
+  }
+
   // ── Ahorro por FUENTE (T10: nunca sumado entre fuentes) ────────────────
 
   async getAhorro(dto: ReportPeriodDto) {
@@ -578,9 +842,41 @@ export class PurchaseReportsService {
       WITH current AS (${CURRENT_MAXIMO_POS})
       SELECT count(*)::int AS count FROM current WHERE ab_ahorro IS NULL`);
 
+    const sap = await this.prisma.$queryRaw<
+      Array<{
+        currency: string | null;
+        total: unknown;
+        docs: number;
+        lines_total: number;
+        lines_classified: number;
+      }>
+    >(Prisma.sql`
+      SELECT currency, coalesce(sum(ahorro_total), 0) AS total,
+             count(*) FILTER (WHERE ahorro_total IS NOT NULL)::int AS docs,
+             coalesce(sum(lines_total), 0)::int AS lines_total,
+             coalesce(sum(lines_classified), 0)::int AS lines_classified
+      FROM sap_purchase_orders
+      WHERE cancelled IS DISTINCT FROM true
+        AND doc_date BETWEEN ${period.from} AND ${period.to}
+      GROUP BY currency ORDER BY total DESC`);
+
     return {
       periodo: this.periodOut(period),
       // T10: fuentes separadas, NO sumables entre sí (ni entre monedas)
+      sap: {
+        // T10: sin documentos con ahorro capturado el total es null, no 0
+        por_moneda: sap.map((row) => ({
+          currency: row.currency ?? 'sin_moneda',
+          total: Number(row.docs) === 0 ? null : (toNumber(row.total) ?? 0),
+          documentos_con_ahorro: Number(row.docs),
+        })),
+        lineas_total: sap.reduce((s, r) => s + Number(r.lines_total), 0),
+        lineas_clasificadas: sap.reduce(
+          (s, r) => s + Number(r.lines_classified),
+          0,
+        ),
+        nota: 'Captura de U_Imp_ahorro en marcha desde 2026-09-15 (incremental)',
+      },
       abent: {
         disponible: false,
         motivo:
