@@ -1,10 +1,28 @@
-import { IsString, IsOptional, IsUUID, IsDateString, IsIn } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsUUID,
+  IsDateString,
+  IsIn,
+} from 'class-validator';
+import { Transform } from 'class-transformer';
+import { toStatusList } from '../../sap-records/dto/sap-doc-query.dto';
+
+export const REQUISITION_STATUSES = [
+  'cancelada',
+  'cerrada',
+  'en_progreso',
+  'en_revision',
+  'en_aprobacion',
+  'aprobada',
+] as const;
 
 export class FilterRequisitionDto {
-  @IsString()
-  @IsIn(['cancelada', 'cerrada', 'en_progreso', 'en_revision', 'en_aprobacion', 'aprobada'])
+  /** Uno o varios estatus separados por coma (A5: multi-selección). */
+  @Transform(({ value }) => toStatusList(value))
+  @IsIn(REQUISITION_STATUSES, { each: true })
   @IsOptional()
-  status?: string;
+  status?: string[];
 
   @IsString()
   @IsIn(['CAPEX', 'OPEX'])

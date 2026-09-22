@@ -28,7 +28,7 @@ export class PurchaseOrdersController {
   @Get()
   findAll(
     @Query() pagination: PaginationDto,
-    @Query('status') status?: POStatus,
+    @Query('status') status?: string,
     @Query('supplier_id') supplierId?: string,
     @Query('purchase_type_id') purchaseTypeId?: string,
     @Query('expense_type') expenseType?: string,
@@ -36,7 +36,13 @@ export class PurchaseOrdersController {
     @Query('date_to') dateTo?: string,
   ) {
     return this.service.findAll(pagination, {
-      status,
+      // A5: uno o varios estatus separados por coma
+      status: status
+        ? (status
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean) as POStatus[])
+        : undefined,
       supplier_id: supplierId,
       purchase_type_id: purchaseTypeId,
       expense_type: expenseType,

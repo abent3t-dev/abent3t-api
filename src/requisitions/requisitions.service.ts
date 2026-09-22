@@ -71,7 +71,9 @@ export class RequisitionsService {
 
     const where: Prisma.requisitionsWhereInput = { is_active: true };
     if (filters?.status)
-      where.status = filters.status as Prisma.requisitionsWhereInput['status'];
+      where.status = {
+        in: filters.status,
+      } as Prisma.requisitionsWhereInput['status'];
     if (filters?.expense_type)
       where.expense_type = filters.expense_type as Prisma.requisitionsWhereInput['expense_type'];
     if (filters?.buyer_id) where.buyer_id = filters.buyer_id;

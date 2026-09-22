@@ -78,7 +78,7 @@ export class PurchaseOrdersService {
   async findAll(
     pagination: PaginationDto,
     filters?: {
-      status?: POStatus;
+      status?: POStatus[];
       supplier_id?: string;
       purchase_type_id?: string;
       expense_type?: string;
@@ -91,9 +91,10 @@ export class PurchaseOrdersService {
     const skip = (page - 1) * limit;
 
     const where: Prisma.purchase_ordersWhereInput = { is_active: true };
-    if (filters?.status)
-      where.status =
-        filters.status as Prisma.purchase_ordersWhereInput['status'];
+    if (filters?.status && filters.status.length > 0)
+      where.status = {
+        in: filters.status,
+      } as Prisma.purchase_ordersWhereInput['status'];
     if (filters?.supplier_id) where.supplier_id = filters.supplier_id;
     if (filters?.purchase_type_id)
       where.purchase_type_id = filters.purchase_type_id;
