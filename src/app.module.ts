@@ -61,6 +61,7 @@ import { SapModule } from './integrations/sap/sap.module';
 import { SapSyncModule } from './integrations/sap/sync/sap-sync.module';
 // Fase INT-4: lectura de dominio sobre el staging de SAP (GET /sap/*)
 import { SapRecordsModule } from './sap-records/sap-records.module';
+import { PurchaseDashboardModule } from './purchase-dashboard/purchase-dashboard.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import {
@@ -152,6 +153,7 @@ import {
     // Fase INT-4: lectura de dominio del staging SAP (GET /sap/*),
     // sin dependencia de integrations/ y sin escrituras.
     SapRecordsModule,
+    PurchaseDashboardModule,
   ],
   controllers: [AppController],
   providers: [
