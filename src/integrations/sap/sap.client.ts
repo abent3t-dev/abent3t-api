@@ -49,6 +49,11 @@ const PO_SELECT = [
   'DocTotal',
   'DocCurrency',
   'DocumentStatus',
+  'Cancelled',
+  'CancelStatus',
+  'AuthorizationStatus',
+  'Confirmed',
+  'ClosingDate',
   'Comments',
   'DocumentLines',
 ].join(',');
@@ -61,11 +66,35 @@ const PR_SELECT = [
   'RequriedDate', // sic: así se llama el campo en SAP
   'UpdateDate',
   'DocumentStatus',
+  'Cancelled',
+  'CancelStatus',
+  'AuthorizationStatus',
+  'Confirmed',
+  'ClosingDate',
   'Comments',
   'Requester',
   'RequesterName',
   'DocumentLines',
 ].join(',');
+
+/** Drafts sin DocumentLines (validado 2026-09-22: el $select reducido funciona). */
+const DRAFT_SELECT = [
+  'DocEntry',
+  'DocNum',
+  'DocDate',
+  'DocObjectCode',
+  'DocumentStatus',
+  'AuthorizationStatus',
+  'Requester',
+  'RequesterName',
+  'CardName',
+  'DocTotal',
+  'DocCurrency',
+  'Comments',
+].join(',');
+
+/** Tope de páginas al leer catálogos completos (Users/Stages/Templates/Drafts). */
+const CATALOG_MAX_PAGES = 200;
 
 const BP_SELECT = [
   'CardCode',
@@ -143,6 +172,82 @@ export class SapClient {
     }
     const { raw, http } = await this.getCollection(path);
     return { records: raw.map(toSapBusinessPartner), raw, http };
+  }
+
+  // ── Cola de autorización (B5) ──────────────────────────────────────────
+
+  /** Solicitudes de autorización paginadas por Code (no tienen UpdateDate). */
+  async fetchApprovalRequests(params: {
+    top: number;
+    skip: number;
+  }): Promise<{ raw: unknown[]; http: SapFetchResult<never>['http'] }> {
+    const path = `ApprovalRequests?$orderby=Code&$top=${params.top}&$skip=${params.skip}`;
+    return this.getCollection(path);
+  }
+
+  async countApprovalRequests(): Promise<number> {
+    const response = await this.getWithSession<string>(
+      'ApprovalRequests/$count',
+      { parseAs: 'text' },
+    );
+    const parsed = Number(String(response.data).trim());
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      throw new SapResponseShapeError(
+        '$count de ApprovalRequests no devolvió un entero',
+      );
+    }
+    return parsed;
+  }
+
+  /** Borradores (slim) completos, para enlazar DraftEntry → datos. */
+  fetchAllDraftsSlim(pageSize: number): Promise<unknown[]> {
+    return this.fetchAll(
+      `Drafts?$select=${DRAFT_SELECT}&$orderby=DocEntry`,
+      pageSize,
+    );
+  }
+
+  fetchAllUsers(pageSize: number): Promise<unknown[]> {
+    return this.fetchAll(
+      'Users?$select=InternalKey,UserCode,UserName&$orderby=InternalKey',
+      pageSize,
+    );
+  }
+
+  fetchAllApprovalStages(pageSize: number): Promise<unknown[]> {
+    return this.fetchAll(
+      'ApprovalStages?$select=Code,Name&$orderby=Code',
+      pageSize,
+    );
+  }
+
+  fetchAllApprovalTemplates(pageSize: number): Promise<unknown[]> {
+    return this.fetchAll(
+      'ApprovalTemplates?$select=Code,Name&$orderby=Code',
+      pageSize,
+    );
+  }
+
+  /**
+   * Lee una colección completa tolerando el server-cap del Service Layer
+   * ($top acotado a PageSize): avanza lo recibido y termina solo en página
+   * vacía. Solo para catálogos chicos (cientos de filas).
+   */
+  private async fetchAll(
+    basePath: string,
+    pageSize: number,
+  ): Promise<unknown[]> {
+    const out: unknown[] = [];
+    let skip = 0;
+    for (let guard = 0; guard < CATALOG_MAX_PAGES; guard++) {
+      const { raw } = await this.getCollection(
+        `${basePath}&$top=${pageSize}&$skip=${skip}`,
+      );
+      if (raw.length === 0) break;
+      out.push(...raw);
+      skip += raw.length;
+    }
+    return out;
   }
 
   async countPurchaseOrders(updatedSince?: Date): Promise<number> {

@@ -76,6 +76,9 @@ export class SapSyncScheduler implements OnApplicationBootstrap {
     await this.run('business_partners', () =>
       this.syncService.syncBusinessPartners('cron'),
     );
+    await this.run('approval_requests', () =>
+      this.syncService.syncApprovalRequests('cron'),
+    );
   }
 
   private async run(

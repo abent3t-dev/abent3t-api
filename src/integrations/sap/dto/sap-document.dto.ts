@@ -29,6 +29,12 @@ interface SapDocumentBaseDto {
   docDueDate: string | null;
   updateDate: string | null;
   documentStatus: string | null;
+  /** `Cancelled` de SAP (tYES/tNO): true = cancelada (sprint 2026-09-22, A6). */
+  cancelled: boolean | null;
+  cancelStatus: string | null;
+  authorizationStatus: string | null;
+  confirmed: boolean | null;
+  closingDate: string | null;
   comments: string | null;
   lines: SapDocumentLineDto[];
   /** Total de líneas del documento. */
@@ -75,4 +81,62 @@ export interface SapBusinessPartnerDto {
   sapValid: boolean | null;
   sapFrozen: boolean | null;
   updateDate: string | null;
+}
+
+// ── Cola de autorización (B5) ────────────────────────────────────────────────
+
+export interface SapApprovalLineDto {
+  stageCode: number | null;
+  stageName: string | null;
+  userId: number | null;
+  userName: string | null;
+  status: string | null;
+  updateDate: string | null;
+}
+
+/** Catálogos de SAP que enriquecen cada solicitud de autorización. */
+export interface SapApprovalCatalogs {
+  /** Drafts.DocEntry → borrador (slim). */
+  drafts: Map<number, SapRawDraftSlimLike>;
+  /** Users.InternalKey → UserName. */
+  users: Map<number, string>;
+  /** ApprovalStages.Code → Name. */
+  stages: Map<number, string>;
+  /** ApprovalTemplates.Code → Name. */
+  templates: Map<number, string>;
+}
+
+export interface SapRawDraftSlimLike {
+  DocNum?: unknown;
+  DocDate?: unknown;
+  DocTotal?: unknown;
+  DocCurrency?: unknown;
+  CardName?: unknown;
+  RequesterName?: unknown;
+  DocObjectCode?: unknown;
+}
+
+export interface SapApprovalRequestDto {
+  code: number;
+  approvalTemplateId: number | null;
+  templateName: string | null;
+  objectType: string | null;
+  isDraft: boolean | null;
+  draftEntry: number | null;
+  draftType: string | null;
+  objectEntry: number | null;
+  status: string | null;
+  remarks: string | null;
+  currentStage: number | null;
+  currentStageName: string | null;
+  originatorId: number | null;
+  originatorName: string | null;
+  creationDate: string | null;
+  docNum: number | null;
+  docDate: string | null;
+  docTotal: number | null;
+  currency: string | null;
+  cardName: string | null;
+  requesterName: string | null;
+  approvers: SapApprovalLineDto[];
 }

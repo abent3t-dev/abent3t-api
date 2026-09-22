@@ -1,11 +1,16 @@
 import { createHash } from 'node:crypto';
 import {
+  SapApprovalCatalogs,
+  SapApprovalLineDto,
+  SapApprovalRequestDto,
   SapBusinessPartnerDto,
   SapDocumentLineDto,
   SapPurchaseOrderDto,
   SapPurchaseRequestDto,
 } from './dto/sap-document.dto';
 import {
+  SapRawApprovalLine,
+  SapRawApprovalRequest,
   SapRawBusinessPartner,
   SapRawDocumentLine,
   SapRawPurchaseOrder,
@@ -21,7 +26,10 @@ import { SapMappingError } from './sap.errors';
  * Subir la versión cuando cambie CUALQUIER regla de mapeo: el staging la
  * persiste por fila y permite re-mapear desde `raw` sin re-descargar.
  */
-export const SAP_MAPPER_VERSION = '1.0.0';
+// 1.1.0: Cancelled/AuthorizationStatus/ClosingDate (A6); 1.1.1: approvers en
+// snake_case (B5). Un cambio de versión fuerza el re-mapeo aunque el raw no
+// cambie (ver SapStagingService), así que basta un sync full tras desplegar.
+export const SAP_MAPPER_VERSION = '1.1.1';
 
 /**
  * Placeholder de las listas de valores de los UDF: el ERP lo trae de fábrica
@@ -42,6 +50,7 @@ export function toSapPurchaseOrder(raw: unknown): SapPurchaseOrderDto {
     docDueDate: toIsoOrNull(doc.DocDueDate),
     updateDate: toIsoOrNull(doc.UpdateDate),
     documentStatus: toTextOrNull(doc.DocumentStatus),
+    ...cancelFields(doc),
     comments: toTextOrNull(doc.Comments),
     cardCode: toTextOrNull(doc.CardCode),
     cardName: toTextOrNull(doc.CardName),
@@ -64,6 +73,7 @@ export function toSapPurchaseRequest(raw: unknown): SapPurchaseRequestDto {
     requiredDate: toIsoOrNull(doc.RequriedDate),
     updateDate: toIsoOrNull(doc.UpdateDate),
     documentStatus: toTextOrNull(doc.DocumentStatus),
+    ...cancelFields(doc),
     comments: toTextOrNull(doc.Comments),
     requester: toTextOrNull(doc.Requester),
     requesterName: toTextOrNull(doc.RequesterName),
@@ -99,6 +109,73 @@ export function toSapBusinessPartner(raw: unknown): SapBusinessPartnerDto {
 }
 
 /**
+ * Solicitud de autorización (B5) enriquecida con catálogos: nombres de
+ * usuario/etapa/plantilla y datos del borrador. Sin catálogo → null (nunca
+ * se inventa). `raw` que se persiste = { request, draft } para que el hash
+ * detecte cambios de cualquiera de los dos.
+ */
+export function toSapApprovalRequest(
+  raw: unknown,
+  catalogs: SapApprovalCatalogs,
+): SapApprovalRequestDto {
+  const req = asRecord(raw, 'ApprovalRequests') as SapRawApprovalRequest;
+  const code = toIntOrNull(req.Code);
+  if (code === null) {
+    throw new SapMappingError('Code ausente o no numérico', 'Code');
+  }
+  const draftEntry = toIntOrNull(req.DraftEntry);
+  const draft =
+    draftEntry === null ? undefined : catalogs.drafts.get(draftEntry);
+  const templateId = toIntOrNull(req.ApprovalTemplatesID);
+  const stage = toIntOrNull(req.CurrentStage);
+  const originatorId = toIntOrNull(req.OriginatorID);
+  const lines = Array.isArray(req.ApprovalRequestLines)
+    ? req.ApprovalRequestLines
+    : [];
+  const approvers: SapApprovalLineDto[] = lines.map((entry) => {
+    const line = (isRecord(entry) ? entry : {}) as SapRawApprovalLine;
+    const stageCode = toIntOrNull(line.StageCode);
+    const userId = toIntOrNull(line.UserID);
+    return {
+      stageCode,
+      stageName:
+        stageCode === null ? null : (catalogs.stages.get(stageCode) ?? null),
+      userId,
+      userName: userId === null ? null : (catalogs.users.get(userId) ?? null),
+      status: toTextOrNull(line.Status),
+      updateDate: toIsoOrNull(line.UpdateDate),
+    };
+  });
+  return {
+    code,
+    approvalTemplateId: templateId,
+    templateName:
+      templateId === null ? null : (catalogs.templates.get(templateId) ?? null),
+    objectType: toTextOrNull(req.ObjectType),
+    isDraft: toYnOrNull(req.IsDraft),
+    draftEntry,
+    draftType: toTextOrNull(req.DraftType),
+    objectEntry: toIntOrNull(req.ObjectEntry),
+    status: toTextOrNull(req.Status),
+    remarks: toTextOrNull(req.Remarks),
+    currentStage: stage,
+    currentStageName:
+      stage === null ? null : (catalogs.stages.get(stage) ?? null),
+    originatorId,
+    originatorName:
+      originatorId === null ? null : (catalogs.users.get(originatorId) ?? null),
+    creationDate: toIsoOrNull(req.CreationDate),
+    docNum: toIntOrNull(draft?.DocNum),
+    docDate: toIsoOrNull(draft?.DocDate),
+    docTotal: toNumberOrNull(draft?.DocTotal),
+    currency: toTextOrNull(draft?.DocCurrency),
+    cardName: toTextOrNull(draft?.CardName),
+    requesterName: toTextOrNull(draft?.RequesterName),
+    approvers,
+  };
+}
+
+/**
  * Hash estable del documento crudo (sha256 del JSON tal cual llegó) para
  * detección de cambios en staging: `UpdateDate` de SAP tiene granularidad
  * de día y no distingue dos ediciones el mismo día.
@@ -110,6 +187,32 @@ export function sapRawHash(raw: unknown): string {
 // ---------------------------------------------------------------------------
 // Helpers puros
 // ---------------------------------------------------------------------------
+
+/**
+ * Campos de cancelación/autorización/cierre (A6): SAP no distingue una
+ * cancelada por DocumentStatus (llega bost_Close) sino por `Cancelled`.
+ */
+function cancelFields(doc: {
+  Cancelled?: unknown;
+  CancelStatus?: unknown;
+  AuthorizationStatus?: unknown;
+  Confirmed?: unknown;
+  ClosingDate?: unknown;
+}): {
+  cancelled: boolean | null;
+  cancelStatus: string | null;
+  authorizationStatus: string | null;
+  confirmed: boolean | null;
+  closingDate: string | null;
+} {
+  return {
+    cancelled: toSapBoolOrNull(doc.Cancelled),
+    cancelStatus: toTextOrNull(doc.CancelStatus),
+    authorizationStatus: toTextOrNull(doc.AuthorizationStatus),
+    confirmed: toSapBoolOrNull(doc.Confirmed),
+    closingDate: toIsoOrNull(doc.ClosingDate),
+  };
+}
 
 function mapLines(rawLines: unknown): SapDocumentLineDto[] {
   if (!Array.isArray(rawLines)) return [];
@@ -204,6 +307,13 @@ function toIsoOrNull(value: unknown): string | null {
   if (typeof value !== 'string' || value.trim() === '') return null;
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? null : value;
+}
+
+/** Banderas 'Y' / 'N' (IsDraft). Cualquier otra cosa → null. */
+function toYnOrNull(value: unknown): boolean | null {
+  if (value === 'Y') return true;
+  if (value === 'N') return false;
+  return null;
 }
 
 /** Booleanos de SAP B1: 'tYES' / 'tNO'. Cualquier otra cosa → null. */

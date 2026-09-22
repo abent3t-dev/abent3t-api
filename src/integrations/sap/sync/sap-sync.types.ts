@@ -5,7 +5,8 @@
 export type SapSyncTarget =
   | 'purchase_orders'
   | 'purchase_requests'
-  | 'business_partners';
+  | 'business_partners'
+  | 'approval_requests';
 export type SapSyncTrigger = 'cron' | 'manual';
 export type SapSyncRunStatus = 'running' | 'success' | 'partial' | 'failed';
 /**
@@ -18,6 +19,7 @@ export const SAP_SYNC_TARGETS: readonly SapSyncTarget[] = [
   'purchase_orders',
   'purchase_requests',
   'business_partners',
+  'approval_requests',
 ];
 
 /** Resultado de un upsert individual de staging. */

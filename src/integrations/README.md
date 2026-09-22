@@ -285,6 +285,30 @@ esta carpeta.
    y el dashboard de Compras (tarjeta SAP y pestañas Ordenes/Solicitudes SAP).
 7. Dejar el cron (incremental cada hora). Nada de esto escribe hacia SAP.
 
+**Cola de autorización (ApprovalRequests)** — cuarto target del sync
+(`approval_requests`, migración `0011`, sprint 2026-09-22 B5): staging
+`sap_approval_requests`, una fila por `Code`. `ApprovalRequests` NO expone
+`UpdateDate`, así que la corrida es SIEMPRE full (548 filas: barato) y
+`raw` = `{ request, draft }` para que el hash detecte cambios en cualquiera
+de los dos. Al inicio de cada corrida se cargan 4 catálogos completos
+(`Drafts` con `$select` sin líneas, `Users`, `ApprovalStages`,
+`ApprovalTemplates`, todos tolerantes al server-cap de `$top`) para
+enriquecer nombres de solicitante/aprobador/etapa/plantilla y los datos del
+borrador. Los aprobadores se persisten en `approvers` (jsonb, snake_case).
+Se lee en `GET /sap/approval-requests` (pestaña "Pendientes de autorización
+(SAP)" en /compras/aprobaciones) y alimenta los tiempos de aprobación SAP de
+`GET /compras/reportes/tiempos-aprobacion`. `target: all` NO lo incluye
+(el cron sí, en cada tick); disparo manual: `{"target":"approval_requests"}`.
+
+**Campos de cancelación (A6, migración `0011`):** `Cancelled`,
+`CancelStatus`, `AuthorizationStatus`, `Confirmed` y `ClosingDate` entran al
+`$select` de OC y solicitudes (mapper `1.1.0`). SAP reporta una cancelada
+como `bost_Close` + `Cancelled=tYES`, por eso el dominio deriva el estatus
+(`status_key`: open | close | cancelled). Tras desplegar `0011` hay que
+correr un **re-sync `mode:'full'`** de `purchase_orders` y
+`purchase_requests` para poblar las columnas en lo ya sincronizado (el raw
+cambia → todas las filas se actualizan; ~2.5 min las OC en dev).
+
 ## Qué NO hacer
 
 - Agregar cualquier operación de escritura al cliente genérico ("ni solo para

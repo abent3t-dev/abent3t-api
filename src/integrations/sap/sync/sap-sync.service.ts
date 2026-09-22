@@ -10,7 +10,14 @@ import type { LoggerLike } from '../../common';
 import { SAP_LOGGER } from '../sap.config';
 import { SapClient } from '../sap.client';
 import type { SapFetchResult } from '../sap.client';
-import { SAP_MAPPER_VERSION } from '../sap.mapper';
+import { SAP_MAPPER_VERSION, toSapApprovalRequest } from '../sap.mapper';
+import type { SapApprovalCatalogs } from '../dto/sap-document.dto';
+import type {
+  SapRawApprovalStage,
+  SapRawApprovalTemplate,
+  SapRawDraftSlim,
+  SapRawUser,
+} from '../dto/sap-raw.types';
 import { SapStagingService } from './sap-staging.service';
 import { SAP_SYNC_CONFIG } from './sap-sync.config';
 import type { SapSyncConfig } from './sap-sync.config';
@@ -63,6 +70,8 @@ interface RunState extends SapSyncCounters {
   mode: SapSyncMode;
   sinceFilter: Date | null;
   errors: string[];
+  /** Solo target approval_requests: catálogos cargados al inicio (B5). */
+  catalogs?: SapApprovalCatalogs;
 }
 
 @Injectable()
@@ -143,6 +152,20 @@ export class SapSyncService implements OnModuleInit {
       trigger,
       userId,
       mode,
+    );
+    return this.process(state);
+  }
+
+  /** Cola de autorización (B5): siempre full (ApprovalRequests no tiene UpdateDate). */
+  async syncApprovalRequests(
+    trigger: SapSyncTrigger,
+    userId: string | null = null,
+  ): Promise<SapSyncRunSummary> {
+    const state = await this.beginRun(
+      'approval_requests',
+      trigger,
+      userId,
+      'full',
     );
     return this.process(state);
   }
@@ -252,6 +275,9 @@ export class SapSyncService implements OnModuleInit {
     requested?: SapSyncMode,
   ): Promise<{ mode: SapSyncMode; sinceFilter: Date | null }> {
     if (requested === 'full') return { mode: 'full', sinceFilter: null };
+    // La cola de autorización no expone UpdateDate: siempre barrido completo.
+    if (target === 'approval_requests')
+      return { mode: 'full', sinceFilter: null };
     const fullOk = await this.prisma.sap_sync_runs.findFirst({
       where: { target, mode: 'full', status: 'success' },
       select: { id: true },
@@ -305,12 +331,26 @@ export class SapSyncService implements OnModuleInit {
             ? await this.client.countPurchaseOrders(since)
             : state.target === 'purchase_requests'
               ? await this.client.countPurchaseRequests(since)
-              : await this.client.countBusinessPartners(since);
+              : state.target === 'approval_requests'
+                ? await this.client.countApprovalRequests()
+                : await this.client.countBusinessPartners(since);
         state.pagesTotal = Math.max(1, Math.ceil(total / pageSize));
       } catch (err: unknown) {
         this.logger.warn(
           `$count de ${state.target} falló (no bloqueante): ${message(err)}`,
         );
+      }
+
+      if (state.target === 'approval_requests') {
+        // Catálogos una sola vez por corrida: si fallan, la corrida falla
+        // completa (sin nombres/borradores la bandeja no sirve).
+        try {
+          state.catalogs = await this.loadApprovalCatalogs(pageSize);
+        } catch (err: unknown) {
+          this.pushError(state, `catálogos de autorización: ${message(err)}`);
+          state.pagesFailed += 1;
+          terminated = true;
+        }
       }
 
       for (let guard = 0; guard < MAX_PAGES_GUARD && !terminated; guard++) {
@@ -396,6 +436,26 @@ export class SapSyncService implements OnModuleInit {
       }
       return page;
     }
+    if (state.target === 'approval_requests') {
+      const catalogs = state.catalogs;
+      if (!catalogs) throw new Error('catálogos de autorización no cargados');
+      const page = await this.client.fetchApprovalRequests(params);
+      for (const rawRequest of page.raw) {
+        await this.upsertOne(state, () => {
+          const dto = toSapApprovalRequest(rawRequest, catalogs);
+          const draft =
+            dto.draftEntry === null
+              ? null
+              : (catalogs.drafts.get(dto.draftEntry) ?? null);
+          return this.staging.upsertApprovalRequest(
+            dto,
+            { request: rawRequest, draft },
+            state.runId,
+          );
+        });
+      }
+      return { records: page.raw, raw: page.raw, http: page.http };
+    }
     const page = await this.client.fetchBusinessPartners(params);
     for (let i = 0; i < page.records.length; i++) {
       await this.upsertOne(state, () =>
@@ -407,6 +467,54 @@ export class SapSyncService implements OnModuleInit {
       );
     }
     return page;
+  }
+
+  /** Drafts (slim) + Users + ApprovalStages + ApprovalTemplates → mapas. */
+  private async loadApprovalCatalogs(
+    pageSize: number,
+  ): Promise<SapApprovalCatalogs> {
+    const [drafts, users, stages, templates] = await Promise.all([
+      this.client.fetchAllDraftsSlim(pageSize),
+      this.client.fetchAllUsers(pageSize),
+      this.client.fetchAllApprovalStages(pageSize),
+      this.client.fetchAllApprovalTemplates(pageSize),
+    ]);
+    const intKey = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isInteger(v) ? v : null;
+    const text = (v: unknown): string | null =>
+      typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
+    const draftMap = new Map<number, SapRawDraftSlim>();
+    for (const d of drafts as SapRawDraftSlim[]) {
+      const key = intKey(d?.DocEntry);
+      if (key !== null) draftMap.set(key, d);
+    }
+    const userMap = new Map<number, string>();
+    for (const u of users as SapRawUser[]) {
+      const key = intKey(u?.InternalKey);
+      const name = text(u?.UserName) ?? text(u?.UserCode);
+      if (key !== null && name) userMap.set(key, name);
+    }
+    const stageMap = new Map<number, string>();
+    for (const s of stages as SapRawApprovalStage[]) {
+      const key = intKey(s?.Code);
+      const name = text(s?.Name);
+      if (key !== null && name) stageMap.set(key, name);
+    }
+    const templateMap = new Map<number, string>();
+    for (const t of templates as SapRawApprovalTemplate[]) {
+      const key = intKey(t?.Code);
+      const name = text(t?.Name);
+      if (key !== null && name) templateMap.set(key, name);
+    }
+    this.logger.log(
+      `catálogos de autorización: ${draftMap.size} borradores, ${userMap.size} usuarios, ${stageMap.size} etapas, ${templateMap.size} plantillas`,
+    );
+    return {
+      drafts: draftMap,
+      users: userMap,
+      stages: stageMap,
+      templates: templateMap,
+    };
   }
 
   private async upsertOne(

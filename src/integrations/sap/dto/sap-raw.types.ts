@@ -36,6 +36,12 @@ interface SapRawDocumentBase {
   DocumentStatus?: unknown;
   Comments?: unknown;
   DocumentLines?: unknown;
+  /** tYES/tNO — una cancelada llega con DocumentStatus=bost_Close. */
+  Cancelled?: unknown;
+  CancelStatus?: unknown;
+  AuthorizationStatus?: unknown;
+  Confirmed?: unknown;
+  ClosingDate?: unknown;
 }
 
 export interface SapRawPurchaseOrder extends SapRawDocumentBase {
@@ -70,4 +76,68 @@ export interface SapRawBusinessPartner {
 /** Sobre estándar de colección OData del Service Layer. */
 export interface SapRawCollection {
   value?: unknown;
+}
+
+// ── Cola de autorización (sprint 2026-09-22, B5) ─────────────────────────────
+// Validado en vivo contra PRD_ABENT (2026-09-22): ApprovalRequests (548),
+// Drafts (581, `$select` sin DocumentLines funciona), Users (66) y
+// ApprovalStages (20) son legibles con nuestro usuario. ApprovalRequests NO
+// trae UpdateDate → el sync de este target es siempre full (barato).
+
+export interface SapRawApprovalLine {
+  StageCode?: unknown;
+  UserID?: unknown;
+  Status?: unknown; // ardPending | ardApproved | ardNotApproved
+  Remarks?: unknown;
+  UpdateDate?: unknown;
+  UpdateTime?: unknown;
+}
+
+export interface SapRawApprovalRequest {
+  Code?: unknown;
+  ApprovalTemplatesID?: unknown;
+  ObjectType?: unknown; // '22' OC · '1470000113' solicitud de pedido
+  IsDraft?: unknown; // 'Y' | 'N'
+  ObjectEntry?: unknown;
+  Status?: unknown; // arsPending | arsApproved | arsNotApproved | arsGenerated
+  Remarks?: unknown;
+  CurrentStage?: unknown;
+  OriginatorID?: unknown;
+  CreationDate?: unknown;
+  CreationTime?: unknown;
+  DraftEntry?: unknown;
+  DraftType?: unknown;
+  ApprovalRequestLines?: unknown;
+}
+
+/** Borrador (Drafts) con `$select` reducido — sin DocumentLines. */
+export interface SapRawDraftSlim {
+  DocEntry?: unknown;
+  DocNum?: unknown;
+  DocDate?: unknown;
+  DocObjectCode?: unknown; // oPurchaseOrders | oPurchaseRequest | ...
+  DocumentStatus?: unknown;
+  AuthorizationStatus?: unknown;
+  Requester?: unknown;
+  RequesterName?: unknown;
+  CardName?: unknown;
+  DocTotal?: unknown;
+  DocCurrency?: unknown;
+  Comments?: unknown;
+}
+
+export interface SapRawUser {
+  InternalKey?: unknown;
+  UserCode?: unknown;
+  UserName?: unknown;
+}
+
+export interface SapRawApprovalStage {
+  Code?: unknown;
+  Name?: unknown;
+}
+
+export interface SapRawApprovalTemplate {
+  Code?: unknown;
+  Name?: unknown;
 }

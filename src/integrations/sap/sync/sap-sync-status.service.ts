@@ -19,15 +19,25 @@ export class SapSyncStatusService {
   ) {}
 
   async getStatus() {
-    const [lastPoRun, lastPrRun, lastBpRun, poCount, prCount, bpCount] =
-      await Promise.all([
-        this.lastRun('purchase_orders'),
-        this.lastRun('purchase_requests'),
-        this.lastRun('business_partners'),
-        this.prisma.sap_purchase_orders.count(),
-        this.prisma.sap_purchase_requests.count(),
-        this.prisma.sap_business_partners.count(),
-      ]);
+    const [
+      lastPoRun,
+      lastPrRun,
+      lastBpRun,
+      lastArRun,
+      poCount,
+      prCount,
+      bpCount,
+      arCount,
+    ] = await Promise.all([
+      this.lastRun('purchase_orders'),
+      this.lastRun('purchase_requests'),
+      this.lastRun('business_partners'),
+      this.lastRun('approval_requests'),
+      this.prisma.sap_purchase_orders.count(),
+      this.prisma.sap_purchase_requests.count(),
+      this.prisma.sap_business_partners.count(),
+      this.prisma.sap_approval_requests.count(),
+    ]);
 
     return {
       enabled: this.syncConfig.enabled,
@@ -38,11 +48,13 @@ export class SapSyncStatusService {
         purchase_orders: lastPoRun,
         purchase_requests: lastPrRun,
         business_partners: lastBpRun,
+        approval_requests: lastArRun,
       },
       counts: {
         purchase_orders: poCount,
         purchase_requests: prCount,
         business_partners: bpCount,
+        approval_requests: arCount,
       },
     };
   }

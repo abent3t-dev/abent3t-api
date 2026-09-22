@@ -136,6 +136,21 @@ describe('SapStagingService — upsert por doc_entry + raw_hash', () => {
     expect(outcome).toBe('unchanged'); // la fila de la carrera ya trae el mismo hash
   });
 
+  it('mapper_version viejo → updated aunque el raw no cambió (re-mapeo tras bump)', async () => {
+    const h = makeHarness();
+    const raw = rawDoc();
+    await h.service.upsertPurchaseOrder(toSapPurchaseOrder(raw), raw, 'run-1');
+    h.rows[0].mapper_version = '1.0.0';
+    const outcome = await h.service.upsertPurchaseOrder(
+      toSapPurchaseOrder(raw),
+      raw,
+      'run-2',
+    );
+    expect(outcome).toBe('updated');
+    expect(h.rows[0].mapper_version).not.toBe('1.0.0');
+    expect(h.rows[0].raw_hash).toBe(sapRawHash(raw));
+  });
+
   it('purchase_requests: mismo contrato de upsert', async () => {
     const h = makeHarness();
     const raw = {

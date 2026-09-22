@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
+  SapApprovalRequestDto,
   SapBusinessPartnerDto,
   SapPurchaseOrderDto,
   SapPurchaseRequestDto,
@@ -36,6 +37,11 @@ export class SapStagingService {
       doc_due_date: toDate(dto.docDueDate),
       update_date_source: toDate(dto.updateDate),
       document_status: dto.documentStatus,
+      cancelled: dto.cancelled,
+      cancel_status: dto.cancelStatus,
+      authorization_status: dto.authorizationStatus,
+      confirmed: dto.confirmed,
+      closing_date: toDate(dto.closingDate),
       comments: dto.comments,
       card_code: dto.cardCode,
       card_name: dto.cardName,
@@ -49,7 +55,7 @@ export class SapStagingService {
     const attempt = async (): Promise<SapUpsertOutcome> => {
       const existing = await this.prisma.sap_purchase_orders.findFirst({
         where: { doc_entry: dto.docEntry },
-        select: { id: true, raw_hash: true },
+        select: { id: true, raw_hash: true, mapper_version: true },
       });
       if (!existing) {
         await this.prisma.sap_purchase_orders.create({
@@ -64,7 +70,9 @@ export class SapStagingService {
         });
         return 'inserted';
       }
-      const unchanged = existing.raw_hash === rawHash;
+      const unchanged =
+        existing.raw_hash === rawHash &&
+        existing.mapper_version === SAP_MAPPER_VERSION;
       await this.prisma.sap_purchase_orders.update({
         where: { id: existing.id },
         data: unchanged
@@ -98,6 +106,11 @@ export class SapStagingService {
       required_date: toDate(dto.requiredDate),
       update_date_source: toDate(dto.updateDate),
       document_status: dto.documentStatus,
+      cancelled: dto.cancelled,
+      cancel_status: dto.cancelStatus,
+      authorization_status: dto.authorizationStatus,
+      confirmed: dto.confirmed,
+      closing_date: toDate(dto.closingDate),
       comments: dto.comments,
       requester: dto.requester,
       requester_name: dto.requesterName,
@@ -111,7 +124,7 @@ export class SapStagingService {
     const attempt = async (): Promise<SapUpsertOutcome> => {
       const existing = await this.prisma.sap_purchase_requests.findFirst({
         where: { doc_entry: dto.docEntry },
-        select: { id: true, raw_hash: true },
+        select: { id: true, raw_hash: true, mapper_version: true },
       });
       if (!existing) {
         await this.prisma.sap_purchase_requests.create({
@@ -126,7 +139,9 @@ export class SapStagingService {
         });
         return 'inserted';
       }
-      const unchanged = existing.raw_hash === rawHash;
+      const unchanged =
+        existing.raw_hash === rawHash &&
+        existing.mapper_version === SAP_MAPPER_VERSION;
       await this.prisma.sap_purchase_requests.update({
         where: { id: existing.id },
         data: unchanged
@@ -171,7 +186,7 @@ export class SapStagingService {
     const attempt = async (): Promise<SapUpsertOutcome> => {
       const existing = await this.prisma.sap_business_partners.findFirst({
         where: { card_code: dto.cardCode },
-        select: { id: true, raw_hash: true },
+        select: { id: true, raw_hash: true, mapper_version: true },
       });
       if (!existing) {
         await this.prisma.sap_business_partners.create({
@@ -186,8 +201,90 @@ export class SapStagingService {
         });
         return 'inserted';
       }
-      const unchanged = existing.raw_hash === rawHash;
+      const unchanged =
+        existing.raw_hash === rawHash &&
+        existing.mapper_version === SAP_MAPPER_VERSION;
       await this.prisma.sap_business_partners.update({
+        where: { id: existing.id },
+        data: unchanged
+          ? { last_seen_at: new Date(), last_sync_run_id: runId }
+          : {
+              ...mapped,
+              raw_hash: rawHash,
+              raw: raw as Prisma.InputJsonValue,
+              mapper_version: SAP_MAPPER_VERSION,
+              last_seen_at: new Date(),
+              last_changed_at: new Date(),
+              last_sync_run_id: runId,
+            },
+      });
+      return unchanged ? 'unchanged' : 'updated';
+    };
+
+    return this.withUniqueRaceRetry(attempt);
+  }
+
+  /** Cola de autorización (B5): una fila por Code; `raw` = { request, draft }. */
+  async upsertApprovalRequest(
+    dto: SapApprovalRequestDto,
+    raw: unknown,
+    runId: string,
+  ): Promise<SapUpsertOutcome> {
+    const rawHash = sapRawHash(raw);
+    const mapped = {
+      approval_template_id: dto.approvalTemplateId,
+      template_name: dto.templateName,
+      object_type: dto.objectType,
+      is_draft: dto.isDraft,
+      draft_entry: dto.draftEntry,
+      draft_type: dto.draftType,
+      object_entry: dto.objectEntry,
+      status: dto.status,
+      remarks: dto.remarks,
+      current_stage: dto.currentStage,
+      current_stage_name: dto.currentStageName,
+      originator_id: dto.originatorId,
+      originator_name: dto.originatorName,
+      creation_date: toDate(dto.creationDate),
+      doc_num: dto.docNum,
+      doc_date: toDate(dto.docDate),
+      doc_total: dto.docTotal,
+      currency: dto.currency,
+      card_name: dto.cardName,
+      requester_name: dto.requesterName,
+      // snake_case: es lo que leen la UI y el SQL de tiempos (jsonb_array_elements)
+      approvers: dto.approvers.map((a) => ({
+        stage_code: a.stageCode,
+        stage_name: a.stageName,
+        user_id: a.userId,
+        user_name: a.userName,
+        status: a.status,
+        update_date: a.updateDate,
+      })) as unknown as Prisma.InputJsonValue,
+    };
+
+    const attempt = async (): Promise<SapUpsertOutcome> => {
+      const existing = await this.prisma.sap_approval_requests.findFirst({
+        where: { code: dto.code },
+        select: { id: true, raw_hash: true, mapper_version: true },
+      });
+      if (!existing) {
+        await this.prisma.sap_approval_requests.create({
+          data: {
+            code: dto.code,
+            ...mapped,
+            raw_hash: rawHash,
+            raw: raw as Prisma.InputJsonValue,
+            mapper_version: SAP_MAPPER_VERSION,
+            last_sync_run_id: runId,
+          },
+        });
+        return 'inserted';
+      }
+      const unchanged =
+        existing.raw_hash === rawHash &&
+        existing.mapper_version === SAP_MAPPER_VERSION;
+      await this.prisma.sap_approval_requests.update({
         where: { id: existing.id },
         data: unchanged
           ? { last_seen_at: new Date(), last_sync_run_id: runId }
