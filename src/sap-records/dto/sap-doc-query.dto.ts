@@ -7,12 +7,33 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
+
+/** Estatus derivados legibles (A6): `cancelled` no es un DocumentStatus de SAP. */
+export const SAP_DOC_STATUS_KEYS = ['open', 'close', 'cancelled'] as const;
+export type SapDocStatusKey = (typeof SAP_DOC_STATUS_KEYS)[number];
 
 /**
- * Query de los listados GET /sap/purchase-orders|purchase-requests.
- * `status` usa alias legibles; el service los traduce a los valores
- * bost_* del ERP.
+ * Convierte `status=open,close` (o repetido) en arreglo (A5: multi-selección).
+ * Cada valor se valida contra la lista de estatus derivados.
+ */
+export function toStatusList(value: unknown): string[] | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const raw: unknown[] = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(',')
+      : [value];
+  const parts = raw
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter((v) => v !== '');
+  return parts.length ? Array.from(new Set(parts)) : undefined;
+}
+
+/**
+ * Query de los listados GET /sap/purchase-orders|purchase-requests (y de sus
+ * exports). `status` acepta uno o varios alias separados por coma
+ * (`open`, `close`, `cancelled`); el service los traduce al ERP.
  */
 export class SapDocQueryDto {
   @IsOptional()
@@ -34,8 +55,9 @@ export class SapDocQueryDto {
   search?: string;
 
   @IsOptional()
-  @IsIn(['open', 'close'])
-  status?: 'open' | 'close';
+  @Transform(({ value }) => toStatusList(value))
+  @IsIn(SAP_DOC_STATUS_KEYS, { each: true })
+  status?: SapDocStatusKey[];
 
   /** Rango sobre doc_date (fecha del documento). */
   @IsOptional()

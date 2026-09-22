@@ -55,6 +55,11 @@ const PO_ROW = {
 
 function makeService() {
   const prisma = {
+    $queryRaw: jest.fn().mockResolvedValue([]),
+    sap_approval_requests: {
+      count: jest.fn().mockResolvedValue(0),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     sap_purchase_orders: {
       count: jest.fn().mockResolvedValue(1),
       findMany: jest.fn().mockResolvedValue([PO_ROW]),
@@ -123,23 +128,32 @@ describe('SapRecordsService — listados', () => {
   it('filtros: status alias → bost_*, rango de fechas y búsqueda texto/número', async () => {
     const { service, prisma } = makeService();
     await service.listPurchaseOrders({
-      status: 'open',
+      status: ['open', 'cancelled'],
       from: '2026-01-01',
       to: '2026-06-30',
       search: '6121',
     });
     const where = (
       prisma.sap_purchase_orders.findMany.mock.calls[0] as [
-        { where: Record<string, unknown> },
+        { where: { AND: Array<Record<string, unknown>> } },
       ]
     )[0].where;
-    expect(where.document_status).toBe('bost_Open');
-    expect(where.doc_date).toEqual({
-      gte: new Date('2026-01-01'),
-      lte: new Date('2026-06-30'),
+    // A6/A5: estatus derivado multi → OR de condiciones; 'open' excluye
+    // canceladas (SAP las reporta como bost_Close + Cancelled=tYES)
+    expect(where.AND[0]).toEqual({
+      OR: [
+        { document_status: 'bost_Open', NOT: { cancelled: true } },
+        { cancelled: true },
+      ],
+    });
+    expect(where.AND[1]).toEqual({
+      doc_date: {
+        gte: new Date('2026-01-01'),
+        lte: new Date('2026-06-30'),
+      },
     });
     // búsqueda numérica agrega doc_num/doc_entry además del texto
-    const or = where.OR as Array<Record<string, unknown>>;
+    const or = where.AND[2].OR as Array<Record<string, unknown>>;
     expect(or).toContainEqual({ doc_num: 6121 });
     expect(or).toContainEqual({ doc_entry: 6121 });
     expect(or).toContainEqual({
@@ -189,22 +203,72 @@ describe('SapRecordsService — detalle', () => {
 });
 
 describe('SapRecordsService — resumen', () => {
-  it('agrega por estatus, suma montos/líneas y expone syncEnabled', async () => {
-    const { service } = makeService();
+  it('agrega por estatus DERIVADO y monto POR MONEDA en SQL; expone syncEnabled', async () => {
+    const { service, prisma } = makeService();
+    // Orden de las consultas de entitySummary (Promise.all): byStatus,
+    // byCurrency, openByCurrency, agg, gestion — primero OC, luego PR.
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        { document_status: 'bost_Open', cancelled: false, count: 3 },
+        { document_status: 'bost_Close', cancelled: false, count: 5 },
+        { document_status: 'bost_Close', cancelled: true, count: 2 },
+      ])
+      .mockResolvedValueOnce([
+        { currency: 'MXN', total: '5000.50', count: 7 },
+        { currency: 'USD', total: '100', count: 1 },
+      ])
+      .mockResolvedValueOnce([{ currency: 'MXN', total: '1000', count: 3 }])
+      .mockResolvedValueOnce([
+        {
+          total: 10,
+          monto: '5100.50',
+          lines_total: 30,
+          lines_classified: 4,
+          con_ahorro: 2,
+        },
+      ])
+      .mockResolvedValueOnce([{ dias: '12.34' }])
+      // purchase_requests: vacío
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          total: 0,
+          monto: 0,
+          lines_total: 0,
+          lines_classified: 0,
+          con_ahorro: 0,
+        },
+      ])
+      .mockResolvedValueOnce([{ dias: null }]);
     const summary = await service.getSummary();
     expect(summary.syncEnabled).toBe(true);
     expect(summary.purchaseOrders.total).toBe(10);
-    expect(summary.purchaseOrders.byStatus[0]).toEqual({
-      status: 'bost_Close',
-      count: 7,
+    // cancelled=true manda sobre bost_Close → tercer estatus
+    expect(summary.purchaseOrders.byStatus).toEqual([
+      { status: 'close', count: 5 },
+      { status: 'open', count: 3 },
+      { status: 'cancelled', count: 2 },
+    ]);
+    // nunca se suma MXN con USD en una sola cifra
+    expect(summary.purchaseOrders.montoPorMoneda).toEqual([
+      { currency: 'MXN', total: 5000.5, count: 7 },
+      { currency: 'USD', total: 100, count: 1 },
+    ]);
+    expect(summary.purchaseOrders.abiertas).toEqual({
+      count: 3,
+      montoPorMoneda: [{ currency: 'MXN', total: 1000, count: 3 }],
     });
-    expect(summary.purchaseOrders.montoTotal).toBe(5000.5);
     expect(summary.purchaseOrders.linesTotal).toBe(30);
     expect(summary.purchaseOrders.linesClassified).toBe(4);
     expect(summary.purchaseOrders.docsConAhorro).toBe(2);
-    // entidad vacía: ceros y byStatus vacío, sin nulls raros
+    expect(summary.purchaseOrders.diasPromedioGestion).toBe(12.3);
+    // entidad vacía: ceros, listas vacías y días null (nunca 0)
     expect(summary.purchaseRequests.total).toBe(0);
-    expect(summary.purchaseRequests.montoTotal).toBe(0);
+    expect(summary.purchaseRequests.byStatus).toEqual([]);
+    expect(summary.purchaseRequests.diasPromedioGestion).toBeNull();
+    expect(summary.approvalRequests).toEqual({ total: 0, pending: 0 });
     expect(summary.lastSync.purchase_orders).toBeNull();
   });
 });

@@ -7,9 +7,17 @@
  * clasificación/ahorro significa "sin capturar en el ERP" y la UI lo pinta
  * como "No disponible", nunca como 0. `raw` solo existe en el detalle para
  * PURCHASE_ADMINS (omitirlo ES el control de acceso).
+ *
+ * Sprint 2026-09-22 (A6): estatus DERIVADO `status_key` — SAP no distingue
+ * una cancelada por DocumentStatus (llega bost_Close) sino por `Cancelled`:
+ *   cancelled=true → 'cancelled'; bost_Open → 'open'; bost_Close → 'close'.
+ * `null` = fila sincronizada antes de la migración 0011 y sin re-sync (se
+ * muestra como el DocumentStatus crudo, nunca se inventa).
  */
 
-export interface SapPurchaseOrderRow {
+export type SapDocStatusKey = 'open' | 'close' | 'cancelled';
+
+interface SapDocBaseRow {
   id: string;
   doc_entry: number;
   doc_num: number | null;
@@ -17,9 +25,12 @@ export interface SapPurchaseOrderRow {
   doc_due_date: Date | null;
   update_date_source: Date | null;
   document_status: string | null;
+  /** Estatus derivado (A6). null solo si `cancelled` aún no se sincronizó. */
+  status_key: SapDocStatusKey | null;
+  cancelled: boolean | null;
+  authorization_status: string | null;
+  closing_date: Date | null;
   comments: string | null;
-  card_code: string | null;
-  card_name: string | null;
   doc_total: number | null;
   currency: string | null;
   lines_total: number;
@@ -29,25 +40,15 @@ export interface SapPurchaseOrderRow {
   last_seen_at: Date;
 }
 
-export interface SapPurchaseRequestRow {
-  id: string;
-  doc_entry: number;
-  doc_num: number | null;
-  doc_date: Date | null;
-  doc_due_date: Date | null;
+export interface SapPurchaseOrderRow extends SapDocBaseRow {
+  card_code: string | null;
+  card_name: string | null;
+}
+
+export interface SapPurchaseRequestRow extends SapDocBaseRow {
   required_date: Date | null;
-  update_date_source: Date | null;
-  document_status: string | null;
-  comments: string | null;
   requester: string | null;
   requester_name: string | null;
-  doc_total: number | null;
-  currency: string | null;
-  lines_total: number;
-  lines_classified: number;
-  ahorro_total: number | null;
-  last_changed_at: Date | null;
-  last_seen_at: Date;
 }
 
 /** Línea derivada de raw.DocumentLines para el detalle. */
@@ -75,8 +76,16 @@ export interface SapPurchaseRequestDetail {
   raw?: unknown;
 }
 
+/** Conteo por estatus DERIVADO (`open` | `close` | `cancelled`). */
 export interface SapStatusCount {
   status: string | null;
+  count: number;
+}
+
+/** Monto por moneda (regla del sprint: nunca sumar MXN con USD). */
+export interface SapCurrencyAmount {
+  currency: string | null;
+  total: number;
   count: number;
 }
 
@@ -95,13 +104,22 @@ export interface SapLastSyncRun {
 export interface SapEntitySummary {
   total: number;
   byStatus: SapStatusCount[];
-  /** Suma de doc_total (montos del documento, no de clasificación). */
+  /** Suma de doc_total SIN distinguir moneda (compat; preferir montoPorMoneda). */
   montoTotal: number;
+  montoPorMoneda: SapCurrencyAmount[];
+  /** Abiertas no canceladas, con monto por moneda ("por recibir"). */
+  abiertas: { count: number; montoPorMoneda: SapCurrencyAmount[] };
   linesTotal: number;
   /** Líneas con clasificación REAL capturada (≠ placeholder del ERP). */
   linesClassified: number;
   /** Documentos con al menos una línea de ahorro capturada. */
   docsConAhorro: number;
+  /**
+   * Días promedio entre doc_date y closing_date (o update_date_source como
+   * proxy cuando closing_date aún no se sincronizó) de las cerradas.
+   * null = sin base para calcular (nunca 0).
+   */
+  diasPromedioGestion: number | null;
 }
 
 export interface SapSummary {
@@ -112,8 +130,53 @@ export interface SapSummary {
   syncEnabled: boolean;
   purchaseOrders: SapEntitySummary;
   purchaseRequests: SapEntitySummary;
+  /** Cola de autorización de SAP (B5): pendientes en staging. */
+  approvalRequests: { total: number; pending: number };
   lastSync: {
     purchase_orders: SapLastSyncRun | null;
     purchase_requests: SapLastSyncRun | null;
+    approval_requests: SapLastSyncRun | null;
   };
+}
+
+// ── Cola de autorización (B5) ─────────────────────────────────────────────
+
+export interface SapApprovalLineView {
+  stage_code: number | null;
+  stage_name: string | null;
+  user_id: number | null;
+  user_name: string | null;
+  status: string | null;
+  update_date: string | null;
+}
+
+export interface SapApprovalRequestRow {
+  id: string;
+  code: number;
+  approval_template_id: number | null;
+  template_name: string | null;
+  object_type: string | null;
+  /** 'purchase_order' | 'purchase_request' | 'other' derivado de object_type. */
+  document_kind: 'purchase_order' | 'purchase_request' | 'other';
+  is_draft: boolean | null;
+  draft_entry: number | null;
+  object_entry: number | null;
+  status: string | null;
+  remarks: string | null;
+  current_stage: number | null;
+  current_stage_name: string | null;
+  originator_id: number | null;
+  originator_name: string | null;
+  creation_date: Date | null;
+  /** Días naturales esperando (solo pendientes); null si no aplica. */
+  days_waiting: number | null;
+  doc_num: number | null;
+  doc_date: Date | null;
+  doc_total: number | null;
+  currency: string | null;
+  card_name: string | null;
+  requester_name: string | null;
+  approvers: SapApprovalLineView[];
+  last_changed_at: Date | null;
+  last_seen_at: Date;
 }
