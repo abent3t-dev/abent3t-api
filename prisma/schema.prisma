@@ -1196,6 +1196,8 @@ model maximo_purchase_orders {
   requested_by      String?   @db.VarChar(100)
   department        String?   @db.VarChar(100)
   approved_at       DateTime? @db.Timestamptz(6)
+  waiting_approval_at DateTime? @db.Timestamptz(6)
+  approved_by       String?   @db.VarChar(100)
   created_at_source DateTime? @db.Timestamptz(6)
   rowstamp          String?   @db.VarChar(100)
   raw               Json
@@ -1226,6 +1228,7 @@ model maximo_contracts {
   requested_by      String?   @db.VarChar(100)
   department        String?   @db.VarChar(100)
   approved_at       DateTime? @db.Timestamptz(6)
+  approved_by       String?   @db.VarChar(100)
   created_at_source DateTime? @db.Timestamptz(6)
   contract_ref_num  String?   @db.VarChar(50)
   contract_value    Decimal?  @db.Decimal(15, 2)
@@ -1294,6 +1297,42 @@ model sap_sync_runs {
   @@index([status], map: "idx_sap_sync_runs_status")
 }
 
+model sap_approval_requests {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code                 Int       @unique(map: "uq_sap_approval_request_code")
+  approval_template_id Int?
+  template_name        String?   @db.VarChar(120)
+  object_type          String?   @db.VarChar(30)
+  is_draft             Boolean?
+  draft_entry          Int?
+  draft_type           String?   @db.VarChar(30)
+  object_entry         Int?
+  status               String?   @db.VarChar(30)
+  remarks              String?
+  current_stage        Int?
+  current_stage_name   String?   @db.VarChar(120)
+  originator_id        Int?
+  originator_name      String?   @db.VarChar(255)
+  creation_date        DateTime? @db.Timestamptz(6)
+  doc_num              Int?
+  doc_date             DateTime? @db.Timestamptz(6)
+  doc_total            Decimal?  @db.Decimal(15, 2)
+  currency             String?   @db.VarChar(10)
+  card_name            String?   @db.VarChar(255)
+  requester_name       String?   @db.VarChar(255)
+  approvers            Json?
+  raw_hash             String    @db.VarChar(64)
+  raw                  Json
+  mapper_version       String
+  first_seen_at        DateTime  @default(now()) @db.Timestamptz(6)
+  last_seen_at         DateTime  @default(now()) @db.Timestamptz(6)
+  last_changed_at      DateTime? @db.Timestamptz(6)
+  last_sync_run_id     String?   @db.Uuid
+
+  @@index([status], map: "idx_sap_approval_status")
+  @@index([creation_date], map: "idx_sap_approval_creation")
+}
+
 model sap_purchase_orders {
   id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   doc_entry          Int       @unique(map: "uq_sap_po_doc_entry")
@@ -1310,6 +1349,11 @@ model sap_purchase_orders {
   lines_total        Int       @default(0)
   lines_classified   Int       @default(0)
   ahorro_total       Decimal?  @db.Decimal(15, 2)
+  cancelled            Boolean?
+  cancel_status        String?   @db.VarChar(20)
+  authorization_status String?   @db.VarChar(30)
+  confirmed            Boolean?
+  closing_date         DateTime? @db.Timestamptz(6)
   raw_hash           String    @db.VarChar(64)
   raw                Json
   mapper_version     String
@@ -1340,6 +1384,11 @@ model sap_purchase_requests {
   lines_total        Int       @default(0)
   lines_classified   Int       @default(0)
   ahorro_total       Decimal?  @db.Decimal(15, 2)
+  cancelled            Boolean?
+  cancel_status        String?   @db.VarChar(20)
+  authorization_status String?   @db.VarChar(30)
+  confirmed            Boolean?
+  closing_date         DateTime? @db.Timestamptz(6)
   raw_hash           String    @db.VarChar(64)
   raw                Json
   mapper_version     String
@@ -1383,6 +1432,7 @@ enum sap_sync_target {
   purchase_orders
   purchase_requests
   business_partners
+  approval_requests
 }
 
 enum sap_sync_trigger {
@@ -1415,6 +1465,8 @@ model contracts {
   end_date               DateTime                        @db.Date
   total_amount           Decimal?                        @db.Decimal(14, 2)
   currency               String?                         @default("MXN")
+  consumed_amount        Decimal?                        @db.Decimal(14, 2)
+  external_link          String?
   buyer_profile_id       String?                         @db.Uuid
   responsible_user_email String?
   responsible_user_name  String?
