@@ -28,6 +28,7 @@ import { SapRecordsController } from './sap-records/sap-records.controller';
 import { PurchaseTypesController } from './purchase-types/purchase-types.controller';
 import { PurchaseUsersController } from './purchase-users/purchase-users.controller';
 import { ContractsController } from './contracts/contracts.controller';
+import { PurchaseDashboardController } from './purchase-dashboard/purchase-dashboard.controller';
 
 const PURCHASE_CONTROLLERS = [
   ApprovalsController,
@@ -42,6 +43,7 @@ const PURCHASE_CONTROLLERS = [
   PurchaseTypesController,
   PurchaseUsersController,
   ContractsController,
+  PurchaseDashboardController,
 ];
 
 interface RouteInfo {
@@ -83,6 +85,15 @@ function collectRoutes(): RouteInfo[] {
  * mismo commit — es la decisión de seguridad quedando explícita en el diff.
  */
 const OPEN_READS = [
+  // Sprint 2026-09-22: resumen agregado, exports (B1) y cola SAP (B5)
+  '/compras/dashboard/summary',
+  '/sap/purchase-orders/export',
+  '/sap/purchase-requests/export',
+  '/sap/approval-requests',
+  '/maximo/purchase-orders/export',
+  '/maximo/contracts/export',
+  '/compras/contratos/export',
+  '/suppliers/export',
   '/approvals/requisition/:rqId',
   '/approvals/stats',
   '/requisitions',
@@ -113,6 +124,8 @@ const OPEN_READS = [
   '/compras/reportes/comite',
   '/compras/reportes/maximo',
   '/compras/reportes/ahorro',
+  '/compras/reportes/erp',
+  '/compras/reportes/tiempos-aprobacion',
   '/maximo/summary',
   '/maximo/purchase-orders',
   '/maximo/purchase-orders/:ponum',
@@ -133,8 +146,8 @@ const OPEN_READS = [
 describe('Modelo de acceso de Compras (ver todos, actuar por rol)', () => {
   const routes = collectRoutes();
 
-  it('cubre los 12 controllers de compras (sanity)', () => {
-    expect(routes.length).toBeGreaterThanOrEqual(90);
+  it('cubre los 13 controllers de compras (sanity)', () => {
+    expect(routes.length).toBeGreaterThanOrEqual(98);
   });
 
   it('NINGUNA mutación queda sin @Roles (un no-rol no puede mutar)', () => {
