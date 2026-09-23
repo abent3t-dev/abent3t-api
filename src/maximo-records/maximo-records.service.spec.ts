@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import {
   deriveContractLines,
   deriveContractStatusHistory,
@@ -67,9 +68,18 @@ function makeService(env: Record<string, string> = {}) {
     maximo_sync_runs: { findFirst: jest.fn().mockResolvedValue(null) },
   };
   const config = { get: (key: string) => env[key] } as ConfigService;
+  const aliases = {
+    resolveMany: jest.fn().mockResolvedValue(new Map<string, string>()),
+    displayName: jest.fn((_s: string, code: string | null) =>
+      Promise.resolve(code),
+    ),
+    forProfiles: jest.fn().mockResolvedValue([]),
+    byCode: jest.fn().mockResolvedValue(new Map()),
+  };
   const service = new MaximoRecordsService(
     prisma as unknown as PrismaService,
     config,
+    aliases as unknown as ErpAliasesService,
   );
   return { service, prisma };
 }

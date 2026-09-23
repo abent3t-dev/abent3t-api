@@ -24,10 +24,14 @@ export interface MaximoPurchaseOrderView {
   ab_tipocomp: string | null;
   ab_clasfpo: string | null;
   requested_by: string | null;
+  /** D6: nombre del solicitante según los alias de Maximo; null = sin alias. */
+  requested_by_name: string | null;
   department: string | null;
   approved_at: Date | null;
   /** Usuario Maximo que aprobó (CHANGEBY del primer APPR); null si no aplica. */
   approved_by: string | null;
+  /** D6: nombre del aprobador según los alias; null = sin alias. */
+  approved_by_name: string | null;
   /** Primer WAPPR; approved_at - waiting_approval_at = días de aprobación. */
   waiting_approval_at: Date | null;
   created_at_source: Date | null;
@@ -65,12 +69,21 @@ export interface MaximoContractView {
   vendor_id: string | null;
   vendor_name: string | null;
   requested_by: string | null;
+  /** D6: nombre según alias de Maximo; null = sin alias. */
+  requested_by_name: string | null;
   department: string | null;
   approved_at: Date | null;
   approved_by: string | null;
+  approved_by_name: string | null;
   created_at_source: Date | null;
   contract_ref_num: string | null;
   contract_value: number | null;
+  /** D7: monto de la PR; null = la Object Structure no lo expone. */
+  pr_total: number | null;
+  /** D8: consumido del contrato; null = no expuesto por la OS. */
+  consumed_value: number | null;
+  /** D8: valor − consumido; null si falta alguno (nunca 0). */
+  balance_value: number | null;
   purchview_count: number;
   has_contract: boolean;
   last_changed_at: Date | null;
@@ -134,6 +147,8 @@ export interface MaximoSummary {
    * al dashboard distinguir "0 registros porque está apagado" de "0 reales".
    */
   syncEnabled: boolean;
+  /** D4: año aplicado (null = todo). */
+  year: number | null;
   purchaseOrders: { total: number; byStatus: MaximoStatusCount[] };
   contracts: {
     total: number;

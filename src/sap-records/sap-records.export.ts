@@ -42,10 +42,20 @@ export const sapPoRequesters = (row: SapPurchaseOrderRow) =>
     ? row.requester_names.join(', ')
     : (row.maximo_requested_by ?? '');
 
+/** D1: origen de la OC para el export (lista de revisión de Ingrid/Mariana). */
+export const sapPoOrigin = (row: SapPurchaseOrderRow) =>
+  row.maximo_ponum === null
+    ? 'SAP'
+    : row.maximo_po_exists
+      ? `Migrada de Maximo (${row.maximo_ponum})`
+      : `Referencia Maximo (${row.maximo_ponum}, no existe en Maximo)`;
+
 /** Columnas del export = columnas visibles de la pestaña "Ordenes SAP" (B1). */
 export const SAP_PO_EXPORT_COLUMNS: ExcelColumn<SapPurchaseOrderRow>[] = [
   { header: 'Número', value: (r) => r.doc_num, kind: 'int', width: 12 },
   { header: 'DocEntry', value: (r) => r.doc_entry, kind: 'int', width: 12 },
+  { header: 'Origen', value: sapPoOrigin, width: 30 },
+  { header: 'PO Maximo', value: (r) => r.maximo_ponum, width: 14 },
   { header: 'Proveedor', value: (r) => r.card_name, width: 40 },
   { header: 'Código proveedor', value: (r) => r.card_code, width: 16 },
   { header: 'Estatus', value: sapStatusLabel, width: 12 },
@@ -58,7 +68,6 @@ export const SAP_PO_EXPORT_COLUMNS: ExcelColumn<SapPurchaseOrderRow>[] = [
   },
   { header: 'Moneda', value: (r) => r.currency, width: 10 },
   { header: 'Solicitante', value: sapPoRequesters, width: 32 },
-  { header: 'OC Maximo', value: (r) => r.maximo_ponum, width: 14 },
   { header: 'Capturó (SAP)', value: (r) => r.created_by_name, width: 28 },
   { header: 'F. Documento', value: (r) => r.doc_date, kind: 'date', width: 14 },
   {

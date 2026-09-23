@@ -8,6 +8,7 @@ import {
   Min,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { IsYearQuery } from '../../common/dto/year-query.util';
 
 /** Estatus derivados legibles (A6): `cancelled` no es un DocumentStatus de SAP. */
 export const SAP_DOC_STATUS_KEYS = ['open', 'close', 'cancelled'] as const;
@@ -67,4 +68,16 @@ export class SapDocQueryDto {
   @IsOptional()
   @IsISO8601()
   to?: string;
+
+  /** D4 (2026-09-23): año calendario de doc_date. */
+  @IsYearQuery()
+  year?: number;
+
+  /**
+   * D1 (2026-09-23), solo OC: `sap` = capturadas en SAP; `maximo` = creadas
+   * por la integración desde Maximo (NumAtCard = PONUM).
+   */
+  @IsOptional()
+  @IsIn(['sap', 'maximo'])
+  origin?: 'sap' | 'maximo';
 }

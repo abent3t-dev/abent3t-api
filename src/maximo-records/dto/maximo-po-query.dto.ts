@@ -2,6 +2,7 @@ import { IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { toStatusList } from '../../sap-records/dto/sap-doc-query.dto';
+import { IsYearQuery } from '../../common/dto/year-query.util';
 
 /**
  * Fase INT-5 — Filtros del listado de POs de Maximo (vista actual).
@@ -37,4 +38,8 @@ export class MaximoPoQueryDto extends PaginationDto {
   @IsOptional()
   @IsISO8601()
   approved_to?: string;
+
+  /** D4 (2026-09-23): año calendario de la fecha en Maximo (created_at_source). */
+  @IsYearQuery()
+  year?: number;
 }

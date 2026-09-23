@@ -23,6 +23,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { hasAnyRole } from '../common/utils/roles.util';
 import { SapApprovalQueryDto } from './dto/sap-approval-query.dto';
 import { SapDocQueryDto } from './dto/sap-doc-query.dto';
+import { SapSummaryQueryDto } from './dto/sap-summary-query.dto';
 import {
   SAP_PO_EXPORT_COLUMNS,
   SAP_PR_EXPORT_COLUMNS,
@@ -46,8 +47,8 @@ export class SapRecordsController {
 
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('summary')
-  getSummary() {
-    return this.service.getSummary();
+  getSummary(@Query() query: SapSummaryQueryDto) {
+    return this.service.getSummary(query.year ?? null);
   }
 
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").

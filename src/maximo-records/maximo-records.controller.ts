@@ -18,6 +18,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { hasAnyRole } from '../common/utils/roles.util';
 import { MaximoContractQueryDto } from './dto/maximo-contract-query.dto';
 import { MaximoPoQueryDto } from './dto/maximo-po-query.dto';
+import { MaximoSummaryQueryDto } from './dto/maximo-summary-query.dto';
 import { MaximoRecordsService } from './maximo-records.service';
 
 // Roles de compras (§Roles y Permisos de CLAUDE_COMPRAS.md)
@@ -46,7 +47,12 @@ const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
     width: 14,
   },
   { header: 'Ahorro', value: (r) => r.ab_ahorro ?? NO_DISPONIBLE, width: 14 },
-  { header: 'Solicitado por', value: (r) => r.requested_by, width: 18 },
+  {
+    header: 'Solicitado por',
+    value: (r) => r.requested_by_name ?? r.requested_by,
+    width: 22,
+  },
+  { header: 'Usuario solicitante', value: (r) => r.requested_by, width: 16 },
   {
     header: 'F. Espera aprobación',
     value: (r) => r.waiting_approval_at,
@@ -59,7 +65,12 @@ const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
     kind: 'date',
     width: 14,
   },
-  { header: 'Aprobó', value: (r) => r.approved_by, width: 14 },
+  {
+    header: 'Aprobó',
+    value: (r) => r.approved_by_name ?? r.approved_by,
+    width: 22,
+  },
+  { header: 'Usuario aprobador', value: (r) => r.approved_by, width: 16 },
   {
     header: 'F. Orden',
     value: (r) => r.created_at_source,
@@ -85,6 +96,17 @@ const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
     kind: 'money',
     width: 16,
   },
+  {
+    header: 'Consumido',
+    value: (r) => r.consumed_value ?? NO_DISPONIBLE,
+    width: 16,
+  },
+  {
+    header: 'Saldo',
+    value: (r) => r.balance_value ?? NO_DISPONIBLE,
+    width: 16,
+  },
+  { header: 'Monto PR', value: (r) => r.pr_total ?? NO_DISPONIBLE, width: 16 },
   { header: 'MAXVOL', value: (r) => r.maxvol ?? NO_DISPONIBLE, width: 14 },
   { header: 'Moneda', value: (r) => r.currency, width: 10 },
   {
@@ -95,7 +117,11 @@ const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
   },
   { header: 'Fin vigencia', value: (r) => r.end_date, kind: 'date', width: 14 },
   { header: 'Departamento', value: (r) => r.department, width: 18 },
-  { header: 'Solicitado por', value: (r) => r.requested_by, width: 18 },
+  {
+    header: 'Solicitado por',
+    value: (r) => r.requested_by_name ?? r.requested_by,
+    width: 22,
+  },
   {
     header: 'F. Solicitud',
     value: (r) => r.created_at_source,
@@ -108,7 +134,11 @@ const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
     kind: 'date',
     width: 14,
   },
-  { header: 'Aprobó', value: (r) => r.approved_by, width: 14 },
+  {
+    header: 'Aprobó',
+    value: (r) => r.approved_by_name ?? r.approved_by,
+    width: 22,
+  },
   { header: 'Revisión', value: (r) => r.revisionnum, kind: 'int', width: 10 },
 ];
 
@@ -123,8 +153,8 @@ export class MaximoRecordsController {
 
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('summary')
-  getSummary() {
-    return this.service.getSummary();
+  getSummary(@Query() query: MaximoSummaryQueryDto) {
+    return this.service.getSummary(query.year ?? null);
   }
 
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").

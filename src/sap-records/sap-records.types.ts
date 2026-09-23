@@ -53,7 +53,12 @@ export interface SapPurchaseOrderRow extends SapDocBaseRow {
   created_by_name: string | null;
   /** PONUM de Maximo si la OC la creó la integración Maximo → SAP. */
   maximo_ponum: string | null;
-  /** Solicitante en Maximo (REQUESTEDBY de su PR; vista vigente). */
+  /**
+   * D1: la OC migrada EXISTE en el staging de Maximo → se cuenta una sola
+   * vez en los totales combinados (se descuenta del lado SAP).
+   */
+  maximo_po_exists: boolean;
+  /** Solicitante en Maximo (REQUESTEDBY de su PR; nombre si hay alias, D6). */
   maximo_requested_by: string | null;
   /** DocEntry de las solicitudes de pedido de las que se copiaron líneas. */
   base_request_entries: number[];
@@ -151,10 +156,14 @@ export interface SapSummary {
    * dashboard distinguir "0 registros porque está apagado" de "0 reales".
    */
   syncEnabled: boolean;
+  /** D4: año aplicado (null = todo). */
+  year: number | null;
   purchaseOrders: SapEntitySummary;
   purchaseRequests: SapEntitySummary;
   /** Cola de autorización de SAP (B5): pendientes en staging. */
   approvalRequests: { total: number; pending: number };
+  /** D1: OC creadas desde Maximo (NumAtCard = PONUM) y cuántas existen allá. */
+  migradas: { total: number; en_maximo: number };
   lastSync: {
     purchase_orders: SapLastSyncRun | null;
     purchase_requests: SapLastSyncRun | null;

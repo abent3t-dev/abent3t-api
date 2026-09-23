@@ -46,7 +46,7 @@ const SAP_PO_HEADERS = [
   'Saldo disponible',
   'Moneda',
   'Solicitante',
-  'OC Maximo',
+  'Origen',
   'Capturó (SAP)',
   'F. Documento',
   'F. Entrega',
@@ -418,7 +418,7 @@ export class WeeklyReportService {
         'Fuentes: SAP Business One, Maximo (vista vigente: última revisión de cada documento) y la captura propia de ABENT.',
         'Montos por moneda: nunca se suman MXN con USD o EUR. OC de SAP con IVA en la moneda del documento; solicitudes de SAP sin IVA (suma de sus líneas).',
         'Saldo disponible: parte de la OC de SAP aún no recibida ni facturada (cantidad pendiente de cada línea), con IVA.',
-        'Solicitante de una OC de SAP: el de la solicitud de pedido de SAP de la que nació; si la OC viene de Maximo (columna "OC Maximo"), el solicitante de Maximo. Las demás muestran solo quién la capturó.',
+        'Solicitante de una OC de SAP: el de la solicitud de pedido de SAP de la que nació; si la OC viene de Maximo (columna "Origen"), el solicitante de Maximo. Las demás muestran solo quién la capturó.',
         'Los indicadores marcados "al día de hoy" son una foto al generar el archivo, no del periodo; por eso no tienen columna anterior.',
         'Estado por aprobador: "Retrasado" cuando su pendiente más antigua ya rebasó su promedio histórico de autorización.',
         ...(sapPos.truncated || sapPrs.truncated

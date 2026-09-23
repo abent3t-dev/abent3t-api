@@ -4,6 +4,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { ExpeditingService } from '../expediting/expediting.service';
 import { PurchaseCommitteesService } from '../purchase-committees/purchase-committees.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
+import { andSapPoCountedOnce } from '../common/sql/erp-views.sql';
+import { sapGestionDays } from '../purchase-dashboard/sap-gestion-days';
 import { ReportPeriodDto } from './dto/report-period.dto';
 
 /**
@@ -17,6 +20,11 @@ import { ReportPeriodDto } from './dto/report-period.dto';
  * Ahorro (T10): por FUENTE, nunca sumado. El modelo propio no tiene campo de
  * ahorro → solo se reporta el de Maximo (AB_AHORRO del staging), por moneda
  * y con el conteo "sin clasificar" visible (§20.A.1, regla 6).
+ *
+ * Bloque 2026-09-23: D1 (las OC de SAP migradas desde Maximo que existen en
+ * Maximo se cuentan una vez: fuera de las series/totales de SAP), D3 (días
+ * de gestión de OC SAP = OC − solicitud base, en tiempos), D6 (alias de
+ * usuarios SAP/Maximo en aprobadores y niveles del flujo propio).
  */
 
 const MAX_RANGE_MONTHS = 24;
@@ -115,6 +123,7 @@ export class PurchaseReportsService {
     private readonly approvalsService: ApprovalsService,
     private readonly expeditingService: ExpeditingService,
     private readonly committeesService: PurchaseCommitteesService,
+    private readonly aliases: ErpAliasesService,
   ) {}
 
   /** Default: últimos 12 meses. Tope: 24 (regla 5). */
@@ -368,6 +377,7 @@ export class PurchaseReportsService {
         FROM sap_purchase_orders
         WHERE cancelled IS DISTINCT FROM true
           AND doc_date BETWEEN ${period.from} AND ${period.to}
+          ${andSapPoCountedOnce('sap_purchase_orders')}
         GROUP BY currency
         UNION ALL
         SELECT 'maximo' AS fuente, currency, count(*)::int AS count,
@@ -771,6 +781,7 @@ export class PurchaseReportsService {
         FROM sap_purchase_orders
         WHERE cancelled IS DISTINCT FROM true
           AND doc_date BETWEEN ${period.from} AND ${period.to}
+          ${andSapPoCountedOnce('sap_purchase_orders')}
         GROUP BY 1, 2 ORDER BY 1`),
       this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
         SELECT date_trunc('month', doc_date) AS month, currency, count(*)::int AS count,
@@ -803,6 +814,7 @@ export class PurchaseReportsService {
         FROM sap_purchase_orders
         WHERE cancelled IS DISTINCT FROM true
           AND doc_date BETWEEN ${period.from} AND ${period.to}
+          ${andSapPoCountedOnce('sap_purchase_orders')}
         GROUP BY card_name, currency ORDER BY monto DESC LIMIT 10`),
       this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
@@ -918,6 +930,11 @@ export class PurchaseReportsService {
       dias_max: number | null;
       dias_promedio: unknown;
     };
+    type GestionPoRow = {
+      doc_entry: number;
+      doc_date: Date | null;
+      base_request_entries: number[];
+    };
     const [
       maximoPo,
       maximoPoBy,
@@ -928,6 +945,7 @@ export class PurchaseReportsService {
       sapPendingBy,
       maximoPending,
       abentRoles,
+      gestionPos,
     ] = await Promise.all([
       this.prisma.$queryRaw<AvgRow[]>(Prisma.sql`
           WITH current AS (${CURRENT_MAXIMO_POS})
@@ -1013,11 +1031,48 @@ export class PurchaseReportsService {
         select: {
           role: true,
           profiles_user_roles_profile_idToprofiles: {
-            select: { full_name: true, email: true },
+            select: { id: true, full_name: true, email: true },
           },
         },
       }),
+      // D3: OC de SAP con solicitud base (gestión = OC − solicitud)
+      this.prisma.$queryRaw<GestionPoRow[]>(Prisma.sql`
+          SELECT doc_entry, doc_date, base_request_entries
+          FROM sap_purchase_orders
+          WHERE cancelled IS DISTINCT FROM true
+            AND cardinality(base_request_entries) > 0`),
     ]);
+    const requestEntries = [
+      ...new Set(gestionPos.flatMap((po) => po.base_request_entries)),
+    ];
+    const gestionPrs =
+      requestEntries.length === 0
+        ? []
+        : await this.prisma.$queryRaw<
+            Array<{ doc_entry: number; doc_date: Date | null }>
+          >(Prisma.sql`
+            SELECT doc_entry, doc_date FROM sap_purchase_requests
+            WHERE doc_entry IN (${Prisma.join(requestEntries)})`);
+    const gestionOc = sapGestionDays(gestionPos, gestionPrs);
+
+    // D6: alias de usuarios (Maximo: CHANGEBY; SAP: user_name de la cola)
+    const [maximoNames, sapNames, levelAliases] = await Promise.all([
+      this.aliases.resolveMany(
+        'maximo',
+        maximoPoBy.map((r) => r.aprobador),
+      ),
+      this.aliases.resolveMany('sap', [
+        ...sapBy.map((r) => r.aprobador),
+        ...sapPendingBy.map((r) => r.aprobador),
+      ]),
+      this.aliases.forProfiles(
+        abentRoles.map((r) => r.profiles_user_roles_profile_idToprofiles.id),
+      ),
+    ]);
+    const named = (system: 'sap' | 'maximo', code: string | null) =>
+      code === null
+        ? null
+        : ((system === 'sap' ? sapNames : maximoNames).get(code) ?? code);
     const avg = (rows: AvgRow[]) => {
       const v = toNumber(rows[0]?.dias);
       return {
@@ -1025,21 +1080,30 @@ export class PurchaseReportsService {
         total: Number(rows[0]?.total ?? 0),
       };
     };
-    const by = (rows: ByRow[]) =>
+    const by = (rows: ByRow[], system: 'sap' | 'maximo') =>
       rows.map((r) => ({
-        aprobador: r.aprobador ?? 'Sin nombre',
+        aprobador: named(system, r.aprobador) ?? 'Sin nombre',
+        usuario: r.aprobador,
         promedio_dias: Math.round((toNumber(r.dias) ?? 0) * 10) / 10,
         total: Number(r.total),
       }));
     return {
       maximo: {
         ordenes: avg(maximoPo),
-        ordenes_por_aprobador: by(maximoPoBy),
+        ordenes_por_aprobador: by(maximoPoBy, 'maximo'),
         contratos: avg(maximoContracts),
       },
       sap: {
+        // D3: gestión de OC = fecha de la OC − fecha de su solicitud de pedido
+        gestion_oc: {
+          promedio_dias: gestionOc.promedio_dias,
+          total: gestionOc.total,
+          descartadas: gestionOc.descartadas,
+          definicion:
+            'De la fecha de la solicitud de pedido (la más antigua) a la fecha de la OC; solo OC con solicitud de pedido en SAP',
+        },
         solicitudes_autorizadas: avg(sapAll),
-        por_aprobador: by(sapBy),
+        por_aprobador: by(sapBy, 'sap'),
         pendientes: {
           total: Number(sapPending[0]?.total ?? 0),
           dias_esperando_promedio:
@@ -1048,7 +1112,8 @@ export class PurchaseReportsService {
               : Math.round(Number(sapPending[0]?.dias) * 10) / 10,
         },
         pendientes_por_aprobador: sapPendingBy.map((r) => ({
-          aprobador: r.aprobador ?? 'Sin nombre en SAP',
+          aprobador: named('sap', r.aprobador) ?? 'Sin nombre en SAP',
+          usuario: r.aprobador,
           pendientes: Number(r.pendientes),
           dias_esperando_max: r.dias_max === null ? null : Number(r.dias_max),
           dias_esperando_promedio: roundDays(r.dias_promedio),
@@ -1065,17 +1130,36 @@ export class PurchaseReportsService {
       },
       // Flujo propio: quién tiene asignado cada nivel en el sistema (rol de
       // compras activo). Nivel sin nadie = aprobador aún no asignado.
-      abent_niveles: ABENT_LEVEL_ROLES.map(({ level, role }) => ({
-        level,
-        role,
-        aprobadores: abentRoles
+      // D6: si el perfil está ligado a un usuario de SAP/Maximo, se muestran
+      // sus usuarios del ERP y sus autorizaciones pendientes en SAP.
+      abent_niveles: ABENT_LEVEL_ROLES.map(({ level, role }) => {
+        const profiles = abentRoles
           .filter((r) => r.role === role)
-          .map(
+          .map((r) => r.profiles_user_roles_profile_idToprofiles);
+        const ids = new Set(profiles.map((p) => p.id));
+        const erpUsuarios = levelAliases
+          .filter((a) => a.profile_id !== null && ids.has(a.profile_id))
+          .map((a) => ({ system: a.system, code: a.code }));
+        const sapCodes = new Set(
+          erpUsuarios
+            .filter((a) => a.system === 'sap')
+            .map((a) => a.code.trim().toLowerCase()),
+        );
+        const sapPendientes = sapPendingBy
+          .filter(
             (r) =>
-              r.profiles_user_roles_profile_idToprofiles.full_name ||
-              r.profiles_user_roles_profile_idToprofiles.email,
-          ),
-      })),
+              r.aprobador !== null &&
+              sapCodes.has(r.aprobador.trim().toLowerCase()),
+          )
+          .reduce((sum, r) => sum + Number(r.pendientes), 0);
+        return {
+          level,
+          role,
+          aprobadores: profiles.map((p) => p.full_name || p.email),
+          erp_usuarios: erpUsuarios,
+          sap_pendientes: sapPendientes,
+        };
+      }),
       generated_at: new Date().toISOString(),
     };
   }

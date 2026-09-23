@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
+import { andYear } from '../common/sql/erp-views.sql';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import {
   deriveContractLines,
   deriveContractStatusHistory,
@@ -32,6 +34,13 @@ import {
  * la revisión vigente ni paginar en SQL. Los ORDER BY de las CTEs calzan con
  * los índices únicos de clave natural de `0005_maximo_staging.sql`
  * (expresiones coalesce idénticas), así que no hizo falta índice nuevo.
+ *
+ * Bloque 2026-09-23:
+ *  - D4: `year` (created_at_source) en listados y resumen.
+ *  - D6: `requested_by_name` / `approved_by_name` = alias de Maximo cuando
+ *    existe (si no, null y la UI muestra el código).
+ *  - D7: `pr_total` (monto de la PR) — null = la OS no lo expone.
+ *  - D8: `consumed_value` y `balance_value` (valor − consumido) en contratos.
  */
 
 /** Vista actual de POs: mayor revisionnum por (ponum, siteid). */
@@ -58,6 +67,7 @@ const CONTRACT_LIST_COLUMNS = Prisma.sql`
   id, prnum, contractnum, revisionnum, status, maxvol, total_cost, currency,
   start_date, end_date, vendor_id, vendor_name, requested_by, department,
   approved_at, approved_by, created_at_source, contract_ref_num, contract_value,
+  pr_total, consumed_value,
   purchview_count, has_contract, last_changed_at, last_seen_at`;
 
 /** Tope del export (B1). */
@@ -66,13 +76,27 @@ const EXPORT_MAX_ROWS = 20_000;
 /** Filas crudas del driver: numerics llegan como Prisma.Decimal. */
 type PoSqlRow = Omit<
   MaximoPurchaseOrderView,
-  'total_cost' | 'ab_ahorro' | 'raw'
+  'total_cost' | 'ab_ahorro' | 'raw' | 'requested_by_name' | 'approved_by_name'
 > & { total_cost: unknown; ab_ahorro: unknown };
 
 type ContractSqlRow = Omit<
   MaximoContractView,
-  'maxvol' | 'total_cost' | 'contract_value' | 'raw'
-> & { maxvol: unknown; total_cost: unknown; contract_value: unknown };
+  | 'maxvol'
+  | 'total_cost'
+  | 'contract_value'
+  | 'pr_total'
+  | 'consumed_value'
+  | 'balance_value'
+  | 'raw'
+  | 'requested_by_name'
+  | 'approved_by_name'
+> & {
+  maxvol: unknown;
+  total_cost: unknown;
+  contract_value: unknown;
+  pr_total: unknown;
+  consumed_value: unknown;
+};
 
 function toNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value);
@@ -95,6 +119,7 @@ export class MaximoRecordsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly aliases: ErpAliasesService,
   ) {}
 
   // ── Purchase orders ─────────────────────────────────────────────────────
@@ -127,6 +152,11 @@ export class MaximoRecordsService {
         Prisma.sql`(c.ponum ILIKE ${term} OR c.description ILIKE ${term})`,
       );
     }
+    if (query.year) {
+      conditions.push(
+        Prisma.sql`true ${andYear('c.created_at_source', query.year)}`,
+      );
+    }
     return conditions.length
       ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`
       : Prisma.empty;
@@ -153,7 +183,7 @@ export class MaximoRecordsService {
     ]);
 
     return {
-      data: rows.map((row) => this.mapPoRow(row)),
+      data: await this.withPoAliases(rows.map((row) => this.mapPoRow(row))),
       meta: buildMeta(counts[0]?.count ?? 0, page, limit),
     };
   }
@@ -171,7 +201,9 @@ export class MaximoRecordsService {
         ORDER BY c.approved_at DESC NULLS LAST, c.ponum ASC
         LIMIT ${EXPORT_MAX_ROWS + 1}`);
     return {
-      rows: rows.slice(0, EXPORT_MAX_ROWS).map((row) => this.mapPoRow(row)),
+      rows: await this.withPoAliases(
+        rows.slice(0, EXPORT_MAX_ROWS).map((row) => this.mapPoRow(row)),
+      ),
       truncated: rows.length > EXPORT_MAX_ROWS,
     };
   }
@@ -189,9 +221,9 @@ export class MaximoRecordsService {
           coalesce(c.prnum, '') ASC, coalesce(c.contractnum, '') ASC
         LIMIT ${EXPORT_MAX_ROWS + 1}`);
     return {
-      rows: rows
-        .slice(0, EXPORT_MAX_ROWS)
-        .map((row) => this.mapContractRow(row)),
+      rows: await this.withContractAliases(
+        rows.slice(0, EXPORT_MAX_ROWS).map((row) => this.mapContractRow(row)),
+      ),
       truncated: rows.length > EXPORT_MAX_ROWS,
     };
   }
@@ -210,9 +242,10 @@ export class MaximoRecordsService {
       (a, b) => (b.revisionnum ?? -1) - (a.revisionnum ?? -1),
     );
     const current = sorted[0];
+    const [view] = await this.withPoAliases([this.mapPoRow(current)]);
     return {
       current: {
-        ...this.mapPoRow(current),
+        ...view,
         ...(includeRaw ? { raw: current.raw } : {}),
       },
       revisions: sorted.map((row) => ({
@@ -255,6 +288,11 @@ export class MaximoRecordsService {
         Prisma.sql`(c.prnum ILIKE ${term} OR c.contractnum ILIKE ${term} OR c.vendor_name ILIKE ${term})`,
       );
     }
+    if (query.year) {
+      conditions.push(
+        Prisma.sql`true ${andYear('c.created_at_source', query.year)}`,
+      );
+    }
     return conditions.length
       ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`
       : Prisma.empty;
@@ -282,7 +320,9 @@ export class MaximoRecordsService {
     ]);
 
     return {
-      data: rows.map((row) => this.mapContractRow(row)),
+      data: await this.withContractAliases(
+        rows.map((row) => this.mapContractRow(row)),
+      ),
       meta: buildMeta(counts[0]?.count ?? 0, page, limit),
     };
   }
@@ -310,9 +350,12 @@ export class MaximoRecordsService {
       (a, b) => (b.revisionnum ?? -1) - (a.revisionnum ?? -1),
     );
     const current = sorted[0];
+    const [view] = await this.withContractAliases([
+      this.mapContractRow(current),
+    ]);
     return {
       current: {
-        ...this.mapContractRow(current),
+        ...view,
         ...(includeRaw ? { raw: current.raw } : {}),
       },
       revisions: sorted.map((row) => ({
@@ -340,18 +383,21 @@ export class MaximoRecordsService {
 
   // ── Summary ─────────────────────────────────────────────────────────────
 
-  async getSummary(): Promise<MaximoSummary> {
+  async getSummary(year: number | null = null): Promise<MaximoSummary> {
+    const inYear = andYear('created_at_source', year);
     const [poByStatus, contractGroups, lastPoRun, lastContractRun] =
       await Promise.all([
         this.prisma.$queryRaw<MaximoStatusCount[]>(Prisma.sql`
           WITH current AS (${CURRENT_POS})
           SELECT status, count(*)::int AS count FROM current
+          WHERE true ${inYear}
           GROUP BY status ORDER BY count DESC`),
         this.prisma.$queryRaw<
           Array<{ status: string | null; has_contract: boolean; count: number }>
         >(Prisma.sql`
           WITH current AS (${CURRENT_CONTRACTS})
           SELECT status, has_contract, count(*)::int AS count FROM current
+          WHERE true ${inYear}
           GROUP BY status, has_contract ORDER BY count DESC`),
         this.findLastRun('purchase_orders'),
         this.findLastRun('contracts'),
@@ -371,6 +417,7 @@ export class MaximoRecordsService {
 
     return {
       syncEnabled: this.isSyncEnabled(),
+      year,
       purchaseOrders: {
         total: poByStatus.reduce((sum, s) => sum + s.count, 0),
         byStatus: poByStatus,
@@ -415,6 +462,43 @@ export class MaximoRecordsService {
     return run ?? null;
   }
 
+  /** D6: nombres de solicitante/aprobador según los alias de Maximo. */
+  private async withPoAliases(
+    rows: MaximoPurchaseOrderView[],
+  ): Promise<MaximoPurchaseOrderView[]> {
+    const names = await this.aliases.resolveMany(
+      'maximo',
+      rows.flatMap((r) => [r.requested_by, r.approved_by]),
+    );
+    return rows.map((r) => ({
+      ...r,
+      requested_by_name: r.requested_by
+        ? (names.get(r.requested_by) ?? null)
+        : null,
+      approved_by_name: r.approved_by
+        ? (names.get(r.approved_by) ?? null)
+        : null,
+    }));
+  }
+
+  private async withContractAliases(
+    rows: MaximoContractView[],
+  ): Promise<MaximoContractView[]> {
+    const names = await this.aliases.resolveMany(
+      'maximo',
+      rows.flatMap((r) => [r.requested_by, r.approved_by]),
+    );
+    return rows.map((r) => ({
+      ...r,
+      requested_by_name: r.requested_by
+        ? (names.get(r.requested_by) ?? null)
+        : null,
+      approved_by_name: r.approved_by
+        ? (names.get(r.approved_by) ?? null)
+        : null,
+    }));
+  }
+
   private mapPoRow(row: PoSqlRow): MaximoPurchaseOrderView {
     return {
       id: row.id,
@@ -431,9 +515,11 @@ export class MaximoRecordsService {
       ab_tipocomp: row.ab_tipocomp,
       ab_clasfpo: row.ab_clasfpo,
       requested_by: row.requested_by,
+      requested_by_name: null,
       department: row.department,
       approved_at: row.approved_at,
       approved_by: row.approved_by,
+      approved_by_name: null,
       waiting_approval_at: row.waiting_approval_at,
       created_at_source: row.created_at_source,
       last_changed_at: row.last_changed_at,
@@ -442,6 +528,8 @@ export class MaximoRecordsService {
   }
 
   private mapContractRow(row: ContractSqlRow): MaximoContractView {
+    const contractValue = toNumber(row.contract_value);
+    const consumed = toNumber(row.consumed_value);
     return {
       id: row.id,
       prnum: row.prnum,
@@ -456,12 +544,21 @@ export class MaximoRecordsService {
       vendor_id: row.vendor_id,
       vendor_name: row.vendor_name,
       requested_by: row.requested_by,
+      requested_by_name: null,
       department: row.department,
       approved_at: row.approved_at,
       approved_by: row.approved_by,
+      approved_by_name: null,
       created_at_source: row.created_at_source,
       contract_ref_num: row.contract_ref_num,
-      contract_value: toNumber(row.contract_value),
+      contract_value: contractValue,
+      pr_total: toNumber(row.pr_total),
+      consumed_value: consumed,
+      // D8: saldo = valor − consumido; null si falta alguno (nunca 0)
+      balance_value:
+        contractValue === null || consumed === null
+          ? null
+          : Math.round((contractValue - consumed) * 100) / 100,
       purchview_count: row.purchview_count,
       has_contract: row.has_contract,
       last_changed_at: row.last_changed_at,

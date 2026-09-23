@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { ExpeditingService } from '../expediting/expediting.service';
 import { PurchaseCommitteesService } from '../purchase-committees/purchase-committees.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { PurchaseReportsService } from './purchase-reports.service';
 
 /**
@@ -68,11 +69,20 @@ function makeService(queryResults: unknown[][] = []) {
   const committees = {
     dashboardTiempos: jest.fn().mockResolvedValue({ byApprover: [] }),
   };
+  const aliases = {
+    resolveMany: jest.fn().mockResolvedValue(new Map<string, string>()),
+    displayName: jest.fn((_s: string, code: string | null) =>
+      Promise.resolve(code),
+    ),
+    forProfiles: jest.fn().mockResolvedValue([]),
+    byCode: jest.fn().mockResolvedValue(new Map()),
+  };
   const service = new PurchaseReportsService(
     prisma as unknown as PrismaService,
     approvals as unknown as ApprovalsService,
     expediting as unknown as ExpeditingService,
     committees as unknown as PurchaseCommitteesService,
+    aliases as unknown as ErpAliasesService,
   );
   return { service, prisma, approvals, expediting, committees };
 }
@@ -274,12 +284,14 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
     expect(tiempos.sap.pendientes_por_aprobador).toEqual([
       {
         aprobador: 'David Rodríguez',
+        usuario: 'David Rodríguez',
         pendientes: 3,
         dias_esperando_max: 6,
         dias_esperando_promedio: 4.3,
       },
       {
         aprobador: 'Sin nombre en SAP',
+        usuario: null,
         pendientes: 1,
         dias_esperando_max: 1,
         dias_esperando_promedio: 1,
@@ -291,10 +303,34 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
       dias_esperando_promedio: 8.5,
     });
     expect(tiempos.abent_niveles).toEqual([
-      { level: 1, role: 'aprobador_nivel_1', aprobadores: [] },
-      { level: 2, role: 'aprobador_nivel_2', aprobadores: [] },
-      { level: 3, role: 'aprobador_nivel_3', aprobadores: ['Uriel Lases'] },
-      { level: 4, role: 'director_general', aprobadores: [] },
+      {
+        level: 1,
+        role: 'aprobador_nivel_1',
+        aprobadores: [],
+        erp_usuarios: [],
+        sap_pendientes: 0,
+      },
+      {
+        level: 2,
+        role: 'aprobador_nivel_2',
+        aprobadores: [],
+        erp_usuarios: [],
+        sap_pendientes: 0,
+      },
+      {
+        level: 3,
+        role: 'aprobador_nivel_3',
+        aprobadores: ['Uriel Lases'],
+        erp_usuarios: [],
+        sap_pendientes: 0,
+      },
+      {
+        level: 4,
+        role: 'director_general',
+        aprobadores: [],
+        erp_usuarios: [],
+        sap_pendientes: 0,
+      },
     ]);
   });
 });

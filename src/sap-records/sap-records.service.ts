@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
+import { andYear } from '../common/sql/erp-views.sql';
 import { deriveSapLines } from './sap-document-raw';
 import { SapApprovalQueryDto } from './dto/sap-approval-query.dto';
 import { SapDocQueryDto, SapDocStatusKey } from './dto/sap-doc-query.dto';
@@ -39,6 +41,14 @@ import {
  *  - A1: resumen con montos POR MONEDA y días promedio de gestión.
  *  - B1: `listAllForExport` sin paginar (tope) para el Excel.
  *  - B5: cola de autorización (`listApprovalRequests`).
+ *
+ * Bloque 2026-09-23:
+ *  - D1: `origin` (sap | maximo) sobre `maximo_ponum`; `maximo_po_exists`
+ *    en cada OC (existe en el staging de Maximo → se cuenta una vez en los
+ *    totales combinados). El resumen (/sap/summary) sigue con el total
+ *    PROPIO de SAP (tarjeta por sistema) y expone `migradas`.
+ *  - D4: `year` en listados y resumen.
+ *  - D6: `maximo_requested_by` se traduce con los alias de Maximo.
  */
 
 const DEFAULT_LIMIT = 20;
@@ -177,6 +187,7 @@ export class SapRecordsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly aliases: ErpAliasesService,
   ) {}
 
   // ── Órdenes de compra ────────────────────────────────────────────────────
@@ -376,7 +387,7 @@ export class SapRecordsService {
 
   // ── Resumen (dashboard) ──────────────────────────────────────────────────
 
-  async getSummary(): Promise<SapSummary> {
+  async getSummary(year: number | null = null): Promise<SapSummary> {
     const [
       po,
       pr,
@@ -385,9 +396,10 @@ export class SapRecordsService {
       lastPoRun,
       lastPrRun,
       lastArRun,
+      migradas,
     ] = await Promise.all([
-      this.entitySummary('purchase_orders'),
-      this.entitySummary('purchase_requests'),
+      this.entitySummary('purchase_orders', year),
+      this.entitySummary('purchase_requests', year),
       this.prisma.sap_approval_requests.count(),
       this.prisma.sap_approval_requests.count({
         where: { status: 'arsPending' },
@@ -395,12 +407,28 @@ export class SapRecordsService {
       this.lastRun('purchase_orders'),
       this.lastRun('purchase_requests'),
       this.lastRun('approval_requests'),
+      // D1: OC creadas desde Maximo; `en_maximo` = existen allá (se
+      // descuentan en los totales combinados del dashboard).
+      this.prisma.$queryRaw<Array<{ total: number; en_maximo: number }>>(
+        Prisma.sql`
+          SELECT count(*) FILTER (WHERE maximo_ponum IS NOT NULL)::int AS total,
+                 count(*) FILTER (WHERE maximo_ponum IS NOT NULL AND EXISTS (
+                   SELECT 1 FROM maximo_purchase_orders m
+                   WHERE m.ponum = sap_purchase_orders.maximo_ponum))::int AS en_maximo
+          FROM sap_purchase_orders
+          WHERE cancelled IS DISTINCT FROM true ${andYear('doc_date', year)}`,
+      ),
     ]);
     return {
       syncEnabled: this.isSyncEnabled(),
+      year,
       purchaseOrders: po,
       purchaseRequests: pr,
       approvalRequests: { total: approvalsTotal, pending: approvalsPending },
+      migradas: {
+        total: Number(migradas[0]?.total ?? 0),
+        en_maximo: Number(migradas[0]?.en_maximo ?? 0),
+      },
       lastSync: {
         purchase_orders: lastPoRun,
         purchase_requests: lastPrRun,
@@ -447,11 +475,19 @@ export class SapRecordsService {
         });
       }
     }
-    return this.buildWhere(
+    const where = this.buildWhere(
       query,
       ['card_name', 'card_code', 'created_by_name', 'maximo_ponum'],
       extra,
     );
+    // D1: origen de la OC (capturada en SAP vs. creada desde Maximo)
+    if (query.origin === 'maximo') {
+      return { AND: [where, { maximo_ponum: { not: null } }] };
+    }
+    if (query.origin === 'sap') {
+      return { AND: [where, { maximo_ponum: null }] };
+    }
+    return where;
   }
 
   /**
@@ -464,7 +500,13 @@ export class SapRecordsService {
   >(
     rows: T[],
   ): Promise<
-    Array<T & { requester_names: string[]; maximo_requested_by: string | null }>
+    Array<
+      T & {
+        requester_names: string[];
+        maximo_requested_by: string | null;
+        maximo_po_exists: boolean;
+      }
+    >
   > {
     const entries = [...new Set(rows.flatMap((r) => r.base_request_entries))];
     const ponums = [
@@ -474,6 +516,7 @@ export class SapRecordsService {
     ];
     const names = new Map<number, string>();
     const maximoRequesters = new Map<string, string>();
+    const maximoExists = new Set<string>();
     const [requests, maximo] = await Promise.all([
       entries.length === 0
         ? []
@@ -495,11 +538,24 @@ export class SapRecordsService {
       const name = r.requester_name ?? r.requester;
       if (name) names.set(r.doc_entry, name);
     }
+    // D6: el REQUESTEDBY de Maximo es un código; se traduce con los alias.
+    const aliasNames = await this.aliases.resolveMany(
+      'maximo',
+      maximo.map((m) => m.requested_by),
+    );
     for (const m of maximo) {
-      if (m.requested_by) maximoRequesters.set(m.ponum, m.requested_by);
+      maximoExists.add(m.ponum);
+      if (m.requested_by) {
+        maximoRequesters.set(
+          m.ponum,
+          aliasNames.get(m.requested_by) ?? m.requested_by,
+        );
+      }
     }
     return rows.map((row) => ({
       ...row,
+      maximo_po_exists:
+        row.maximo_ponum !== null && maximoExists.has(row.maximo_ponum),
       maximo_requested_by:
         row.maximo_ponum === null
           ? null
@@ -531,6 +587,15 @@ export class SapRecordsService {
         },
       });
     }
+    // D4: año calendario (rango sobre doc_date para usar el índice)
+    if (query.year) {
+      and.push({
+        doc_date: {
+          gte: new Date(Date.UTC(query.year, 0, 1)),
+          lt: new Date(Date.UTC(query.year + 1, 0, 1)),
+        },
+      });
+    }
     const search = query.search?.trim();
     if (search) {
       const or: Record<string, unknown>[] = searchFields.map((field) => ({
@@ -556,11 +621,13 @@ export class SapRecordsService {
    */
   private async entitySummary(
     entity: 'purchase_orders' | 'purchase_requests',
+    year: number | null = null,
   ): Promise<SapEntitySummary> {
     const table =
       entity === 'purchase_orders'
         ? Prisma.sql`sap_purchase_orders`
         : Prisma.sql`sap_purchase_requests`;
+    const inYear = andYear('doc_date', year);
     const [byStatus, byCurrency, openByCurrency, agg, gestion] =
       await Promise.all([
         this.prisma.$queryRaw<
@@ -571,19 +638,19 @@ export class SapRecordsService {
           }>
         >(Prisma.sql`
           SELECT document_status, cancelled, count(*)::int AS count
-          FROM ${table} GROUP BY document_status, cancelled`),
+          FROM ${table} WHERE true ${inYear} GROUP BY document_status, cancelled`),
         this.prisma.$queryRaw<
           Array<{ currency: string | null; total: unknown; count: number }>
         >(Prisma.sql`
           SELECT currency, coalesce(sum(doc_total), 0) AS total, count(*)::int AS count
-          FROM ${table} WHERE cancelled IS DISTINCT FROM true
+          FROM ${table} WHERE cancelled IS DISTINCT FROM true ${inYear}
           GROUP BY currency ORDER BY total DESC`),
         this.prisma.$queryRaw<
           Array<{ currency: string | null; total: unknown; count: number }>
         >(Prisma.sql`
           SELECT currency, coalesce(sum(doc_total), 0) AS total, count(*)::int AS count
           FROM ${table}
-          WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true
+          WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true ${inYear}
           GROUP BY currency ORDER BY total DESC`),
         this.prisma.$queryRaw<
           Array<{
@@ -599,7 +666,7 @@ export class SapRecordsService {
                  coalesce(sum(lines_total), 0)::int AS lines_total,
                  coalesce(sum(lines_classified), 0)::int AS lines_classified,
                  count(*) FILTER (WHERE ahorro_total IS NOT NULL)::int AS con_ahorro
-          FROM ${table}`),
+          FROM ${table} WHERE true ${inYear}`),
         // Días de gestión: cerradas no canceladas; closing_date (0011) o,
         // como proxy documentado, update_date_source. null si no hay base.
         this.prisma.$queryRaw<Array<{ dias: unknown }>>(Prisma.sql`
@@ -608,7 +675,7 @@ export class SapRecordsService {
           WHERE document_status = 'bost_Close' AND cancelled IS DISTINCT FROM true
             AND doc_date IS NOT NULL
             AND coalesce(closing_date, update_date_source) IS NOT NULL
-            AND coalesce(closing_date, update_date_source) >= doc_date`),
+            AND coalesce(closing_date, update_date_source) >= doc_date ${inYear}`),
       ]);
 
     const counts = new Map<string, number>();

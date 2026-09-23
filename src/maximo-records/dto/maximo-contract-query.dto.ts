@@ -8,6 +8,7 @@ import {
 import { Transform } from 'class-transformer';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { toStatusList } from '../../sap-records/dto/sap-doc-query.dto';
+import { IsYearQuery } from '../../common/dto/year-query.util';
 
 /**
  * Fase INT-5 — Filtros del listado de contratos de Maximo (vista actual).
@@ -43,4 +44,8 @@ export class MaximoContractQueryDto extends PaginationDto {
   @IsOptional()
   @IsISO8601()
   end_to?: string;
+
+  /** D4 (2026-09-23): año calendario de la fecha en Maximo (created_at_source). */
+  @IsYearQuery()
+  year?: number;
 }

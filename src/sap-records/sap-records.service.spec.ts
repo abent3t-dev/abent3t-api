@@ -1,6 +1,7 @@
 import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { SapRecordsService } from './sap-records.service';
 
 /**
@@ -109,9 +110,18 @@ function makeService() {
     // Forma REAL post-Joi: boolean (la validación convierte 'true' → true).
     get: jest.fn((key: string) => (key === 'SAP_SYNC_ENABLED' ? true : '')),
   };
+  const aliases = {
+    resolveMany: jest.fn().mockResolvedValue(new Map<string, string>()),
+    displayName: jest.fn((_s: string, code: string | null) =>
+      Promise.resolve(code),
+    ),
+    forProfiles: jest.fn().mockResolvedValue([]),
+    byCode: jest.fn().mockResolvedValue(new Map()),
+  };
   const service = new SapRecordsService(
     prisma as unknown as PrismaService,
     config as unknown as ConfigService,
+    aliases as unknown as ErpAliasesService,
   );
   return { service, prisma };
 }
