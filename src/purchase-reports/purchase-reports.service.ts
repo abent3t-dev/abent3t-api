@@ -33,12 +33,12 @@ interface MonthCount {
 }
 
 /** Vista actual del staging (misma definición que Int-5/maximo-records). */
-const CURRENT_MAXIMO_POS = Prisma.sql`
+export const CURRENT_MAXIMO_POS = Prisma.sql`
   SELECT DISTINCT ON (ponum, coalesce(siteid, '')) *
   FROM maximo_purchase_orders
   ORDER BY ponum, coalesce(siteid, ''), coalesce(revisionnum, 0) DESC`;
 
-const CURRENT_MAXIMO_CONTRACTS = Prisma.sql`
+export const CURRENT_MAXIMO_CONTRACTS = Prisma.sql`
   SELECT DISTINCT ON (coalesce(prnum, ''), coalesce(contractnum, '')) *
   FROM maximo_contracts
   ORDER BY coalesce(prnum, ''), coalesce(contractnum, ''),
@@ -119,7 +119,13 @@ export class PurchaseReportsService {
 
   /** Default: últimos 12 meses. Tope: 24 (regla 5). */
   resolvePeriod(dto: ReportPeriodDto): ReportPeriod {
-    const to = dto.to ? new Date(dto.to) : new Date();
+    // Un `to` de solo fecha incluye el día completo (una OC de Maximo creada
+    // el domingo a mediodía sí entra en la semana que termina el domingo).
+    const to = dto.to
+      ? /^\d{4}-\d{2}-\d{2}$/.test(dto.to)
+        ? new Date(`${dto.to}T23:59:59.999Z`)
+        : new Date(dto.to)
+      : new Date();
     const from = dto.from
       ? new Date(dto.from)
       : new Date(

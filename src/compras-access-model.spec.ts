@@ -94,6 +94,8 @@ const OPEN_READS = [
   '/maximo/contracts/export',
   '/compras/contratos/export',
   '/suppliers/export',
+  // 2026-09-23: reporte semanal de Compras (Excel)
+  '/compras/reportes/semanal/export',
   '/approvals/requisition/:rqId',
   '/approvals/stats',
   '/requisitions',

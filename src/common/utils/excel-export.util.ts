@@ -18,6 +18,8 @@ export interface ExcelColumn<T> {
   width?: number;
   /** 'money' aplica formato numérico con 2 decimales; 'date' dd/mm/yyyy. */
   kind?: 'text' | 'money' | 'date' | 'int';
+  /** Formato numérico por fila (columnas que mezclan conteos y montos). */
+  cellFormat?: (row: T) => string | undefined;
 }
 
 export const NO_DISPONIBLE = 'No disponible';
@@ -59,9 +61,57 @@ export async function buildExcel<T>(
   rows: T[],
   options: { truncated?: boolean; note?: string } = {},
 ): Promise<Buffer> {
+  const notes: string[] = [];
+  if (options.truncated) {
+    notes.push(
+      'El listado excede el tope de filas del export; se incluyen las primeras. Acota con los filtros para exportar el resto.',
+    );
+  }
+  if (options.note) notes.push(options.note);
+  return buildWorkbook([excelSheet(sheetName, columns, rows)], notes);
+}
+
+/** Hoja lista para `buildWorkbook` (el tipo de fila queda encapsulado). */
+export interface ExcelSheet {
+  name: string;
+  fill: (workbook: ExcelJS.Workbook) => void;
+}
+
+export function excelSheet<T>(
+  name: string,
+  columns: ExcelColumn<T>[],
+  rows: T[],
+): ExcelSheet {
+  return { name, fill: (workbook) => addSheet(workbook, name, columns, rows) };
+}
+
+/**
+ * Libro con varias hojas (reporte semanal). `notes` va en una hoja "Nota"
+ * al final: definiciones y avisos, una fila por texto.
+ */
+export async function buildWorkbook(
+  sheets: ExcelSheet[],
+  notes: string[] = [],
+): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'ABENT 3T';
   workbook.created = new Date();
+  for (const sheet of sheets) sheet.fill(workbook);
+  if (notes.length > 0) {
+    const sheet = workbook.addWorksheet('Nota');
+    sheet.getColumn(1).width = 120;
+    for (const note of notes) sheet.addRow([note]);
+  }
+  const out = await workbook.xlsx.writeBuffer();
+  return Buffer.from(out as ArrayBuffer);
+}
+
+function addSheet<T>(
+  workbook: ExcelJS.Workbook,
+  sheetName: string,
+  columns: ExcelColumn<T>[],
+  rows: T[],
+): void {
   const sheet = workbook.addWorksheet(sheetName.slice(0, 31), {
     views: [{ state: 'frozen', xSplit: 0, ySplit: 1 }],
   });
@@ -84,7 +134,11 @@ export async function buildExcel<T>(
     columns.forEach((c, i) => {
       values[`c${i}`] = toCell(c.value(row), c.kind);
     });
-    sheet.addRow(values);
+    const added = sheet.addRow(values);
+    columns.forEach((c, i) => {
+      const fmt = c.cellFormat?.(row);
+      if (fmt) added.getCell(i + 1).numFmt = fmt;
+    });
   }
   columns.forEach((c, i) => {
     const col = sheet.getColumn(`c${i}`);
@@ -96,19 +150,6 @@ export async function buildExcel<T>(
     from: { row: 1, column: 1 },
     to: { row: 1, column: columns.length },
   };
-
-  if (options.truncated || options.note) {
-    const notes = workbook.addWorksheet('Nota');
-    if (options.truncated) {
-      notes.addRow([
-        'El listado excede el tope de filas del export; se incluyen las primeras. Acota con los filtros para exportar el resto.',
-      ]);
-    }
-    if (options.note) notes.addRow([options.note]);
-  }
-
-  const out = await workbook.xlsx.writeBuffer();
-  return Buffer.from(out as ArrayBuffer);
 }
 
 /** Nombre de archivo con fecha: `<base>_2026-09-22.xlsx`. */

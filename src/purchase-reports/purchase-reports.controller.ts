@@ -1,5 +1,8 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
+import { sendExcel } from '../common/utils/excel-export.util';
 import { PurchaseReportsService } from './purchase-reports.service';
+import { WeeklyReportService } from './weekly-report.service';
 import { ReportPeriodDto } from './dto/report-period.dto';
 
 // Roles de compras (§Roles y Permisos)
@@ -11,7 +14,18 @@ import { ReportPeriodDto } from './dto/report-period.dto';
  */
 @Controller('compras/reportes')
 export class PurchaseReportsController {
-  constructor(private readonly service: PurchaseReportsService) {}
+  constructor(
+    private readonly service: PurchaseReportsService,
+    private readonly weekly: WeeklyReportService,
+  ) {}
+
+  // Reporte semanal (Ingrid, 2026-09-23): Excel con resumen contra el
+  // periodo anterior y el detalle del periodo. Lectura abierta, sin raw.
+  @Get('semanal/export')
+  async exportWeekly(@Query() query: ReportPeriodDto, @Res() res: Response) {
+    const { buffer, filename } = await this.weekly.buildWorkbook(query);
+    sendExcel(res, buffer, filename);
+  }
 
   // Sprint 2026-09-22 (B2): volumen y montos de SAP + Maximo por periodo.
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
