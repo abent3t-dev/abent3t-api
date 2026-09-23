@@ -36,6 +36,17 @@ function makeService(queryResults: unknown[][] = []) {
       findMany: jest.fn().mockResolvedValue([]),
     },
     suppliers: { count: jest.fn().mockResolvedValue(1) },
+    user_roles: {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          role: 'aprobador_nivel_3',
+          profiles_user_roles_profile_idToprofiles: {
+            full_name: 'Uriel Lases',
+            email: 'uriel@abent3t.com',
+          },
+        },
+      ]),
+    },
   };
   const approvals = {
     getStats: jest.fn().mockResolvedValue({ 1: { level: 1 } }),
@@ -197,5 +208,93 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
     expect(resumen.entregas.vencidas).toBe(4);
     expect(resumen.contratos.valor_vigentes).toBe(1000000);
     expect(resumen.proveedores.bloqueados).toBe(1);
+    // Sin staging ERP: los totales de todas las fuentes = los propios
+    expect(resumen.todas_las_fuentes.solicitudes.creadas).toBe(4);
+    expect(resumen.todas_las_fuentes.dias_gestion.sap).toBeNull();
+  });
+
+  it('resumen: suma SAP + Maximo + ABENT; montos de la misma moneda se juntan, monedas distintas no', async () => {
+    const { service } = makeService([
+      [
+        {
+          sap_rq_creadas: 300,
+          sap_rq_abiertas: 27,
+          sap_dias: '6.34',
+          maximo_rq_creadas: 4,
+          maximo_rq_abiertas: 1,
+          maximo_dias: null,
+          maximo_contratos_por_vencer: 2,
+        },
+      ],
+      [
+        { fuente: 'sap', currency: 'MXN', count: 1000, total: '5000.50' },
+        { fuente: 'sap', currency: 'USD', count: 10, total: '70' },
+        { fuente: 'maximo', currency: 'MXN', count: 5, total: '100' },
+      ],
+    ]);
+    const resumen = await service.getResumen({
+      from: '2026-01-01',
+      to: '2026-06-30',
+    });
+    const todas = resumen.todas_las_fuentes;
+    expect(todas.solicitudes.creadas).toBe(308); // 300 + 4 + 4 propias
+    expect(todas.solicitudes.abiertas).toBe(32);
+    expect(todas.dias_gestion).toEqual({ sap: 6.3, maximo: null, abent: 6.5 });
+    expect(todas.ordenes.total).toBe(1018); // 1000 + 10 + 5 + 3 propias
+    expect(todas.ordenes.monto_por_moneda).toEqual([
+      { currency: 'MXN', total: 6000.5, count: 1008 },
+      { currency: 'USD', total: 70, count: 10 },
+    ]);
+    expect(todas.contratos_por_vencer_30_dias).toEqual({
+      total: 4,
+      por_fuente: { abent: 2, maximo: 2 },
+    });
+  });
+
+  it('tiempos: pendientes por aprobador en SAP, espera de Maximo y niveles ABENT con su asignación', async () => {
+    const { service } = makeService([
+      [], // maximo po
+      [], // maximo po por aprobador
+      [], // maximo contratos
+      [], // sap autorizadas
+      [], // sap por aprobador
+      [{ total: 9, dias: '4.2' }],
+      [
+        {
+          aprobador: 'David Rodríguez',
+          pendientes: 3,
+          dias_max: 6,
+          dias_promedio: '4.33',
+        },
+        { aprobador: null, pendientes: 1, dias_max: 1, dias_promedio: '1' },
+      ],
+      [{ total: 2, dias_max: 12, dias_promedio: '8.5' }],
+    ]);
+    const tiempos = await service.getTiemposAprobacion();
+    expect(tiempos.sap.pendientes_por_aprobador).toEqual([
+      {
+        aprobador: 'David Rodríguez',
+        pendientes: 3,
+        dias_esperando_max: 6,
+        dias_esperando_promedio: 4.3,
+      },
+      {
+        aprobador: 'Sin nombre en SAP',
+        pendientes: 1,
+        dias_esperando_max: 1,
+        dias_esperando_promedio: 1,
+      },
+    ]);
+    expect(tiempos.maximo_pendientes).toEqual({
+      total: 2,
+      dias_esperando_max: 12,
+      dias_esperando_promedio: 8.5,
+    });
+    expect(tiempos.abent_niveles).toEqual([
+      { level: 1, role: 'aprobador_nivel_1', aprobadores: [] },
+      { level: 2, role: 'aprobador_nivel_2', aprobadores: [] },
+      { level: 3, role: 'aprobador_nivel_3', aprobadores: ['Uriel Lases'] },
+      { level: 4, role: 'director_general', aprobadores: [] },
+    ]);
   });
 });
