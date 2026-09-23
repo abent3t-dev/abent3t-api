@@ -17,7 +17,11 @@ async function main(): Promise<void> {
   await prisma.$connect();
   try {
     const email = new EmailService(new ConfigService());
-    const service = new ContractExpiryService(prisma, email);
+    const service = new ContractExpiryService(
+      prisma,
+      email,
+      new ConfigService(),
+    );
     const result = await service.runCheck();
     console.log('Chequeo de vencimientos (§15):');
     console.log(`  contratos vigentes revisados: ${result.checkedContracts}`);

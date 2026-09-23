@@ -84,6 +84,13 @@ export const envValidationSchema = Joi.object({
   REMINDER_FIRST_DAYS: Joi.number().integer().positive().default(3),
   REMINDER_FOLLOWUP_DAYS: Joi.number().integer().positive().default(7),
   REMINDER_ESCALATION_DAYS: Joi.number().integer().positive().default(14),
+  // D11 (César, 2026-09-22): alerta de vencimiento de contratos desde N días
+  // antes y DIARIA hasta que el contrato se renueve o cierre.
+  CONTRACT_ALERT_DAYS_BEFORE: Joi.number()
+    .integer()
+    .min(1)
+    .max(365)
+    .default(45),
 
   // ===== Compras: import administrativo =====
   REQUISITIONS_IMPORT_MAX_BATCH: Joi.number().integer().positive().default(500),

@@ -1,15 +1,20 @@
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { ContractExpiryService } from './contract-expiry.service';
 import { cdmxDateUtc, daysUntil } from './contracts.dates';
 
 /**
- * Fase §15. Job de alertas 30/7/0 probado con reloj INYECTADO y Prisma
- * simulado en memoria — cero red, cero BD, cero correos reales.
+ * Fase §15 / bloque 2026-09-23 (D11). Job de alertas probado con reloj
+ * INYECTADO y Prisma simulado en memoria — cero red, cero BD, cero correos
+ * reales. Regla nueva: alerta desde CONTRACT_ALERT_DAYS_BEFORE (45) días
+ * antes, DIARIA hasta que el contrato se renueve o cierre; al día 0 pasa a
+ * vencido y sigue alertando como vencido.
  */
 
 /** 2026-09-01 12:00 UTC = 06:00 CDMX del mismo día. */
 const NOW = new Date('2026-09-01T12:00:00Z');
+const TOMORROW = new Date('2026-09-02T12:00:00Z');
 const TODAY = cdmxDateUtc(NOW); // 2026-09-01 UTC-midnight
 
 const dayAt = (daysFromToday: number) =>
@@ -22,7 +27,13 @@ interface NotifRow {
   recipient_role: string | null;
 }
 
-function makeHarness(contracts: Array<Record<string, unknown>>) {
+function makeHarness(
+  contracts: Array<Record<string, unknown>>,
+  options: {
+    admins?: Array<{ email: string; full_name: string | null }>;
+    daysBefore?: string;
+  } = {},
+) {
   const notifications: NotifRow[] = [];
   const emailsSent: Array<{ to: string; template: string }> = [];
   let failEmails = false;
@@ -50,7 +61,9 @@ function makeHarness(contracts: Array<Record<string, unknown>>) {
       findMany: jest.fn(() =>
         Promise.resolve(
           contracts.filter(
-            (c) => c.status === 'vigente' && c.is_active !== false,
+            (c) =>
+              (c.status === 'vigente' || c.status === 'vencido') &&
+              c.is_active !== false,
           ),
         ),
       ),
@@ -67,6 +80,9 @@ function makeHarness(contracts: Array<Record<string, unknown>>) {
           return Promise.resolve(row);
         },
       ),
+    },
+    profiles: {
+      findMany: jest.fn(() => Promise.resolve(options.admins ?? [])),
     },
     contract_expiry_notifications: notifTable,
     // Transacción simulada: si el callback lanza, se revierten los inserts
@@ -91,17 +107,20 @@ function makeHarness(contracts: Array<Record<string, unknown>>) {
       if (failEmails) {
         return Promise.resolve({ success: false, error: 'smtp caído' });
       }
-      emailsSent.push({
-        to: to.email,
-        template: '',
-      });
+      emailsSent.push({ to: to.email, template: '' });
       return Promise.resolve({ success: true, messageId: 'sim' });
     }),
+  };
+  const config = {
+    get: jest.fn((key: string) =>
+      key === 'CONTRACT_ALERT_DAYS_BEFORE' ? options.daysBefore : undefined,
+    ),
   };
 
   const service = new ContractExpiryService(
     prisma as unknown as PrismaService,
     emailService as unknown as EmailService,
+    config as unknown as ConfigService,
   );
   return {
     service,
@@ -135,45 +154,65 @@ const contractAt = (
   ...overrides,
 });
 
-describe('ContractExpiryService (reloj inyectado)', () => {
-  it('contrato a 30 días → exactamente una alerta por destinatario (comprador + responsable)', async () => {
-    const { service, notifications, emailsSent } = makeHarness([
-      contractAt(30),
-    ]);
+const ADMINS = [{ email: 'ingrid@abent3t.com', full_name: 'Ingrid' }];
+
+describe('ContractExpiryService (reloj inyectado, umbral 45 días, diaria)', () => {
+  it('umbral por env (default 45) y a 46 días no alerta', async () => {
+    const { service, notifications } = makeHarness([contractAt(46)]);
+    expect(service.alertDaysBefore).toBe(45);
+    const result = await service.runCheck(NOW);
+    expect(result.notificationsSent).toBe(0);
+    expect(notifications).toHaveLength(0);
+
+    const custom = makeHarness([contractAt(46)], { daysBefore: '60' });
+    expect(custom.service.alertDaysBefore).toBe(60);
+    expect((await custom.service.runCheck(NOW)).notificationsSent).toBe(2);
+  });
+
+  it('a 45 días → una alerta por destinatario: comprador + responsable + admins', async () => {
+    const { service, notifications, emailsSent } = makeHarness(
+      [contractAt(45)],
+      { admins: ADMINS },
+    );
     const result = await service.runCheck(NOW);
 
-    expect(result.notificationsSent).toBe(2);
+    expect(result.notificationsSent).toBe(3);
     expect(result.expiredMarked).toBe(0);
-    expect(notifications).toHaveLength(2);
     expect(new Set(notifications.map((n) => n.notification_type))).toEqual(
-      new Set(['30_days_before']),
+      new Set(['expiring:2026-09-01']),
     );
     expect(notifications.map((n) => n.recipient_role).sort()).toEqual([
       'comprador',
+      'contract_admin',
       'responsible_user',
     ]);
     expect(emailsSent.map((e) => e.to).sort()).toEqual([
       'comprador@abent3t.com',
+      'ingrid@abent3t.com',
       'responsable@abent3t.com',
     ]);
   });
 
-  it('segunda corrida el mismo día NO re-envía (P2002 → ya notificado)', async () => {
+  it('segunda corrida el mismo día NO re-envía; al día siguiente SÍ (diaria)', async () => {
     const { service, emailService, notifications } = makeHarness([
       contractAt(7),
     ]);
     const first = await service.runCheck(NOW);
     expect(first.notificationsSent).toBe(2);
-    expect(notifications[0].notification_type).toBe('7_days_before');
 
     const second = await service.runCheck(NOW);
     expect(second.notificationsSent).toBe(0);
     expect(second.alreadyNotified).toBe(2);
     expect(notifications).toHaveLength(2);
-    expect(emailService.sendEmail).toHaveBeenCalledTimes(2); // solo la 1a corrida
+    expect(emailService.sendEmail).toHaveBeenCalledTimes(2);
+
+    const nextDay = await service.runCheck(TOMORROW);
+    expect(nextDay.notificationsSent).toBe(2);
+    expect(notifications).toHaveLength(4);
+    expect(notifications[2].notification_type).toBe('expiring:2026-09-02');
   });
 
-  it('día 0 → pasa a vencido y alerta "expired"; a 15 días no alerta nada', async () => {
+  it('día 0 → pasa a vencido y alerta "expired"; el vencido sigue alertando cada día', async () => {
     const contracts = [contractAt(0), contractAt(15)];
     const { service, notifications } = makeHarness(contracts);
     const result = await service.runCheck(NOW);
@@ -181,10 +220,17 @@ describe('ContractExpiryService (reloj inyectado)', () => {
     expect(result.expiredMarked).toBe(1);
     expect(contracts[0].status).toBe('vencido');
     expect(contracts[1].status).toBe('vigente');
-    expect(notifications.every((n) => n.notification_type === 'expired')).toBe(
-      true,
-    );
-    expect(notifications).toHaveLength(2);
+    // ambos alertan (15 días < 45): 2 destinatarios × 2 contratos
+    expect(notifications).toHaveLength(4);
+    expect(
+      notifications
+        .filter((n) => n.contract_id === 'ct-0')
+        .every((n) => n.notification_type.startsWith('expired:')),
+    ).toBe(true);
+
+    const nextDay = await service.runCheck(TOMORROW);
+    expect(nextDay.expiredMarked).toBe(0); // ya estaba vencido
+    expect(nextDay.notificationsSent).toBe(4); // sigue alertando a diario
   });
 
   it('vencimiento que quedó atrás (server caído el día 0) también expira', async () => {
@@ -195,9 +241,10 @@ describe('ContractExpiryService (reloj inyectado)', () => {
     expect(contracts[0].status).toBe('vencido');
   });
 
-  it('contrato ya vencido NO re-alerta (queda fuera del barrido)', async () => {
+  it('renovado o cancelado quedan fuera del barrido', async () => {
     const { service, prisma, notifications } = makeHarness([
-      contractAt(0, { status: 'vencido' }),
+      contractAt(0, { status: 'renovado' }),
+      contractAt(10, { status: 'cancelado' }),
     ]);
     const result = await service.runCheck(NOW);
     expect(result.checkedContracts).toBe(0);
@@ -220,12 +267,15 @@ describe('ContractExpiryService (reloj inyectado)', () => {
     expect(harness.notifications).toHaveLength(2);
   });
 
-  it('sin comprador asignado, solo alerta al responsable', async () => {
-    const { service, notifications } = makeHarness([
-      contractAt(30, {
-        profiles_contracts_buyer_profile_idToprofiles: null,
-      }),
-    ]);
+  it('sin comprador asignado, solo alerta al responsable; correos repetidos se envían una vez', async () => {
+    const { service, notifications } = makeHarness(
+      [
+        contractAt(30, {
+          profiles_contracts_buyer_profile_idToprofiles: null,
+        }),
+      ],
+      { admins: [{ email: 'Responsable@abent3t.com', full_name: 'R' }] },
+    );
     const result = await service.runCheck(NOW);
     expect(result.notificationsSent).toBe(1);
     expect(notifications[0].recipient_role).toBe('responsible_user');
