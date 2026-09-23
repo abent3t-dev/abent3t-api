@@ -644,6 +644,8 @@ model profiles {
   contracts_contracts_buyer_profile_idToprofiles                  contracts[]                         @relation("contracts_buyer_profile_idToprofiles")
   contracts_contracts_created_byToprofiles                        contracts[]                         @relation("contracts_created_byToprofiles")
   contracts_contracts_deleted_byToprofiles                        contracts[]                         @relation("contracts_deleted_byToprofiles")
+  erp_user_aliases_erp_user_aliases_profile_idToprofiles          erp_user_aliases[]                  @relation("erp_user_aliases_profile_idToprofiles")
+  erp_user_aliases_erp_user_aliases_created_byToprofiles          erp_user_aliases[]                  @relation("erp_user_aliases_created_byToprofiles")
   suppliers                                                       suppliers[]
   training_requests_training_requests_profile_idToprofiles        training_requests[]                 @relation("training_requests_profile_idToprofiles")
   training_requests_training_requests_requested_byToprofiles      training_requests[]                 @relation("training_requests_requested_byToprofiles")
@@ -1232,6 +1234,8 @@ model maximo_contracts {
   created_at_source DateTime? @db.Timestamptz(6)
   contract_ref_num  String?   @db.VarChar(50)
   contract_value    Decimal?  @db.Decimal(15, 2)
+  pr_total          Decimal?  @db.Decimal(15, 2)
+  consumed_value    Decimal?  @db.Decimal(15, 2)
   purchview_count   Int       @default(1)
   has_contract      Boolean   @default(false)
   pr_rowstamp       String?   @db.VarChar(100)
@@ -1370,6 +1374,7 @@ model sap_purchase_orders {
   @@index([doc_date], map: "idx_sap_po_doc_date")
   @@index([document_status], map: "idx_sap_po_status")
   @@index([update_date_source], map: "idx_sap_po_update_date")
+  @@index([maximo_ponum], map: "idx_sap_po_maximo_ponum")
 }
 
 model sap_purchase_requests {
@@ -1458,6 +1463,23 @@ enum sap_sync_status {
 // maximo_contracts (staging de solo lectura): sin FKs ni sincronización entre
 // ambos (regla 1 de la fase).
 // ============================================================================
+
+model erp_user_aliases {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  system       String    @db.VarChar(10)
+  code         String    @db.VarChar(100)
+  display_name String    @db.VarChar(255)
+  profile_id   String?   @db.Uuid
+  is_active    Boolean   @default(true)
+  created_by   String?   @db.Uuid
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  profiles_erp_user_aliases_profile_idToprofiles profiles? @relation("erp_user_aliases_profile_idToprofiles", fields: [profile_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_erp_user_aliases_created_byToprofiles profiles? @relation("erp_user_aliases_created_byToprofiles", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([system, code], map: "uq_erp_user_alias")
+  @@index([profile_id], map: "idx_erp_user_aliases_profile")
+}
 
 model contracts {
   id                     String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid

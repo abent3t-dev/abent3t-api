@@ -73,8 +73,33 @@ export interface MaximoContractDto {
   maxVol: number | null;
   /** PURCHVIEW.TOTALCOST → consumo del contrato. */
   totalCost: number | null;
+  /**
+   * Bloque 2026-09-23 (D8): consumido del contrato — primera llave numérica
+   * presente en PURCHVIEW entre RELEASEDTOTAL / RELEASEDCOST / TOTALRELEASED /
+   * COMMITTED / COMMITTEDTOTAL / INVOICEDTOTAL / TOTALINVOICED. La OS actual
+   * no expone ninguna → null ("No disponible"); cuando CIISA la exponga se
+   * pinta con `maximo:remap`. saldo = contractValue − consumedValue.
+   */
+  consumedValue: number | null;
+  /**
+   * Bloque 2026-09-23 (D7): monto de la PR (PR.TOTALCOST, PR.PRCOST o suma
+   * de PRLINE.LINECOST). La OS actual no lo expone → null ("No disponible").
+   */
+  prTotal: number | null;
+  /**
+   * Bloque 2026-09-23 (D2): estatus de la PR en su raíz (PR.STATUS /
+   * PR.PRSTATUS) cuando la OS lo expone. Hoy AB_CONTRATOS solo trae PRNUM /
+   * SITEID / REQUESTEDBY en la PR → null; `status` lo usa como fallback en
+   * las filas sin contrato para que el pie no diga "Sin estatus" por
+   * nuestra causa. Nunca PERSON.STATUS.
+   */
+  prStatus: string | null;
 
-  /** Último CONTRACTSTATUS por CHANGEDATE (desempate por id). NUNCA PERSON.STATUS. */
+  /**
+   * Último CONTRACTSTATUS por CHANGEDATE (desempate por id); en una fila SIN
+   * contrato, el estatus de la PR si la OS lo expone (`prStatus`). NUNCA
+   * PERSON.STATUS.
+   */
   status: string | null;
   statusHistory: MaximoStatusChangeDto[];
   /** Regla WAPPR: primera CONTRACTSTATUS con STATUS=WAPPR literal; null si no aparece. */

@@ -27,7 +27,7 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
  * `maximo:remap` para re-derivar las filas ya sincronizadas.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.09.22-1'; // 22-1: approvedBy (CHANGEBY del primer APPR), sprint B3
+export const MAXIMO_MAPPER_VERSION = '2026.09.23-1'; // 23-1: prStatus/prTotal/consumedValue (bloque D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -408,6 +408,51 @@ export function toContracts(raw: unknown): MaximoContractDto[] {
   );
 }
 
+/**
+ * Bloque 2026-09-23 (D8): llaves candidatas del consumido del contrato en
+ * PURCHVIEW (Maximo las nombra distinto según versión/vista). Se toma la
+ * primera presente con valor numérico; ninguna → null (nunca 0).
+ */
+const CONSUMED_KEYS = [
+  'RELEASEDTOTAL',
+  'RELEASEDCOST',
+  'TOTALRELEASED',
+  'COMMITTED',
+  'COMMITTEDTOTAL',
+  'INVOICEDTOTAL',
+  'TOTALINVOICED',
+] as const;
+
+function firstNum(
+  rec: MaximoCanonicalRecord | null,
+  keys: readonly string[],
+): number | null {
+  for (const key of keys) {
+    if (hasKey(rec, key)) {
+      const value = num(rec, key);
+      if (value !== null) return value;
+    }
+  }
+  return null;
+}
+
+/** D7: monto de la PR — cabecera o, si no viene, suma de PRLINE.LINECOST. */
+function prTotalOf(pr: MaximoCanonicalRecord | null): number | null {
+  const header = firstNum(pr, ['TOTALCOST', 'PRCOST', 'TOTALBASECOST']);
+  if (header !== null) return header;
+  const lines = children(pr, 'PRLINE');
+  const costs = lines
+    .map((line) => firstNum(line, ['LINECOST', 'LOADEDCOST']))
+    .filter((c): c is number => c !== null);
+  if (costs.length === 0) return null;
+  return Math.round(costs.reduce((sum, c) => sum + c, 0) * 100) / 100;
+}
+
+/** D2: estatus de la PR en su raíz (nunca PERSON.STATUS, que es un hijo). */
+function prStatusOf(pr: MaximoCanonicalRecord | null): string | null {
+  return str(pr, 'STATUS') ?? str(pr, 'PRSTATUS');
+}
+
 function buildContractDto(
   parts: ContractParts,
   pv: MaximoCanonicalRecord | null,
@@ -418,6 +463,7 @@ function buildContractDto(
   const requesterPerson = first(pr, 'PERSON');
   const history = mapStatusHistory(children(pv, 'CONTRACTSTATUS'));
   const createdDate = firstChangeDate(history, 'WAPPR');
+  const prStatus = prStatusOf(pr);
 
   // §20.2 RESUELTA (Isaac, correo 2026-09; registrado en HANDOFF 2026-09-21):
   // CONTRACTVALUE ≡ TOTALCOST y CONTRACTREFNUM ≡ CONTRACTNUM. Si algún día la
@@ -456,9 +502,17 @@ function buildContractDto(
     endDate: str(pv, 'ENDDATE'),
     maxVol: num(pv, 'MAXVOL'),
     totalCost: num(pv, 'TOTALCOST'),
+    consumedValue: firstNum(pv, CONSUMED_KEYS),
+    prTotal: prTotalOf(pr),
+    prStatus,
 
-    // Último estatus del CONTRATO (historial ordenado). Nunca PERSON.STATUS.
-    status: history.length ? history[history.length - 1].status : null,
+    // Último estatus del CONTRATO (historial ordenado). Sin contrato, el de
+    // la PR si la OS lo expone. Nunca PERSON.STATUS.
+    status: history.length
+      ? history[history.length - 1].status
+      : pv === null
+        ? prStatus
+        : null,
     statusHistory: history,
     createdDate,
     createdDateRule: createdDate !== null ? 'WAPPR' : null,

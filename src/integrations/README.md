@@ -309,6 +309,28 @@ correr un **re-sync `mode:'full'`** de `purchase_orders` y
 `purchase_requests` para poblar las columnas en lo ya sincronizado (el raw
 cambia → todas las filas se actualizan; ~2.5 min las OC en dev).
 
+**Bloque 2026-09-23 (check-in Ingrid, migración `0013`):** una sola
+migración `prisma/sql/0013_bloque_2026-09-23.sql` (tabla `erp_user_aliases`
+para las equivalencias usuario SAP/Maximo → nombre; `maximo_contracts.pr_total`
+y `.consumed_value`; índice parcial sobre `sap_purchase_orders.maximo_ponum`).
+Mapper de Maximo `2026.09.23-1`: en filas SIN contrato el estatus se toma de
+la raíz PR si la OS lo expone (`PR.STATUS`/`PRSTATUS`), `pr_total` de
+`PR.TOTALCOST`/`PRCOST`/suma de `PRLINE.LINECOST`, y `consumed_value` de la
+primera llave presente entre `RELEASEDTOTAL`, `RELEASEDCOST`, `TOTALRELEASED`,
+`COMMITTED`, `COMMITTEDTOTAL`, `INVOICEDTOTAL`, `TOTALINVOICED`. **Hoy
+AB_CONTRATOS no expone ninguna** (la PR llega solo con PRNUM/SITEID/REQUESTEDBY,
+fixture `ab-contratos.legacy-nested.no-contract.json`): esos campos salen
+"No disponible" y van a la lista de CIISA junto con `AB_*`/`MAXVOL`/`WAPPR`;
+cuando CIISA los exponga, `maximo:remap` (o el siguiente sync, por rowstamp)
+los pinta sin tocar código. Para desplegar: migración `0013` en B → pull +
+rebuild api/next → `npm run maximo:remap` dentro del contenedor del api
+(target `contracts`; el de OC no cambia) → sin re-sync de SAP (D1 usa
+`maximo_ponum`, ya poblado por el mapper 1.2.0). Regla D1 en
+`src/common/sql/erp-views.sql.ts`: una OC de SAP con `maximo_ponum` que
+existe en `maximo_purchase_orders` se cuenta una sola vez (se descuenta del
+lado SAP) en dashboard, reportes y expeditación; `/sap/summary` sigue con el
+total propio y expone `migradas`.
+
 ## Qué NO hacer
 
 - Agregar cualquier operación de escritura al cliente genérico ("ni solo para

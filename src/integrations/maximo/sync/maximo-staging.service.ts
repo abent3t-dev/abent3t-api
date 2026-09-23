@@ -122,6 +122,8 @@ export class MaximoStagingService {
       created_at_source: toDate(dto.createdDate),
       contract_ref_num: dto.contractRefNum, // §20.2 resuelta: = CONTRACTNUM
       contract_value: dto.contractValue, //   = TOTALCOST
+      pr_total: dto.prTotal, // D7: null si la OS no lo expone
+      consumed_value: dto.consumedValue, // D8: null si la OS no lo expone
       purchview_count: dto.purchviewCount,
       has_contract: dto.hasContract,
       pr_rowstamp: dto.rowstamp,

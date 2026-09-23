@@ -170,6 +170,8 @@ export class MaximoRemapService {
               created_at_source: toDate(dto.createdDate),
               contract_ref_num: dto.contractRefNum,
               contract_value: dto.contractValue,
+              pr_total: dto.prTotal,
+              consumed_value: dto.consumedValue,
               purchview_count: dto.purchviewCount,
               has_contract: dto.hasContract,
               pr_rowstamp: dto.rowstamp,
