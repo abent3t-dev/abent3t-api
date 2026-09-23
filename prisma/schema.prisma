@@ -1354,6 +1354,11 @@ model sap_purchase_orders {
   authorization_status String?   @db.VarChar(30)
   confirmed            Boolean?
   closing_date         DateTime? @db.Timestamptz(6)
+  open_total           Decimal?  @db.Decimal(15, 2)
+  user_sign            Int?
+  created_by_name      String?   @db.VarChar(255)
+  maximo_ponum         String?   @db.VarChar(50)
+  base_request_entries Int[]     @default([])
   raw_hash           String    @db.VarChar(64)
   raw                Json
   mapper_version     String

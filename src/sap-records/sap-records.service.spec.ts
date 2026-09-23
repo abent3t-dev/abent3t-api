@@ -27,16 +27,26 @@ const PO_ROW = {
   lines_total: 2,
   lines_classified: 0,
   ahorro_total: null,
+  open_total: '667574.63',
+  user_sign: 38,
+  created_by_name: 'Comprador Uno',
+  maximo_ponum: null,
+  base_request_entries: [120],
   last_changed_at: null,
   last_seen_at: new Date(),
   raw: {
     DocEntry: 9000,
+    DocCurrency: 'MXN',
     DocumentLines: [
       {
         LineNum: 0,
         ItemCode: 'A1',
         ItemDescription: 'Empaque',
         LineTotal: 100,
+        GrossTotal: 116,
+        Quantity: 10,
+        RemainingOpenQuantity: 4,
+        LineStatus: 'bost_Open',
         Currency: 'MXN',
         U_Clas_gts: 'SELECCIONAR',
         U_Imp_ahorro: null,
@@ -75,7 +85,12 @@ function makeService() {
     },
     sap_purchase_requests: {
       count: jest.fn().mockResolvedValue(0),
-      findMany: jest.fn().mockResolvedValue([]),
+      // Solicitud base de PO_ROW (solicitante de la OC)
+      findMany: jest
+        .fn()
+        .mockResolvedValue([
+          { doc_entry: 120, requester_name: 'Erín VALVERDE', requester: 'u27' },
+        ]),
       findFirst: jest.fn().mockResolvedValue(null),
       groupBy: jest.fn().mockResolvedValue([]),
       aggregate: jest.fn().mockResolvedValue({
@@ -116,6 +131,11 @@ describe('SapRecordsService — listados', () => {
     });
     expect(result.data[0].doc_total).toBe(1335149.25);
     expect(result.data[0].ahorro_total).toBeNull();
+    // Saldo y solicitante (Ingrid 2026-09-23): la OC no trae Requester en
+    // SAP; sale de la solicitud base.
+    expect(result.data[0].open_total).toBe(667574.63);
+    expect(result.data[0].requester_names).toEqual(['Erín VALVERDE']);
+    expect(result.data[0].created_by_name).toBe('Comprador Uno');
     const args = (
       prisma.sap_purchase_orders.findMany.mock.calls[0] as [
         { skip: number; select: Record<string, boolean> },
@@ -159,6 +179,22 @@ describe('SapRecordsService — listados', () => {
     expect(or).toContainEqual({
       card_name: { contains: '6121', mode: 'insensitive' },
     });
+    expect(or).toContainEqual({
+      created_by_name: { contains: '6121', mode: 'insensitive' },
+    });
+  });
+
+  it('la búsqueda encuentra OC por el solicitante de su solicitud base', async () => {
+    const { service, prisma } = makeService();
+    await service.listPurchaseOrders({ search: 'valverde' });
+    const where = (
+      prisma.sap_purchase_orders.findMany.mock.calls[0] as [
+        { where: { OR: Array<Record<string, unknown>> } },
+      ]
+    )[0].where;
+    expect(where.OR).toContainEqual({
+      base_request_entries: { hasSome: [120] },
+    });
   });
 });
 
@@ -171,6 +207,10 @@ describe('SapRecordsService — detalle', () => {
     expect(detail.lines[0].procComp).toBeNull();
     expect(detail.lines[1].clasGts).toBe('OPEX');
     expect(detail.lines[1].impAhorro).toBe(50);
+    // Pendiente de la línea: bruto × cantidad abierta / cantidad
+    expect(detail.lines[0].openTotal).toBe(46.4);
+    expect(detail.lines[0].lineStatus).toBe('open');
+    expect(detail.document.requester_names).toEqual(['Erín VALVERDE']);
     expect(detail.raw).toBeUndefined(); // no-admin: sin raw
     // La fuga clásica: el raw colado DENTRO de document vía spread del row.
     // El select explícito + destructuring lo impiden — pinzado aquí.
@@ -199,6 +239,52 @@ describe('SapRecordsService — detalle', () => {
     await expect(service.getPurchaseOrder(1, false)).rejects.toThrow(
       NotFoundException,
     );
+  });
+});
+
+describe('SapRecordsService — solicitante de OC creadas desde Maximo', () => {
+  it('toma el REQUESTEDBY de la OC de Maximo (NumAtCard = PONUM)', async () => {
+    const { service, prisma } = makeService();
+    prisma.sap_purchase_orders.findMany.mockResolvedValueOnce([
+      { ...PO_ROW, base_request_entries: [], maximo_ponum: 'PO104910' },
+    ]);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      { ponum: 'PO104910', requested_by: 'JPEREZ' },
+    ]);
+    const result = await service.listPurchaseOrders({});
+    expect(result.data[0].requester_names).toEqual([]);
+    expect(result.data[0].maximo_requested_by).toBe('JPEREZ');
+  });
+});
+
+describe('SapRecordsService — importes en la moneda del documento', () => {
+  it('OC en USD: las líneas usan RowTotalFC/GrossTotalFC, no LineTotal (MXN)', async () => {
+    const { service, prisma } = makeService();
+    prisma.sap_purchase_orders.findFirst.mockResolvedValueOnce({
+      ...PO_ROW,
+      currency: 'USD',
+      raw: {
+        DocEntry: 5415,
+        DocCurrency: 'USD',
+        DocumentLines: [
+          {
+            LineNum: 0,
+            LineTotal: 363388.35,
+            RowTotalFC: 19500,
+            GrossTotal: 421530.49,
+            GrossTotalFC: 22620,
+            Quantity: 19500,
+            RemainingOpenQuantity: 4500,
+            LineStatus: 'bost_Open',
+            Currency: 'USD',
+          },
+        ],
+      },
+    });
+    const detail = await service.getPurchaseOrder(5415, false);
+    expect(detail.lines[0].lineTotal).toBe(19500);
+    expect(detail.lines[0].currency).toBe('USD');
+    expect(detail.lines[0].openTotal).toBe(5220);
   });
 });
 

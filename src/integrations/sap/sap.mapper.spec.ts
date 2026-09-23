@@ -99,10 +99,11 @@ describe('sap.mapper — normalización de UDF (sin dato ≠ valor)', () => {
 });
 
 describe('sap.mapper — PurchaseRequests', () => {
-  it('docTotal = suma de LineTotal (el SL no permite $select=DocTotal) y currency de la primera línea', () => {
+  it('docTotal = suma de las líneas (el SL no permite $select=DocTotal) y currency = DocCurrency', () => {
     const dto = toSapPurchaseRequest({
       DocEntry: 300,
       DocNum: 234,
+      DocCurrency: 'MXN',
       Requester: 'abnuser27',
       RequesterName: 'Solicitante Uno',
       RequriedDate: '2026-09-18T00:00:00Z',

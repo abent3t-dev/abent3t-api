@@ -20,8 +20,22 @@ export interface SapRawDocumentLine {
   LineNum?: unknown;
   ItemCode?: unknown;
   ItemDescription?: unknown;
+  /** Importe de la línea en moneda LOCAL (MXN), sin IVA. */
   LineTotal?: unknown;
+  /** Importe de la línea en la moneda del documento (0 si es MXN), sin IVA. */
+  RowTotalFC?: unknown;
+  /** Con IVA: moneda local / moneda del documento. */
+  GrossTotal?: unknown;
+  GrossTotalFC?: unknown;
+  /** Moneda del PRECIO de la línea (puede diferir de la del documento). */
   Currency?: unknown;
+  Quantity?: unknown;
+  /** Cantidad aún no recibida/facturada (baja con cada entrada o factura). */
+  RemainingOpenQuantity?: unknown;
+  LineStatus?: unknown; // bost_Open | bost_Close
+  /** 1470000113 = copiada de una solicitud de pedido (BaseEntry = su DocEntry). */
+  BaseType?: unknown;
+  BaseEntry?: unknown;
   U_Clas_gts?: unknown;
   U_Imp_ahorro?: unknown;
   U_Proc_Comp?: unknown;
@@ -33,6 +47,8 @@ interface SapRawDocumentBase {
   DocDate?: unknown;
   DocDueDate?: unknown;
   UpdateDate?: unknown;
+  /** Moneda del documento; la local de la sociedad es MXN. */
+  DocCurrency?: unknown;
   DocumentStatus?: unknown;
   Comments?: unknown;
   DocumentLines?: unknown;
@@ -47,8 +63,16 @@ interface SapRawDocumentBase {
 export interface SapRawPurchaseOrder extends SapRawDocumentBase {
   CardCode?: unknown;
   CardName?: unknown;
+  /** En moneda local (MXN) aunque el documento sea en USD/EUR. */
   DocTotal?: unknown;
-  DocCurrency?: unknown;
+  /** En la moneda del documento (0 cuando es MXN). */
+  DocTotalFc?: unknown;
+  /** InternalKey del usuario de SAP que capturó la OC. */
+  UserSign?: unknown;
+  /** Referencia del proveedor; en OC de la integración = PONUM de Maximo. */
+  NumAtCard?: unknown;
+  /** POID de Maximo: solo lo traen las OC creadas por la integración. */
+  U_POID?: unknown;
 }
 
 export interface SapRawPurchaseRequest extends SapRawDocumentBase {
@@ -122,6 +146,7 @@ export interface SapRawDraftSlim {
   RequesterName?: unknown;
   CardName?: unknown;
   DocTotal?: unknown;
+  DocTotalFc?: unknown;
   DocCurrency?: unknown;
   Comments?: unknown;
 }

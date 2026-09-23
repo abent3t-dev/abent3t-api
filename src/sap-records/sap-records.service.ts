@@ -64,6 +64,11 @@ const PO_LIST_SELECT = {
   lines_total: true,
   lines_classified: true,
   ahorro_total: true,
+  open_total: true,
+  user_sign: true,
+  created_by_name: true,
+  maximo_ponum: true,
+  base_request_entries: true,
   last_changed_at: true,
   last_seen_at: true,
 } as const;
@@ -181,7 +186,7 @@ export class SapRecordsService {
   ): Promise<PaginatedResponse<SapPurchaseOrderRow>> {
     const page = query.page ?? 1;
     const limit = query.limit ?? DEFAULT_LIMIT;
-    const where = this.buildWhere(query, ['card_name', 'card_code']);
+    const where = await this.poWhere(query);
 
     const [total, rows] = await Promise.all([
       this.prisma.sap_purchase_orders.count({ where }),
@@ -197,7 +202,7 @@ export class SapRecordsService {
       }),
     ]);
     return {
-      data: rows.map((row) => this.toPoRow(row)),
+      data: (await this.withRequesters(rows)).map((row) => this.toPoRow(row)),
       meta: buildMeta(total, page, limit),
     };
   }
@@ -219,8 +224,9 @@ export class SapRecordsService {
       );
     }
     const { raw, ...docFields } = row;
+    const [withRequester] = await this.withRequesters([docFields]);
     const detail: SapPurchaseOrderDetail = {
-      document: this.toPoRow(docFields),
+      document: this.toPoRow(withRequester),
       lines: deriveSapLines(raw),
     };
     if (includeRaw) detail.raw = raw;
@@ -292,15 +298,16 @@ export class SapRecordsService {
       { doc_entry: 'desc' as const },
     ];
     if (entity === 'purchase_orders') {
-      const where = this.buildWhere(query, ['card_name', 'card_code']);
+      const where = await this.poWhere(query);
       const rows = await this.prisma.sap_purchase_orders.findMany({
         where,
         select: PO_LIST_SELECT,
         orderBy,
         take: EXPORT_MAX_ROWS + 1,
       });
+      const kept = await this.withRequesters(rows.slice(0, EXPORT_MAX_ROWS));
       return {
-        rows: rows.slice(0, EXPORT_MAX_ROWS).map((r) => this.toPoRow(r)),
+        rows: kept.map((r) => this.toPoRow(r)),
         truncated: rows.length > EXPORT_MAX_ROWS,
       };
     }
@@ -415,9 +422,102 @@ export class SapRecordsService {
     );
   }
 
+  /**
+   * Filtros de OC: además de proveedor/número, la búsqueda encuentra al
+   * solicitante (vive en la solicitud base) y a quien capturó la OC.
+   */
+  private async poWhere(
+    query: SapDocQueryDto,
+  ): Promise<Record<string, unknown>> {
+    const search = query.search?.trim();
+    const extra: Record<string, unknown>[] = [];
+    if (search) {
+      const requests = await this.prisma.sap_purchase_requests.findMany({
+        where: {
+          OR: [
+            { requester_name: { contains: search, mode: 'insensitive' } },
+            { requester: { contains: search, mode: 'insensitive' } },
+          ],
+        },
+        select: { doc_entry: true },
+      });
+      if (requests.length > 0) {
+        extra.push({
+          base_request_entries: { hasSome: requests.map((r) => r.doc_entry) },
+        });
+      }
+    }
+    return this.buildWhere(
+      query,
+      ['card_name', 'card_code', 'created_by_name', 'maximo_ponum'],
+      extra,
+    );
+  }
+
+  /**
+   * Solicitante de cada OC: requester_name de sus solicitudes base de SAP
+   * y, si la creó la integración con Maximo, el REQUESTEDBY de esa OC en
+   * Maximo (vista vigente).
+   */
+  private async withRequesters<
+    T extends { base_request_entries: number[]; maximo_ponum: string | null },
+  >(
+    rows: T[],
+  ): Promise<
+    Array<T & { requester_names: string[]; maximo_requested_by: string | null }>
+  > {
+    const entries = [...new Set(rows.flatMap((r) => r.base_request_entries))];
+    const ponums = [
+      ...new Set(
+        rows.map((r) => r.maximo_ponum).filter((p): p is string => p !== null),
+      ),
+    ];
+    const names = new Map<number, string>();
+    const maximoRequesters = new Map<string, string>();
+    const [requests, maximo] = await Promise.all([
+      entries.length === 0
+        ? []
+        : this.prisma.sap_purchase_requests.findMany({
+            where: { doc_entry: { in: entries } },
+            select: { doc_entry: true, requester_name: true, requester: true },
+          }),
+      ponums.length === 0
+        ? []
+        : this.prisma.$queryRaw<
+            Array<{ ponum: string; requested_by: string | null }>
+          >(Prisma.sql`
+            SELECT DISTINCT ON (ponum) ponum, requested_by
+            FROM maximo_purchase_orders
+            WHERE ponum IN (${Prisma.join(ponums)})
+            ORDER BY ponum, coalesce(revisionnum, 0) DESC`),
+    ]);
+    for (const r of requests) {
+      const name = r.requester_name ?? r.requester;
+      if (name) names.set(r.doc_entry, name);
+    }
+    for (const m of maximo) {
+      if (m.requested_by) maximoRequesters.set(m.ponum, m.requested_by);
+    }
+    return rows.map((row) => ({
+      ...row,
+      maximo_requested_by:
+        row.maximo_ponum === null
+          ? null
+          : (maximoRequesters.get(row.maximo_ponum) ?? null),
+      requester_names: [
+        ...new Set(
+          row.base_request_entries
+            .map((entry) => names.get(entry))
+            .filter((name): name is string => !!name),
+        ),
+      ],
+    }));
+  }
+
   private buildWhere(
     query: SapDocQueryDto,
     searchFields: string[],
+    extraSearch: Record<string, unknown>[] = [],
   ): Record<string, unknown> {
     const and: Record<string, unknown>[] = [];
     if (query.status && query.status.length > 0) {
@@ -436,6 +536,7 @@ export class SapRecordsService {
       const or: Record<string, unknown>[] = searchFields.map((field) => ({
         [field]: { contains: search, mode: 'insensitive' },
       }));
+      or.push(...extraSearch);
       // Solo si cabe en un entero de 32 bits (columnas Int de Postgres):
       // un número más largo haría reventar la consulta con 500.
       if (/^\d+$/.test(search) && Number(search) <= 2_147_483_647) {
@@ -567,6 +668,7 @@ export class SapRecordsService {
   private toPoRow(row: {
     doc_total: unknown;
     ahorro_total: unknown;
+    open_total: unknown;
     document_status: string | null;
     cancelled: boolean | null;
     [key: string]: unknown;
@@ -576,6 +678,7 @@ export class SapRecordsService {
       status_key: deriveStatusKey(row),
       doc_total: toNumber(row.doc_total),
       ahorro_total: toNumber(row.ahorro_total),
+      open_total: toNumber(row.open_total),
     };
   }
 

@@ -33,6 +33,14 @@ import { SapRawCollection } from './dto/sap-raw.types';
  * - Paginación estable con `$orderby=DocEntry` + `$top`/`$skip`.
  * - Incremental con `$filter=UpdateDate ge YYYY-MM-DD` (granularidad día).
  * - `PurchaseRequests` rechaza `$select` de CardCode/CardName/DocTotal.
+ * - `DocTotal` viene SIEMPRE en moneda local (MXN); el importe en la moneda
+ *   del documento es `DocTotalFc` (validado 2026-09-23 con la OC 5128:
+ *   DocTotal 421,530.49 MXN = DocTotalFc 22,620 USD).
+ * - `PurchaseOrders` no tiene Requester/RequesterName (HTTP 400): el
+ *   solicitante sale de la solicitud base; `UserSign` = quién la capturó.
+ * - Las OC que crea la integración Maximo → SAP traen `U_POID` (POID de
+ *   Maximo) y `NumAtCard` = PONUM de Maximo (validado con la OC 6364:
+ *   NumAtCard PO104910).
  *
  * Ante un 401 en un GET (sesión expirada en el server) se invalida la sesión
  * cacheada, se re-loguea y se reintenta UNA vez.
@@ -47,7 +55,11 @@ const PO_SELECT = [
   'CardCode',
   'CardName',
   'DocTotal',
+  'DocTotalFc',
   'DocCurrency',
+  'UserSign',
+  'NumAtCard',
+  'U_POID',
   'DocumentStatus',
   'Cancelled',
   'CancelStatus',
@@ -65,6 +77,7 @@ const PR_SELECT = [
   'DocDueDate',
   'RequriedDate', // sic: así se llama el campo en SAP
   'UpdateDate',
+  'DocCurrency',
   'DocumentStatus',
   'Cancelled',
   'CancelStatus',
@@ -89,6 +102,7 @@ const DRAFT_SELECT = [
   'RequesterName',
   'CardName',
   'DocTotal',
+  'DocTotalFc',
   'DocCurrency',
   'Comments',
 ].join(',');

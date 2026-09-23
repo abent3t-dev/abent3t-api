@@ -43,6 +43,22 @@ interface SapDocBaseRow {
 export interface SapPurchaseOrderRow extends SapDocBaseRow {
   card_code: string | null;
   card_name: string | null;
+  /**
+   * Saldo disponible: lo que falta por recibir/facturar, con IVA y en la
+   * moneda del documento. null = sin calcular (sync previo a 1.2.0).
+   */
+  open_total: number | null;
+  /** InternalKey y nombre del usuario de SAP que capturó la OC. */
+  user_sign: number | null;
+  created_by_name: string | null;
+  /** PONUM de Maximo si la OC la creó la integración Maximo → SAP. */
+  maximo_ponum: string | null;
+  /** Solicitante en Maximo (REQUESTEDBY de su PR; vista vigente). */
+  maximo_requested_by: string | null;
+  /** DocEntry de las solicitudes de pedido de las que se copiaron líneas. */
+  base_request_entries: number[];
+  /** Solicitantes de esas solicitudes (vacío = la OC no nació de una). */
+  requester_names: string[];
 }
 
 export interface SapPurchaseRequestRow extends SapDocBaseRow {
@@ -56,8 +72,15 @@ export interface SapDocumentLineView {
   lineNum: number | null;
   itemCode: string | null;
   itemDescription: string | null;
+  /** Sin IVA, en la moneda del documento (`currency`). */
   lineTotal: number | null;
   currency: string | null;
+  quantity: number | null;
+  /** Cantidad aún no recibida/facturada. */
+  openQuantity: number | null;
+  lineStatus: 'open' | 'close' | null;
+  /** Pendiente de la línea con IVA; 0 si está cerrada, null si no se sabe. */
+  openTotal: number | null;
   /** null = sin capturar en el ERP → la UI muestra "No disponible". */
   clasGts: string | null;
   impAhorro: number | null;

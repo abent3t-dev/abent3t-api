@@ -72,6 +72,8 @@ interface RunState extends SapSyncCounters {
   errors: string[];
   /** Solo target approval_requests: catálogos cargados al inicio (B5). */
   catalogs?: SapApprovalCatalogs;
+  /** Solo target purchase_orders: Users.InternalKey → nombre (quién capturó). */
+  userNames?: Map<number, string>;
 }
 
 @Injectable()
@@ -352,6 +354,17 @@ export class SapSyncService implements OnModuleInit {
           terminated = true;
         }
       }
+      if (state.target === 'purchase_orders') {
+        // Nombres de quién capturó cada OC: best-effort (sin catálogo la OC
+        // se guarda igual, con el nombre en null — nunca se inventa).
+        try {
+          state.userNames = await this.loadUserNames(pageSize);
+        } catch (err: unknown) {
+          this.logger.warn(
+            `catálogo de usuarios SAP falló (no bloqueante): ${message(err)}`,
+          );
+        }
+      }
 
       for (let guard = 0; guard < MAX_PAGES_GUARD && !terminated; guard++) {
         try {
@@ -413,9 +426,14 @@ export class SapSyncService implements OnModuleInit {
     if (state.target === 'purchase_orders') {
       const page = await this.client.fetchPurchaseOrders(params);
       for (let i = 0; i < page.records.length; i++) {
+        const dto = page.records[i];
+        const createdByName =
+          dto.userSign === null
+            ? null
+            : (state.userNames?.get(dto.userSign) ?? null);
         await this.upsertOne(state, () =>
           this.staging.upsertPurchaseOrder(
-            page.records[i],
+            { ...dto, createdByName },
             page.raw[i],
             state.runId,
           ),
@@ -488,12 +506,7 @@ export class SapSyncService implements OnModuleInit {
       const key = intKey(d?.DocEntry);
       if (key !== null) draftMap.set(key, d);
     }
-    const userMap = new Map<number, string>();
-    for (const u of users as SapRawUser[]) {
-      const key = intKey(u?.InternalKey);
-      const name = text(u?.UserName) ?? text(u?.UserCode);
-      if (key !== null && name) userMap.set(key, name);
-    }
+    const userMap = toUserMap(users);
     const stageMap = new Map<number, string>();
     for (const s of stages as SapRawApprovalStage[]) {
       const key = intKey(s?.Code);
@@ -515,6 +528,13 @@ export class SapSyncService implements OnModuleInit {
       stages: stageMap,
       templates: templateMap,
     };
+  }
+
+  /** Users (66 en PRD_ABENT) → InternalKey → UserName. */
+  private async loadUserNames(pageSize: number): Promise<Map<number, string>> {
+    const users = toUserMap(await this.client.fetchAllUsers(pageSize));
+    this.logger.log(`catálogo de usuarios SAP: ${users.size} usuarios`);
+    return users;
   }
 
   private async upsertOne(
@@ -597,4 +617,20 @@ export class SapSyncService implements OnModuleInit {
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Catálogo Users crudo → InternalKey → UserName (o UserCode si no hay nombre). */
+function toUserMap(users: unknown[]): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const u of users as SapRawUser[]) {
+    const key =
+      typeof u?.InternalKey === 'number' && Number.isInteger(u.InternalKey)
+        ? u.InternalKey
+        : null;
+    const pick = (v: unknown) =>
+      typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
+    const name = pick(u?.UserName) ?? pick(u?.UserCode);
+    if (key !== null && name) map.set(key, name);
+  }
+  return map;
 }

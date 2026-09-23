@@ -12,8 +12,19 @@ export interface SapDocumentLineDto {
   lineNum: number | null;
   itemCode: string | null;
   itemDescription: string | null;
+  /** Importe sin IVA en la moneda del DOCUMENTO (no LineTotal, que es MXN). */
   lineTotal: number | null;
+  /** Importe con IVA en la moneda del documento. */
+  grossTotal: number | null;
+  /** Moneda del documento (la de `lineTotal`/`grossTotal`). */
   currency: string | null;
+  quantity: number | null;
+  /** Cantidad aún no recibida/facturada. */
+  openQuantity: number | null;
+  /** LineStatus = bost_Open. */
+  open: boolean;
+  /** DocEntry de la solicitud de pedido de la que se copió la línea. */
+  baseRequestEntry: number | null;
   /** U_Clas_gts (clasificación de gasto). null = sin capturar en el ERP. */
   clasGts: string | null;
   /** U_Imp_ahorro (importe de ahorro). null = sin capturar; 0 es un valor real. */
@@ -48,17 +59,37 @@ interface SapDocumentBaseDto {
 export interface SapPurchaseOrderDto extends SapDocumentBaseDto {
   cardCode: string | null;
   cardName: string | null;
+  /** Total con IVA en la moneda del documento (DocTotal o DocTotalFc). */
   docTotal: number | null;
   currency: string | null;
+  /**
+   * Saldo disponible: parte del total aún no recibida/facturada, con IVA y
+   * en la moneda del documento. null = no se puede calcular.
+   */
+  openTotal: number | null;
+  /** UserSign: InternalKey del usuario de SAP que capturó la OC. */
+  userSign: number | null;
+  /**
+   * PONUM de Maximo cuando la OC la creó la integración Maximo → SAP
+   * (U_POID presente; NumAtCard = PONUM). Ahí vive su solicitante.
+   */
+  maximoPonum: string | null;
+  /** Nombre de ese usuario (catálogo Users); lo pone el sync, no el mapper. */
+  createdByName: string | null;
+  /** DocEntry de las solicitudes de pedido de las que se copiaron líneas. */
+  baseRequestEntries: number[];
 }
 
 export interface SapPurchaseRequestDto extends SapDocumentBaseDto {
   requester: string | null;
   requesterName: string | null;
   requiredDate: string | null;
-  /** Suma de LineTotal (el SL no permite $select=DocTotal en esta entidad). */
+  /**
+   * Suma de los importes sin IVA de las líneas en la moneda del documento
+   * (el SL no permite $select=DocTotal en esta entidad).
+   */
   docTotal: number | null;
-  /** Moneda de la primera línea; null si el doc no tiene líneas. */
+  /** DocCurrency del documento; null en un raw sincronizado sin él. */
   currency: string | null;
 }
 
@@ -110,6 +141,7 @@ export interface SapRawDraftSlimLike {
   DocNum?: unknown;
   DocDate?: unknown;
   DocTotal?: unknown;
+  DocTotalFc?: unknown;
   DocCurrency?: unknown;
   CardName?: unknown;
   RequesterName?: unknown;

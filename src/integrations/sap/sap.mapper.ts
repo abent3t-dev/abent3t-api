@@ -27,9 +27,22 @@ import { SapMappingError } from './sap.errors';
  * persiste por fila y permite re-mapear desde `raw` sin re-descargar.
  */
 // 1.1.0: Cancelled/AuthorizationStatus/ClosingDate (A6); 1.1.1: approvers en
-// snake_case (B5). Un cambio de versión fuerza el re-mapeo aunque el raw no
-// cambie (ver SapStagingService), así que basta un sync full tras desplegar.
-export const SAP_MAPPER_VERSION = '1.1.1';
+// snake_case (B5); 1.2.0: importes en la moneda del documento (DocTotalFc /
+// RowTotalFC), saldo disponible, solicitudes base y UserSign. Un cambio de
+// versión fuerza el re-mapeo aunque el raw no cambie (ver SapStagingService),
+// así que basta un sync full tras desplegar.
+export const SAP_MAPPER_VERSION = '1.2.0';
+
+/**
+ * Moneda local de la sociedad (PRD_ABENT, validado 2026-09-23). `DocTotal`,
+ * `LineTotal` y `GrossTotal` vienen SIEMPRE en esta moneda; en un documento
+ * en USD/EUR el importe en su moneda está en `DocTotalFc` / `RowTotalFC` /
+ * `GrossTotalFC` (OC 5128: DocTotal 421,530.49 MXN = DocTotalFc 22,620 USD).
+ */
+export const SAP_LOCAL_CURRENCY = 'MXN';
+
+/** ObjectType de la solicitud de pedido (BaseType de una línea copiada de ella). */
+const PURCHASE_REQUEST_OBJECT = 1470000113;
 
 /**
  * Placeholder de las listas de valores de los UDF: el ERP lo trae de fábrica
@@ -42,7 +55,11 @@ const UDF_PLACEHOLDER = 'SELECCIONAR';
 export function toSapPurchaseOrder(raw: unknown): SapPurchaseOrderDto {
   const doc = asRecord(raw, 'PurchaseOrders') as SapRawPurchaseOrder;
   const docEntry = requireDocEntry(doc.DocEntry);
-  const lines = mapLines(doc.DocumentLines);
+  const currency = documentCurrency(doc);
+  const lines = mapLines(doc.DocumentLines, currency);
+  const docTotal = isForeign(currency)
+    ? toNumberOrNull(doc.DocTotalFc) // sin él no se puede afirmar el importe
+    : toNumberOrNull(doc.DocTotal);
   return {
     docEntry,
     docNum: toIntOrNull(doc.DocNum),
@@ -54,8 +71,19 @@ export function toSapPurchaseOrder(raw: unknown): SapPurchaseOrderDto {
     comments: toTextOrNull(doc.Comments),
     cardCode: toTextOrNull(doc.CardCode),
     cardName: toTextOrNull(doc.CardName),
-    docTotal: toNumberOrNull(doc.DocTotal),
-    currency: toTextOrNull(doc.DocCurrency),
+    docTotal,
+    currency,
+    openTotal: openTotal(lines, docTotal),
+    userSign: toIntOrNull(doc.UserSign),
+    maximoPonum: maximoPonum(doc),
+    createdByName: null,
+    baseRequestEntries: [
+      ...new Set(
+        lines
+          .map((l) => l.baseRequestEntry)
+          .filter((e): e is number => e !== null),
+      ),
+    ].sort((a, b) => a - b),
     lines,
     ...lineAggregates(lines),
   };
@@ -64,7 +92,8 @@ export function toSapPurchaseOrder(raw: unknown): SapPurchaseOrderDto {
 export function toSapPurchaseRequest(raw: unknown): SapPurchaseRequestDto {
   const doc = asRecord(raw, 'PurchaseRequests') as SapRawPurchaseRequest;
   const docEntry = requireDocEntry(doc.DocEntry);
-  const lines = mapLines(doc.DocumentLines);
+  const currency = documentCurrency(doc);
+  const lines = mapLines(doc.DocumentLines, currency);
   return {
     docEntry,
     docNum: toIntOrNull(doc.DocNum),
@@ -77,9 +106,11 @@ export function toSapPurchaseRequest(raw: unknown): SapPurchaseRequestDto {
     comments: toTextOrNull(doc.Comments),
     requester: toTextOrNull(doc.Requester),
     requesterName: toTextOrNull(doc.RequesterName),
-    // El SL rechaza $select=DocTotal en PurchaseRequests: se suma LineTotal.
+    // El SL rechaza $select=DocTotal en PurchaseRequests: se suman las
+    // líneas (sin IVA) en la moneda del documento. Ojo: una solicitud en MXN
+    // puede traer líneas con precio en USD; el importe sigue siendo MXN.
     docTotal: sumLineTotals(lines),
-    currency: lines.length > 0 ? lines[0].currency : null,
+    currency,
     lines,
     ...lineAggregates(lines),
   };
@@ -167,7 +198,9 @@ export function toSapApprovalRequest(
     creationDate: toIsoOrNull(req.CreationDate),
     docNum: toIntOrNull(draft?.DocNum),
     docDate: toIsoOrNull(draft?.DocDate),
-    docTotal: toNumberOrNull(draft?.DocTotal),
+    docTotal: isForeign(toTextOrNull(draft?.DocCurrency))
+      ? toNumberOrNull(draft?.DocTotalFc)
+      : toNumberOrNull(draft?.DocTotal),
     currency: toTextOrNull(draft?.DocCurrency),
     cardName: toTextOrNull(draft?.CardName),
     requesterName: toTextOrNull(draft?.RequesterName),
@@ -214,16 +247,71 @@ function cancelFields(doc: {
   };
 }
 
-function mapLines(rawLines: unknown): SapDocumentLineDto[] {
+/** Formato del PONUM de Maximo (PO + dígitos). */
+const MAXIMO_PONUM_PATTERN = /^PO\d+$/;
+
+/**
+ * PONUM de Maximo de una OC de SAP: `NumAtCard` cuando la creó la
+ * integración (trae U_POID) o cuando tiene el formato de PONUM (en 2024 se
+ * capturaban a mano con esa referencia). Validado en PRD_ABENT 2026-09-23:
+ * 1,597 OC con NumAtCard = PO…; el resto de las referencias son del
+ * proveedor (cotizaciones, facturas) y se ignoran.
+ */
+function maximoPonum(doc: SapRawPurchaseOrder): string | null {
+  const ref = toTextOrNull(doc.NumAtCard);
+  if (ref === null) return null;
+  const fromIntegration =
+    toTextOrNull(doc.U_POID) !== null || toIntOrNull(doc.U_POID) !== null;
+  return fromIntegration || MAXIMO_PONUM_PATTERN.test(ref) ? ref : null;
+}
+
+function isForeign(currency: string | null): boolean {
+  return currency !== null && currency !== SAP_LOCAL_CURRENCY;
+}
+
+/**
+ * DocCurrency del documento. Un raw sincronizado sin él (solicitudes antes
+ * de 1.2.0) se resuelve por las líneas: RowTotalFC es 0 en todas si y solo
+ * si el documento está en moneda local. Si no hay con qué decidir → null.
+ */
+function documentCurrency(doc: {
+  DocCurrency?: unknown;
+  DocumentLines?: unknown;
+}): string | null {
+  const declared = toTextOrNull(doc.DocCurrency);
+  if (declared !== null) return declared;
+  const lines = Array.isArray(doc.DocumentLines) ? doc.DocumentLines : [];
+  if (lines.length === 0) return null;
+  const allLocal = lines.every((entry) => {
+    const line = (isRecord(entry) ? entry : {}) as SapRawDocumentLine;
+    return toNumberOrNull(line.RowTotalFC) === 0;
+  });
+  return allLocal ? SAP_LOCAL_CURRENCY : null;
+}
+
+function mapLines(
+  rawLines: unknown,
+  docCurrency: string | null,
+): SapDocumentLineDto[] {
   if (!Array.isArray(rawLines)) return [];
+  const foreign = isForeign(docCurrency);
   return rawLines.map((entry) => {
     const line = (isRecord(entry) ? entry : {}) as SapRawDocumentLine;
+    const baseType = toIntOrNull(line.BaseType);
     return {
       lineNum: toIntOrNull(line.LineNum),
       itemCode: toTextOrNull(line.ItemCode),
       itemDescription: toTextOrNull(line.ItemDescription),
-      lineTotal: toNumberOrNull(line.LineTotal),
-      currency: toTextOrNull(line.Currency),
+      lineTotal: toNumberOrNull(foreign ? line.RowTotalFC : line.LineTotal),
+      grossTotal: toNumberOrNull(foreign ? line.GrossTotalFC : line.GrossTotal),
+      currency: docCurrency,
+      quantity: toNumberOrNull(line.Quantity),
+      openQuantity: toNumberOrNull(line.RemainingOpenQuantity),
+      open: line.LineStatus === 'bost_Open',
+      baseRequestEntry:
+        baseType === PURCHASE_REQUEST_OBJECT
+          ? toIntOrNull(line.BaseEntry)
+          : null,
       clasGts: normalizeUdfText(line.U_Clas_gts),
       impAhorro: toNumberOrNull(line.U_Imp_ahorro),
       procComp: normalizeUdfText(line.U_Proc_Comp),
@@ -243,6 +331,38 @@ function lineAggregates(lines: SapDocumentLineDto[]): {
       ? null // T10: sin capturas reales NO se inventa un 0
       : round2(withAhorro.reduce((sum, l) => sum + (l.impAhorro ?? 0), 0));
   return { linesTotal: lines.length, linesClassified, ahorroTotal };
+}
+
+/**
+ * Saldo disponible de una OC: lo que falta por recibir/facturar, con IVA y
+ * en la moneda del documento. Cada línea abierta aporta su importe bruto ×
+ * cantidad pendiente / cantidad (SAP baja RemainingOpenQuantity con cada
+ * entrada o factura; su OpenAmount no refleja los consumos parciales). La
+ * proporción se aplica al total del documento para respetar descuentos de
+ * cabecera. Las líneas cerradas (y las de una cancelada) aportan 0.
+ * null si no hay líneas con cantidad o no se conoce el total.
+ */
+function openTotal(
+  lines: SapDocumentLineDto[],
+  docTotal: number | null,
+): number | null {
+  if (docTotal === null) return null;
+  let gross = 0;
+  let pending = 0;
+  let usable = 0;
+  for (const line of lines) {
+    if (line.grossTotal === null || line.quantity === null) continue;
+    if (line.quantity <= 0) continue;
+    usable += 1;
+    gross += line.grossTotal;
+    if (line.open && line.openQuantity !== null && line.openQuantity > 0) {
+      const ratio = Math.min(line.openQuantity, line.quantity) / line.quantity;
+      pending += line.grossTotal * ratio;
+    }
+  }
+  if (usable === 0) return null;
+  if (gross === 0) return 0;
+  return round2((docTotal * pending) / gross);
 }
 
 function sumLineTotals(lines: SapDocumentLineDto[]): number | null {

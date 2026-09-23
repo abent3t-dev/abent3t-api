@@ -50,6 +50,11 @@ export class SapStagingService {
       lines_total: dto.linesTotal,
       lines_classified: dto.linesClassified,
       ahorro_total: dto.ahorroTotal,
+      open_total: dto.openTotal,
+      user_sign: dto.userSign,
+      created_by_name: dto.createdByName,
+      maximo_ponum: dto.maximoPonum,
+      base_request_entries: dto.baseRequestEntries,
     };
 
     const attempt = async (): Promise<SapUpsertOutcome> => {
