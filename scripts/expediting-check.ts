@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { EmailService } from '../src/email/email.service';
 import { ExpeditingService } from '../src/expediting/expediting.service';
+import { ErpAliasesService } from '../src/erp-aliases/erp-aliases.service';
 
 async function main(): Promise<void> {
   const arg = process.argv[2];
@@ -23,6 +24,7 @@ async function main(): Promise<void> {
     const service = new ExpeditingService(
       prisma,
       new EmailService(new ConfigService()),
+      new ErpAliasesService(prisma),
     );
     const result = await service.runAlertCheck(now);
     console.log('Alertas de expeditación:');

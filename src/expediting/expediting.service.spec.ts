@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { ExpeditingService } from './expediting.service';
 
 /**
@@ -170,9 +171,18 @@ function makeHarness() {
     ),
   };
 
+  const aliases = {
+    resolveMany: jest.fn().mockResolvedValue(new Map<string, string>()),
+    displayName: jest.fn((_s: string, code: string | null) =>
+      Promise.resolve(code),
+    ),
+    forProfiles: jest.fn().mockResolvedValue([]),
+    byCode: jest.fn().mockResolvedValue(new Map()),
+  };
   const service = new ExpeditingService(
     prisma as unknown as PrismaService,
     email as unknown as EmailService,
+    aliases as unknown as ErpAliasesService,
   );
 
   const addPo = (overrides: Record<string, unknown> = {}) => {

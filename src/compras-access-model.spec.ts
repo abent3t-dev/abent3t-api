@@ -29,6 +29,7 @@ import { PurchaseTypesController } from './purchase-types/purchase-types.control
 import { PurchaseUsersController } from './purchase-users/purchase-users.controller';
 import { ContractsController } from './contracts/contracts.controller';
 import { PurchaseDashboardController } from './purchase-dashboard/purchase-dashboard.controller';
+import { ErpAliasesController } from './erp-aliases/erp-aliases.controller';
 
 const PURCHASE_CONTROLLERS = [
   ApprovalsController,
@@ -44,6 +45,7 @@ const PURCHASE_CONTROLLERS = [
   PurchaseUsersController,
   ContractsController,
   PurchaseDashboardController,
+  ErpAliasesController,
 ];
 
 interface RouteInfo {
@@ -96,6 +98,9 @@ const OPEN_READS = [
   '/suppliers/export',
   // 2026-09-23: reporte semanal de Compras (Excel)
   '/compras/reportes/semanal/export',
+  // Bloque 2026-09-23: KPIs de Órdenes (D5) y export de expeditación (D9)
+  '/compras/dashboard/ordenes-kpis',
+  '/compras/expeditacion/export',
   '/approvals/requisition/:rqId',
   '/approvals/stats',
   '/requisitions',
@@ -176,6 +181,8 @@ describe('Modelo de acceso de Compras (ver todos, actuar por rol)', () => {
       '/compras/usuarios/gestion',
       '/compras/usuarios',
       '/compras/contratos/alertas/vencimiento',
+      // D6: equivalencias de usuarios SAP/Maximo = configuración
+      '/compras/erp-aliases',
     ];
     for (const route of restricted) {
       const info = routes.find((r) => r.method === 'GET' && r.route === route);

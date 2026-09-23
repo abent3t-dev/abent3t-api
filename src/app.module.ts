@@ -62,6 +62,8 @@ import { SapSyncModule } from './integrations/sap/sync/sap-sync.module';
 // Fase INT-4: lectura de dominio sobre el staging de SAP (GET /sap/*)
 import { SapRecordsModule } from './sap-records/sap-records.module';
 import { PurchaseDashboardModule } from './purchase-dashboard/purchase-dashboard.module';
+// Bloque 2026-09-23 (D6): equivalencias de usuarios de SAP/Maximo
+import { ErpAliasesModule } from './erp-aliases/erp-aliases.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import {
@@ -154,6 +156,7 @@ import {
     // sin dependencia de integrations/ y sin escrituras.
     SapRecordsModule,
     PurchaseDashboardModule,
+    ErpAliasesModule,
   ],
   controllers: [AppController],
   providers: [

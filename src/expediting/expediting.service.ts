@@ -7,6 +7,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { cdmxDateUtc } from '../contracts/contracts.dates';
 import {
   CRITICAL_AFTER_DAYS,
@@ -33,6 +34,13 @@ import {
  *
  * El tracking se crea de forma PEREZOSA (primer evento o primera alerta),
  * mismo efecto que crearlo con la PEO sin tocar purchase-orders.
+ *
+ * Bloque 2026-09-23:
+ *  - D1: una OC migrada de Maximo a SAP sale UNA vez: se conserva la fila de
+ *    SAP (tiene la fecha comprometida) con `maximo_ponum` para el badge y se
+ *    omite la de Maximo con ese PONUM.
+ *  - D6: `requested_by` de Maximo se traduce con los alias.
+ *  - D9: `findAllForExport` (Excel con los mismos filtros, sin paginar).
  */
 
 const SAFETY_SCAN_LIMIT = 2000;
@@ -54,7 +62,12 @@ interface ErpRow {
   currency: string | null;
   expected_date: Date | null;
   requested_by: string | null;
+  /** SAP: PONUM de Maximo si la OC nació allá (D1). */
+  maximo_ponum: string | null;
 }
+
+/** Tope del export (D9), mismo criterio que los demás listados. */
+const EXPORT_MAX_ROWS = 20_000;
 
 const CURRENT_MAXIMO_POS = Prisma.sql`
   SELECT DISTINCT ON (ponum, coalesce(siteid, '')) *
@@ -94,6 +107,7 @@ export class ExpeditingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
+    private readonly aliases: ErpAliasesService,
   ) {}
 
   // ── Lectura ─────────────────────────────────────────────────────────────
@@ -101,6 +115,33 @@ export class ExpeditingService {
   async findAll(query: ExpeditingQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
+    const filtered = await this.collect(query);
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    return {
+      data: filtered.slice((page - 1) * limit, page * limit),
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    };
+  }
+
+  /** D9: mismos filtros que el listado, sin paginar (tope). */
+  async findAllForExport(query: ExpeditingQueryDto) {
+    const rows = await this.collect(query);
+    return {
+      rows: rows.slice(0, EXPORT_MAX_ROWS),
+      truncated: rows.length > EXPORT_MAX_ROWS,
+    };
+  }
+
+  /** Lista derivada y filtrada (propias + ERPs), ordenada por fecha vigente. */
+  private async collect(query: ExpeditingQueryDto) {
     const today = cdmxDateUtc();
     const source = query.source;
 
@@ -153,23 +194,9 @@ export class ExpeditingService {
       if (da !== db) return da - db;
       return a.po_number.localeCompare(b.po_number);
     });
-    const filtered = query.status
+    return query.status
       ? mapped.filter((item) => item.delivery_status === query.status)
       : mapped;
-
-    const total = filtered.length;
-    const totalPages = Math.max(1, Math.ceil(total / limit));
-    return {
-      data: filtered.slice((page - 1) * limit, page * limit),
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1,
-      },
-    };
   }
 
   async findOne(purchaseOrderId: string) {
@@ -604,9 +631,9 @@ export class ExpeditingService {
     const from = query.expected_from ? new Date(query.expected_from) : null;
     const to = query.expected_to ? new Date(query.expected_to) : null;
     const [sapRows, maximoRows] = await Promise.all([
-      source === 'maximo'
-        ? Promise.resolve([] as ErpRow[])
-        : this.prisma.$queryRaw<ErpRow[]>(Prisma.sql`
+      // Aunque se pida solo Maximo, las OC abiertas de SAP se necesitan para
+      // no mostrar dos veces las migradas (D1): se descartan después.
+      this.prisma.$queryRaw<ErpRow[]>(Prisma.sql`
             SELECT 'sap'::text AS source,
                    doc_entry::text AS external_key,
                    coalesce(doc_num::text, doc_entry::text) AS po_number,
@@ -615,7 +642,8 @@ export class ExpeditingService {
                    doc_total AS amount,
                    currency,
                    doc_due_date AS expected_date,
-                   NULL::text AS requested_by
+                   NULL::text AS requested_by,
+                   maximo_ponum
             FROM sap_purchase_orders
             WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true
               AND (${term}::text IS NULL OR card_name ILIKE ${term} OR doc_num::text ILIKE ${term})
@@ -636,16 +664,28 @@ export class ExpeditingService {
                    currency,
                    NULLIF(coalesce(raw->'Attributes'->'VENDELIVERYDATE'->>'content',
                                    raw->>'VENDELIVERYDATE'), '')::timestamptz AS expected_date,
-                   requested_by
+                   requested_by,
+                   NULL::text AS maximo_ponum
             FROM current
             WHERE status IN ('APPR', 'INPRG')
               AND (${term}::text IS NULL OR vendor_name ILIKE ${term} OR ponum ILIKE ${term})
             ORDER BY ponum ASC
             LIMIT ${ERP_SCAN_LIMIT}`),
     ]);
-    return [...sapRows, ...maximoRows]
+    // D1: PONUM de las OC de SAP que nacieron en Maximo → la fila de Maximo
+    // con ese PONUM se omite (queda la de SAP, que trae la fecha comprometida).
+    const migrated = new Set(
+      sapRows.map((r) => r.maximo_ponum).filter((p): p is string => p !== null),
+    );
+    // D6: alias de los solicitantes de Maximo
+    const aliasNames = await this.aliases.resolveMany(
+      'maximo',
+      maximoRows.map((r) => r.requested_by),
+    );
+    return [...(source === 'maximo' ? [] : sapRows), ...maximoRows]
       .filter((row) => {
         if (row.source !== 'maximo') return true;
+        if (migrated.has(row.po_number)) return false;
         const d = row.expected_date;
         if (from && (!d || d < from)) return false;
         if (to && (!d || d > to)) return false;
@@ -685,7 +725,11 @@ export class ExpeditingService {
           delivery_status: status,
           days_left: expected ? daysUntilDate(expected, today) : null,
           tracking: null,
-          requested_by: row.requested_by,
+          requested_by:
+            row.requested_by === null
+              ? null
+              : (aliasNames.get(row.requested_by) ?? row.requested_by),
+          maximo_ponum: row.maximo_ponum,
         };
       });
   }
@@ -720,6 +764,7 @@ export class ExpeditingService {
       } | null,
       currency: 'MXN' as string | null,
       requested_by: null as string | null,
+      maximo_ponum: null as string | null,
       buyer: row.profiles,
       requisition: row.requisitions,
       amount: toNumber(row.amount),
