@@ -101,6 +101,14 @@ const OPEN_READS = [
   // Bloque 2026-09-23: KPIs de Órdenes (D5) y export de expeditación (D9)
   '/compras/dashboard/ordenes-kpis',
   '/compras/expeditacion/export',
+  // 2026-09-25 (E1): valores por columna del filtro "tipo Excel"
+  '/compras/expeditacion/facets',
+  '/sap/purchase-orders/facets',
+  '/sap/purchase-requests/facets',
+  '/maximo/purchase-orders/facets',
+  '/maximo/contracts/facets',
+  '/compras/contratos/facets',
+  '/suppliers/facets',
   '/approvals/requisition/:rqId',
   '/approvals/stats',
   '/requisitions',

@@ -98,6 +98,12 @@ export class ContractsController {
     return this.service.findAll(query);
   }
 
+  // E1: valores de una columna para el filtro "tipo Excel"; antes de ':id'.
+  @Get('facets')
+  facets(@Query() query: ContractQueryDto) {
+    return this.service.facets(query);
+  }
+
   // Export Excel (B1): mismos filtros que el listado; antes de ':id'.
   @Get('export')
   async exportExcel(@Query() query: ContractQueryDto, @Res() res: Response) {

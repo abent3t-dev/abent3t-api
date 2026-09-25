@@ -6,7 +6,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
-import { PaginationDto } from '../../common/dto/pagination.dto';
+import { ColumnFilterablePaginationDto } from '../../common/column-filters/column-query.dto';
 import { toStatusList } from '../../sap-records/dto/sap-doc-query.dto';
 import { IsYearQuery } from '../../common/dto/year-query.util';
 
@@ -15,7 +15,7 @@ import { IsYearQuery } from '../../common/dto/year-query.util';
  * `search` busca en prnum/contractnum/vendor_name (staging no tiene columna
  * description de contrato — desviación documentada en el cierre de fase).
  */
-export class MaximoContractQueryDto extends PaginationDto {
+export class MaximoContractQueryDto extends ColumnFilterablePaginationDto {
   /** Uno o varios estatus separados por coma (A5: multi-selección). */
   @IsOptional()
   @Transform(({ value }) => toStatusList(value))
@@ -48,4 +48,12 @@ export class MaximoContractQueryDto extends PaginationDto {
   /** D4 (2026-09-23): año calendario de la fecha en Maximo (created_at_source). */
   @IsYearQuery()
   year?: number;
+
+  /**
+   * E2 (2026-09-25): `contract` = una fila por contrato (última revisión)
+   * con sus PR, en lugar de una fila por PR.
+   */
+  @IsOptional()
+  @IsIn(['contract'])
+  group?: 'contract';
 }

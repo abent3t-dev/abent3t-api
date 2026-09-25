@@ -1,4 +1,5 @@
 import { NO_DISPONIBLE } from '../common/utils/excel-export.util';
+import { buyerLabel } from '../common/utils/buyer.util';
 import type { ExcelColumn } from '../common/utils/excel-export.util';
 import type {
   SapPurchaseOrderRow,
@@ -68,6 +69,8 @@ export const SAP_PO_EXPORT_COLUMNS: ExcelColumn<SapPurchaseOrderRow>[] = [
   },
   { header: 'Moneda', value: (r) => r.currency, width: 10 },
   { header: 'Solicitante', value: sapPoRequesters, width: 32 },
+  // E4: comprador de Maximo (OC migradas) o "Capturó: …" (SAP no lo trae)
+  { header: 'Comprador', value: buyerLabel, width: 32 },
   { header: 'Capturó (SAP)', value: (r) => r.created_by_name, width: 28 },
   { header: 'F. Documento', value: (r) => r.doc_date, kind: 'date', width: 14 },
   {

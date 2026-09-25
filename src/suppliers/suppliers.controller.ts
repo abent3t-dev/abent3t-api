@@ -22,6 +22,7 @@ import { SupplierSapMirrorService } from './supplier-sap-mirror.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { ColumnFilterablePaginationDto } from '../common/column-filters/column-query.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
@@ -94,7 +95,7 @@ export class SuppliersController {
   // Export Excel (B1): mismos filtros que el listado; ruta literal antes de ':id'.
   @Get('export')
   async exportExcel(
-    @Query() pagination: PaginationDto,
+    @Query() pagination: ColumnFilterablePaginationDto,
     @Res() res: Response,
     @Query('is_blocked') isBlocked?: string,
     @Query('min_score') minScore?: string,
@@ -112,10 +113,23 @@ export class SuppliersController {
     sendExcel(res, buffer, excelFilename('proveedores'));
   }
 
+  // E1: valores de una columna para el filtro "tipo Excel"; antes de ':id'.
+  @Get('facets')
+  facets(
+    @Query() query: ColumnFilterablePaginationDto,
+    @Query('is_blocked') isBlocked?: string,
+    @Query('min_score') minScore?: string,
+  ) {
+    return this.service.facets(query, {
+      is_blocked: isBlocked !== undefined ? isBlocked === 'true' : undefined,
+      min_score: minScore ? parseInt(minScore, 10) : undefined,
+    });
+  }
+
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get()
   findAll(
-    @Query() pagination: PaginationDto,
+    @Query() pagination: ColumnFilterablePaginationDto,
     @Query('is_blocked') isBlocked?: string,
     @Query('min_score') minScore?: string,
   ) {
@@ -128,6 +142,8 @@ export class SuppliersController {
       pagination.page ||
       pagination.limit ||
       pagination.search ||
+      pagination.filters ||
+      pagination.sort ||
       Object.values(filters).some((v) => v !== undefined)
     ) {
       return this.service.findAllFiltered(pagination, filters);

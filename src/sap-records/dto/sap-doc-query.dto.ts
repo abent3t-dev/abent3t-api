@@ -1,14 +1,7 @@
-import {
-  IsIn,
-  IsInt,
-  IsISO8601,
-  IsOptional,
-  Max,
-  MaxLength,
-  Min,
-} from 'class-validator';
-import { Transform, Type } from 'class-transformer';
+import { IsIn, IsISO8601, IsOptional } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { IsYearQuery } from '../../common/dto/year-query.util';
+import { ColumnFilterablePaginationDto } from '../../common/column-filters/column-query.dto';
 
 /** Estatus derivados legibles (A6): `cancelled` no es un DocumentStatus de SAP. */
 export const SAP_DOC_STATUS_KEYS = ['open', 'close', 'cancelled'] as const;
@@ -35,26 +28,10 @@ export function toStatusList(value: unknown): string[] | undefined {
  * Query de los listados GET /sap/purchase-orders|purchase-requests (y de sus
  * exports). `status` acepta uno o varios alias separados por coma
  * (`open`, `close`, `cancelled`); el service los traduce al ERP.
+ * `page`/`limit`/`search` (número de documento o proveedor/solicitante) y
+ * los filtros por columna (E1: `filters`/`sort`/`order`) vienen de la base.
  */
-export class SapDocQueryDto {
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  page?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(100)
-  limit?: number;
-
-  /** Busca por número de documento o por proveedor/solicitante. */
-  @IsOptional()
-  @MaxLength(100)
-  search?: string;
-
+export class SapDocQueryDto extends ColumnFilterablePaginationDto {
   @IsOptional()
   @Transform(({ value }) => toStatusList(value))
   @IsIn(SAP_DOC_STATUS_KEYS, { each: true })

@@ -6,6 +6,19 @@ import { PaginatedResponse } from '../common/interfaces/paginated-response.inter
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { andYear } from '../common/sql/erp-views.sql';
 import { deriveSapLines } from './sap-document-raw';
+import {
+  applyColumnQuery,
+  facetOf,
+  isColumnQueryActive,
+  paginateRows,
+  parseColumnQuery,
+} from '../common/column-filters/column-filters';
+import { maximoBuyerName } from '../common/utils/buyer.util';
+import type { BuyerKind } from '../common/utils/buyer.util';
+import {
+  SAP_PO_FILTER_COLUMNS,
+  SAP_PR_FILTER_COLUMNS,
+} from './sap-records.columns';
 import { SapApprovalQueryDto } from './dto/sap-approval-query.dto';
 import { SapDocQueryDto, SapDocStatusKey } from './dto/sap-doc-query.dto';
 import {
@@ -49,6 +62,14 @@ import {
  *    PROPIO de SAP (tarjeta por sistema) y expone `migradas`.
  *  - D4: `year` en listados y resumen.
  *  - D6: `maximo_requested_by` se traduce con los alias de Maximo.
+ *
+ * Pedidos de Ingrid 2026-09-25:
+ *  - E1: filtro "tipo Excel" por columna. Sin filtros por columna ni orden
+ *    el listado sigue paginado en SQL; con ellos se evalúa sobre la vista
+ *    completa (mismo loader que el export) con `common/column-filters`.
+ *  - E4: comprador de la OC — SAP no lo trae en ninguna OC de PRD
+ *    (SalesPersonCode = -1): la migrada de Maximo toma el PURCHASEAGENT de
+ *    su OC allá; las demás, quién la capturó ("Capturó: …").
  */
 
 const DEFAULT_LIMIT = 20;
@@ -140,6 +161,12 @@ const OBJECT_TYPE_KIND: Record<string, 'purchase_order' | 'purchase_request'> =
 
 const MS_PER_DAY = 86_400_000;
 
+/** Orden de los listados: más recientes primero. */
+const DOC_ORDER = [
+  { doc_date: { sort: 'desc' as const, nulls: 'last' as const } },
+  { doc_entry: 'desc' as const },
+];
+
 function toNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value);
 }
@@ -197,6 +224,16 @@ export class SapRecordsService {
   ): Promise<PaginatedResponse<SapPurchaseOrderRow>> {
     const page = query.page ?? 1;
     const limit = query.limit ?? DEFAULT_LIMIT;
+    // E1: filtros por columna u orden → sobre la vista completa
+    const columnQuery = parseColumnQuery(query, SAP_PO_FILTER_COLUMNS);
+    if (isColumnQueryActive(columnQuery)) {
+      const { rows } = await this.loadPurchaseOrders(query);
+      return paginateRows(
+        applyColumnQuery(rows, SAP_PO_FILTER_COLUMNS, columnQuery),
+        page,
+        limit,
+      );
+    }
     const where = await this.poWhere(query);
 
     const [total, rows] = await Promise.all([
@@ -251,6 +288,15 @@ export class SapRecordsService {
   ): Promise<PaginatedResponse<SapPurchaseRequestRow>> {
     const page = query.page ?? 1;
     const limit = query.limit ?? DEFAULT_LIMIT;
+    const columnQuery = parseColumnQuery(query, SAP_PR_FILTER_COLUMNS);
+    if (isColumnQueryActive(columnQuery)) {
+      const { rows } = await this.loadPurchaseRequests(query);
+      return paginateRows(
+        applyColumnQuery(rows, SAP_PR_FILTER_COLUMNS, columnQuery),
+        page,
+        limit,
+      );
+    }
     const where = this.buildWhere(query, ['requester_name', 'requester']);
 
     const [total, rows] = await Promise.all([
@@ -304,29 +350,60 @@ export class SapRecordsService {
     rows: Array<SapPurchaseOrderRow | SapPurchaseRequestRow>;
     truncated: boolean;
   }> {
-    const orderBy = [
-      { doc_date: { sort: 'desc' as const, nulls: 'last' as const } },
-      { doc_entry: 'desc' as const },
-    ];
     if (entity === 'purchase_orders') {
-      const where = await this.poWhere(query);
-      const rows = await this.prisma.sap_purchase_orders.findMany({
-        where,
-        select: PO_LIST_SELECT,
-        orderBy,
-        take: EXPORT_MAX_ROWS + 1,
-      });
-      const kept = await this.withRequesters(rows.slice(0, EXPORT_MAX_ROWS));
+      const columnQuery = parseColumnQuery(query, SAP_PO_FILTER_COLUMNS);
+      const { rows, truncated } = await this.loadPurchaseOrders(query);
       return {
-        rows: kept.map((r) => this.toPoRow(r)),
-        truncated: rows.length > EXPORT_MAX_ROWS,
+        rows: applyColumnQuery(rows, SAP_PO_FILTER_COLUMNS, columnQuery),
+        truncated,
       };
     }
+    const columnQuery = parseColumnQuery(query, SAP_PR_FILTER_COLUMNS);
+    const { rows, truncated } = await this.loadPurchaseRequests(query);
+    return {
+      rows: applyColumnQuery(rows, SAP_PR_FILTER_COLUMNS, columnQuery),
+      truncated,
+    };
+  }
+
+  // ── Facetas del filtro "tipo Excel" (E1) ─────────────────────────────────
+
+  async purchaseOrderFacets(query: SapDocQueryDto) {
+    const { rows } = await this.loadPurchaseOrders(query);
+    return facetOf(rows, SAP_PO_FILTER_COLUMNS, query);
+  }
+
+  async purchaseRequestFacets(query: SapDocQueryDto) {
+    const { rows } = await this.loadPurchaseRequests(query);
+    return facetOf(rows, SAP_PR_FILTER_COLUMNS, query);
+  }
+
+  /** Vista completa con los filtros propios del listado (tope del export). */
+  private async loadPurchaseOrders(
+    query: SapDocQueryDto,
+  ): Promise<{ rows: SapPurchaseOrderRow[]; truncated: boolean }> {
+    const where = await this.poWhere(query);
+    const rows = await this.prisma.sap_purchase_orders.findMany({
+      where,
+      select: PO_LIST_SELECT,
+      orderBy: DOC_ORDER,
+      take: EXPORT_MAX_ROWS + 1,
+    });
+    const kept = await this.withRequesters(rows.slice(0, EXPORT_MAX_ROWS));
+    return {
+      rows: kept.map((r) => this.toPoRow(r)),
+      truncated: rows.length > EXPORT_MAX_ROWS,
+    };
+  }
+
+  private async loadPurchaseRequests(
+    query: SapDocQueryDto,
+  ): Promise<{ rows: SapPurchaseRequestRow[]; truncated: boolean }> {
     const where = this.buildWhere(query, ['requester_name', 'requester']);
     const rows = await this.prisma.sap_purchase_requests.findMany({
       where,
       select: PR_LIST_SELECT,
-      orderBy,
+      orderBy: DOC_ORDER,
       take: EXPORT_MAX_ROWS + 1,
     });
     return {
@@ -496,7 +573,11 @@ export class SapRecordsService {
    * Maximo (vista vigente).
    */
   private async withRequesters<
-    T extends { base_request_entries: number[]; maximo_ponum: string | null },
+    T extends {
+      base_request_entries: number[];
+      maximo_ponum: string | null;
+      created_by_name: string | null;
+    },
   >(
     rows: T[],
   ): Promise<
@@ -505,6 +586,8 @@ export class SapRecordsService {
         requester_names: string[];
         maximo_requested_by: string | null;
         maximo_po_exists: boolean;
+        buyer_name: string | null;
+        buyer_kind: BuyerKind;
       }
     >
   > {
@@ -516,6 +599,7 @@ export class SapRecordsService {
     ];
     const names = new Map<number, string>();
     const maximoRequesters = new Map<string, string>();
+    const maximoBuyers = new Map<string, string>();
     const maximoExists = new Set<string>();
     const [requests, maximo] = await Promise.all([
       entries.length === 0
@@ -527,9 +611,15 @@ export class SapRecordsService {
       ponums.length === 0
         ? []
         : this.prisma.$queryRaw<
-            Array<{ ponum: string; requested_by: string | null }>
+            Array<{
+              ponum: string;
+              requested_by: string | null;
+              purchase_agent: string | null;
+              purchase_agent_name: string | null;
+            }>
           >(Prisma.sql`
-            SELECT DISTINCT ON (ponum) ponum, requested_by
+            SELECT DISTINCT ON (ponum) ponum, requested_by,
+                   purchase_agent, purchase_agent_name
             FROM maximo_purchase_orders
             WHERE ponum IN (${Prisma.join(ponums)})
             ORDER BY ponum, coalesce(revisionnum, 0) DESC`),
@@ -538,11 +628,11 @@ export class SapRecordsService {
       const name = r.requester_name ?? r.requester;
       if (name) names.set(r.doc_entry, name);
     }
-    // D6: el REQUESTEDBY de Maximo es un código; se traduce con los alias.
-    const aliasNames = await this.aliases.resolveMany(
-      'maximo',
-      maximo.map((m) => m.requested_by),
-    );
+    // D6/E4: REQUESTEDBY y PURCHASEAGENT de Maximo son códigos → alias.
+    const aliasNames = await this.aliases.resolveMany('maximo', [
+      ...maximo.map((m) => m.requested_by),
+      ...maximo.map((m) => m.purchase_agent ?? null),
+    ]);
     for (const m of maximo) {
       maximoExists.add(m.ponum);
       if (m.requested_by) {
@@ -551,23 +641,47 @@ export class SapRecordsService {
           aliasNames.get(m.requested_by) ?? m.requested_by,
         );
       }
+      const buyer = maximoBuyerName(
+        m.purchase_agent ?? null,
+        m.purchase_agent_name ?? null,
+        aliasNames,
+      );
+      if (buyer) maximoBuyers.set(m.ponum, buyer);
     }
-    return rows.map((row) => ({
-      ...row,
-      maximo_po_exists:
-        row.maximo_ponum !== null && maximoExists.has(row.maximo_ponum),
-      maximo_requested_by:
+    return rows.map((row) => {
+      const maximoBuyer =
         row.maximo_ponum === null
+          ? undefined
+          : maximoBuyers.get(row.maximo_ponum);
+      // Una OC migrada la capturó el usuario de la integración (no es su
+      // comprador): si existe en Maximo, el comprador es el de allá o nadie.
+      const capturer =
+        row.maximo_ponum !== null && maximoExists.has(row.maximo_ponum)
           ? null
-          : (maximoRequesters.get(row.maximo_ponum) ?? null),
-      requester_names: [
-        ...new Set(
-          row.base_request_entries
-            .map((entry) => names.get(entry))
-            .filter((name): name is string => !!name),
-        ),
-      ],
-    }));
+          : row.created_by_name;
+      return {
+        ...row,
+        buyer_name: maximoBuyer ?? capturer,
+        buyer_kind: (maximoBuyer
+          ? 'comprador'
+          : capturer
+            ? 'capturo'
+            : null) as BuyerKind,
+        maximo_po_exists:
+          row.maximo_ponum !== null && maximoExists.has(row.maximo_ponum),
+        maximo_requested_by:
+          row.maximo_ponum === null
+            ? null
+            : (maximoRequesters.get(row.maximo_ponum) ?? null),
+        requester_names: [
+          ...new Set(
+            row.base_request_entries
+              .map((entry) => names.get(entry))
+              .filter((name): name is string => !!name),
+          ),
+        ],
+      };
+    });
   }
 
   private buildWhere(

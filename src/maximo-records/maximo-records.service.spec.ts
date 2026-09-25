@@ -81,7 +81,7 @@ function makeService(env: Record<string, string> = {}) {
     config,
     aliases as unknown as ErpAliasesService,
   );
-  return { service, prisma };
+  return { service, prisma, aliases };
 }
 
 const poRow = (overrides: Record<string, unknown> = {}) => ({
@@ -355,5 +355,244 @@ describe('derivación pura del raw de contratos', () => {
       expect(deriveContractLines(raw, '1', 0)).toEqual([]);
       expect(deriveContractStatusHistory(raw, '1', 0)).toEqual([]);
     }
+  });
+});
+
+describe('MaximoRecordsService — comprador y filtro tipo Excel (E1/E4)', () => {
+  const contractRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 'c-1',
+    prnum: 'PR1',
+    contractnum: '1051',
+    revisionnum: 0,
+    status: 'APPR',
+    maxvol: '710481.78',
+    total_cost: '710481.78',
+    currency: 'MXN',
+    start_date: new Date('2026-01-01T00:00:00Z'),
+    end_date: new Date('2026-12-31T00:00:00Z'),
+    vendor_id: 'V1',
+    vendor_name: 'PROVEEDOR A',
+    requested_by: 'VMM3',
+    department: 'OPS',
+    approved_at: new Date('2026-01-11T15:00:00Z'),
+    approved_by: null,
+    created_at_source: new Date('2026-01-01T15:00:00Z'),
+    contract_ref_num: '1051',
+    contract_value: '710481.78',
+    pr_total: null,
+    consumed_value: null,
+    purchview_count: 1,
+    has_contract: true,
+    last_changed_at: null,
+    last_seen_at: new Date('2026-09-25T00:00:00Z'),
+    ...overrides,
+  });
+
+  it('E4: comprador = alias de Compras > DISPLAYNAME de Maximo > usuario', async () => {
+    const { service, prisma, aliases } = makeService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        poRow({
+          id: 'a',
+          purchase_agent: 'VMM3',
+          purchase_agent_name: 'Victor M.',
+        }),
+        poRow({
+          id: 'b',
+          purchase_agent: 'JLOPEZ',
+          purchase_agent_name: 'Juan López',
+        }),
+        poRow({
+          id: 'c',
+          purchase_agent: 'SINNOMBRE',
+          purchase_agent_name: null,
+        }),
+        poRow({ id: 'd', purchase_agent: null, purchase_agent_name: null }),
+      ])
+      .mockResolvedValueOnce([{ count: 4 }]);
+    aliases.resolveMany.mockResolvedValueOnce(
+      new Map([['VMM3', 'Víctor Martínez']]),
+    );
+    const { data } = await service.listPurchaseOrders({});
+    expect(data.map((r) => r.buyer_name)).toEqual([
+      'Víctor Martínez',
+      'Juan López',
+      'SINNOMBRE',
+      null,
+    ]);
+  });
+
+  it('E1: filtra OC por comprador y ordena por monto sobre la vista completa', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw.mockResolvedValueOnce([
+      poRow({
+        id: 'a',
+        ponum: 'PO1',
+        total_cost: '10',
+        purchase_agent: 'A',
+        purchase_agent_name: 'Ana',
+      }),
+      poRow({
+        id: 'b',
+        ponum: 'PO2',
+        total_cost: '30',
+        purchase_agent: 'B',
+        purchase_agent_name: 'Beto',
+      }),
+      poRow({
+        id: 'c',
+        ponum: 'PO3',
+        total_cost: '20',
+        purchase_agent: 'A',
+        purchase_agent_name: 'Ana',
+      }),
+    ]);
+    const result = await service.listPurchaseOrders({
+      filters: JSON.stringify({ comprador: { in: ['Ana'] } }),
+      sort: 'monto',
+      order: 'desc',
+    });
+    expect(result.data.map((r) => r.ponum)).toEqual(['PO3', 'PO1']);
+    expect(result.meta.total).toBe(2);
+    // una sola consulta (sin count): la vista completa con tope del export
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('E1: contratos — "Sin contrato" es la faceta vacía y los días salen de solicitud→aprobación', async () => {
+    const { service, prisma } = makeService();
+    const rows = [
+      contractRow(),
+      contractRow({ id: 'c-2', prnum: 'PR2' }),
+      contractRow({
+        id: 'c-3',
+        prnum: 'PR3',
+        contractnum: null,
+        has_contract: false,
+        approved_at: null,
+      }),
+    ];
+    prisma.$queryRaw.mockResolvedValue(rows);
+    await expect(
+      service.contractFacets({ column: 'contrato' }),
+    ).resolves.toMatchObject({
+      values: [
+        { value: '1051', count: 2 },
+        { value: null, count: 1 },
+      ],
+    });
+    await expect(
+      service.contractFacets({ column: 'dias' }),
+    ).resolves.toMatchObject({
+      type: 'number',
+      min: 10,
+      max: 10,
+      empty: 1,
+    });
+    const exported = await service.listContractsForExport({
+      filters: JSON.stringify({ contrato: { in: [null] } }),
+    });
+    expect(exported.rows.map((r) => r.prnum)).toEqual(['PR3']);
+  });
+});
+
+describe('Contratos Maximo agrupados por contrato (E2)', () => {
+  const row = (overrides: Record<string, unknown>) => ({
+    id: 'c',
+    prnum: 'PR1',
+    contractnum: '1051',
+    revisionnum: 0,
+    status: 'APPR',
+    maxvol: '710481.78',
+    total_cost: '710481.78',
+    currency: 'MXN',
+    start_date: new Date('2026-01-01T00:00:00Z'),
+    end_date: new Date('2026-12-31T00:00:00Z'),
+    vendor_id: 'V1',
+    vendor_name: 'PROVEEDOR A',
+    requested_by: 'VMM3',
+    department: 'OPS',
+    approved_at: null,
+    approved_by: null,
+    created_at_source: new Date('2026-01-01T15:00:00Z'),
+    contract_ref_num: '1051',
+    contract_value: '710481.78',
+    pr_total: null,
+    consumed_value: null,
+    purchview_count: 1,
+    has_contract: true,
+    last_changed_at: null,
+    last_seen_at: new Date('2026-09-25T00:00:00Z'),
+    ...overrides,
+  });
+
+  it('una fila por contrato (revisión más alta) con sus PR; las PR sin contrato no entran', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw.mockResolvedValueOnce([
+      row({
+        id: 'a',
+        prnum: 'PR1',
+        created_at_source: new Date('2026-02-01T00:00:00Z'),
+      }),
+      row({
+        id: 'b',
+        prnum: 'PR2',
+        revisionnum: 1,
+        contract_value: '800000',
+        created_at_source: new Date('2026-03-01T00:00:00Z'),
+      }),
+      row({
+        id: 'c',
+        prnum: 'PR3',
+        created_at_source: new Date('2026-01-15T00:00:00Z'),
+      }),
+      row({
+        id: 'd',
+        prnum: 'PR9',
+        contractnum: '2000',
+        end_date: new Date('2027-06-30T00:00:00Z'),
+      }),
+    ]);
+    const result = await service.listContractGroups({ group: 'contract' });
+    expect(result.meta.total).toBe(2);
+    // fin de vigencia más lejano primero
+    expect(result.data.map((g) => g.contractnum)).toEqual(['2000', '1051']);
+    const g1051 = result.data[1];
+    expect(g1051).toMatchObject({
+      pr_count: 3,
+      revisionnum: 1,
+      contract_value: 800000,
+      detail_key: 'PR2',
+    });
+    expect(g1051.prs.map((p) => p.prnum)).toEqual(['PR2', 'PR1', 'PR3']);
+    // la consulta pidió solo filas con contrato
+    const sql = (
+      prisma.$queryRaw.mock.calls[0] as [
+        { strings: string[]; values: unknown[] },
+      ]
+    )[0];
+    expect(sql.strings.join('?')).toContain('has_contract');
+    expect(sql.values).toContain(true);
+  });
+
+  it('filtros por columna y facetas sobre los contratos agrupados', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw.mockResolvedValue([
+      row({ id: 'a', prnum: 'PR1' }),
+      row({ id: 'b', prnum: 'PR2' }),
+      row({ id: 'c', prnum: 'PR3', contractnum: '3000', status: 'EXPIRD' }),
+    ]);
+    const filtered = await service.listContractGroups({
+      group: 'contract',
+      filters: JSON.stringify({ solicitudes: { min: 2 } }),
+    });
+    expect(filtered.data.map((g) => g.contractnum)).toEqual(['1051']);
+    await expect(
+      service.contractGroupFacets({ group: 'contract', column: 'estatus' }),
+    ).resolves.toMatchObject({
+      values: [
+        { value: 'APPR', count: 1 },
+        { value: 'EXPIRD', count: 1 },
+      ],
+    });
   });
 });

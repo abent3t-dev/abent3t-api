@@ -1,5 +1,5 @@
 import { IsIn, IsISO8601, IsOptional, IsUUID } from 'class-validator';
-import { PaginationDto } from '../../common/dto/pagination.dto';
+import { ColumnFilterablePaginationDto } from '../../common/column-filters/column-query.dto';
 
 export const DERIVED_STATUSES = [
   'sin_fecha',
@@ -13,9 +13,10 @@ export const DERIVED_STATUSES = [
 /**
  * Fase Expeditación — Filtros del listado. `search` (número de PO o razón
  * social), `page`/`limit` de PaginationDto. `status` filtra por el estatus
- * DERIVADO (se aplica tras derivar, no en SQL).
+ * DERIVADO (se aplica tras derivar, no en SQL). E1 (2026-09-25): filtros
+ * por columna `filters`/`sort`/`order` (y `column`/`facet_search` en /facets).
  */
-export class ExpeditingQueryDto extends PaginationDto {
+export class ExpeditingQueryDto extends ColumnFilterablePaginationDto {
   @IsIn(DERIVED_STATUSES)
   @IsOptional()
   status?: (typeof DERIVED_STATUSES)[number];

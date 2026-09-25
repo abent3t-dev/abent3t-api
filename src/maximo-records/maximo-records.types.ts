@@ -26,6 +26,11 @@ export interface MaximoPurchaseOrderView {
   requested_by: string | null;
   /** D6: nombre del solicitante según los alias de Maximo; null = sin alias. */
   requested_by_name: string | null;
+  /** E4: comprador (PO.PURCHASEAGENT) y su DISPLAYNAME en Maximo. */
+  purchase_agent: string | null;
+  purchase_agent_name: string | null;
+  /** E4: nombre a mostrar: alias de Compras > DISPLAYNAME > usuario. */
+  buyer_name: string | null;
   department: string | null;
   approved_at: Date | null;
   /** Usuario Maximo que aprobó (CHANGEBY del primer APPR); null si no aplica. */

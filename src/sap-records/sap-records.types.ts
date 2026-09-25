@@ -64,6 +64,13 @@ export interface SapPurchaseOrderRow extends SapDocBaseRow {
   base_request_entries: number[];
   /** Solicitantes de esas solicitudes (vacío = la OC no nació de una). */
   requester_names: string[];
+  /**
+   * E4: comprador. SAP no lo trae en ninguna OC de PRD (SalesPersonCode =
+   * -1): la migrada de Maximo toma el PURCHASEAGENT de allá (`comprador`);
+   * las demás, quién la capturó (`capturo`, la UI dice "Capturó: …").
+   */
+  buyer_name: string | null;
+  buyer_kind: 'comprador' | 'capturo' | null;
 }
 
 export interface SapPurchaseRequestRow extends SapDocBaseRow {

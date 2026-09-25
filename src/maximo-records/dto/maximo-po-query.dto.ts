@@ -1,6 +1,6 @@
 import { IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
 import { Transform } from 'class-transformer';
-import { PaginationDto } from '../../common/dto/pagination.dto';
+import { ColumnFilterablePaginationDto } from '../../common/column-filters/column-query.dto';
 import { toStatusList } from '../../sap-records/dto/sap-doc-query.dto';
 import { IsYearQuery } from '../../common/dto/year-query.util';
 
@@ -8,7 +8,7 @@ import { IsYearQuery } from '../../common/dto/year-query.util';
  * Fase INT-5 — Filtros del listado de POs de Maximo (vista actual).
  * `search` (ponum/descripción), `page` y `limit` vienen de PaginationDto.
  */
-export class MaximoPoQueryDto extends PaginationDto {
+export class MaximoPoQueryDto extends ColumnFilterablePaginationDto {
   /** Uno o varios estatus separados por coma (A5: multi-selección). */
   @IsOptional()
   @Transform(({ value }) => toStatusList(value))

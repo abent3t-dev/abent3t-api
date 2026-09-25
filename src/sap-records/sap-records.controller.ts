@@ -64,6 +64,18 @@ export class SapRecordsController {
     return this.service.listPurchaseOrders(query);
   }
 
+  // E1: valores de una columna para el filtro "tipo Excel" (con los demás
+  // filtros aplicados). Rutas literales ANTES de ':docEntry'.
+  @Get('purchase-orders/facets')
+  purchaseOrderFacets(@Query() query: SapDocQueryDto) {
+    return this.service.purchaseOrderFacets(query);
+  }
+
+  @Get('purchase-requests/facets')
+  purchaseRequestFacets(@Query() query: SapDocQueryDto) {
+    return this.service.purchaseRequestFacets(query);
+  }
+
   // Export Excel (B1): mismos filtros que el listado, sin paginar. Ruta
   // literal ANTES de ':docEntry'. Lectura abierta, nunca incluye raw.
   @Get('purchase-orders/export')

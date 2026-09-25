@@ -1,6 +1,7 @@
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { SapRecordsService } from '../sap-records/sap-records.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { PurchaseReportsService } from './purchase-reports.service';
 import { WeeklyReportService } from './weekly-report.service';
 
@@ -100,6 +101,9 @@ function makeService() {
     prisma as unknown as PrismaService,
     reports as unknown as PurchaseReportsService,
     sap as unknown as SapRecordsService,
+    {
+      resolveMany: jest.fn().mockResolvedValue(new Map<string, string>()),
+    } as unknown as ErpAliasesService,
   );
   return { service, reports, sap };
 }

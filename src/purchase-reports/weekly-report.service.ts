@@ -8,6 +8,8 @@ import {
 } from '../common/utils/excel-export.util';
 import type { ExcelColumn } from '../common/utils/excel-export.util';
 import { SapRecordsService } from '../sap-records/sap-records.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
+import { maximoBuyerName } from '../common/utils/buyer.util';
 import {
   SAP_PO_EXPORT_COLUMNS,
   SAP_PR_EXPORT_COLUMNS,
@@ -46,6 +48,7 @@ const SAP_PO_HEADERS = [
   'Saldo disponible',
   'Moneda',
   'Solicitante',
+  'Comprador',
   'Origen',
   'Capturó (SAP)',
   'F. Documento',
@@ -92,6 +95,8 @@ interface MaximoPoRow {
   total_cost: unknown;
   currency: string | null;
   requested_by: string | null;
+  purchase_agent: string | null;
+  purchase_agent_name: string | null;
   department: string | null;
   created_at_source: Date | null;
   approved_at: Date | null;
@@ -153,6 +158,7 @@ export class WeeklyReportService {
     private readonly prisma: PrismaService,
     private readonly reports: PurchaseReportsService,
     private readonly sap: SapRecordsService,
+    private readonly aliases: ErpAliasesService,
   ) {}
 
   /** Periodo anterior: mismos días, justo antes de `from`. */
@@ -193,7 +199,8 @@ export class WeeklyReportService {
       this.sap.listAllForExport('purchase_requests', { from, to }),
       this.prisma.$queryRaw<MaximoPoRow[]>(Prisma.sql`
         SELECT ponum, description, status, vendor_name, total_cost, currency,
-               requested_by, department, created_at_source, approved_at, approved_by
+               requested_by, purchase_agent, purchase_agent_name,
+               department, created_at_source, approved_at, approved_by
         FROM (${CURRENT_MAXIMO_POS}) current
         WHERE created_at_source BETWEEN ${period.from} AND ${periodTo}
         ORDER BY created_at_source DESC`),
@@ -219,6 +226,18 @@ export class WeeklyReportService {
           AND open_total IS NOT NULL
         GROUP BY currency ORDER BY count DESC`),
     ]);
+
+    // D6/E4: usuarios de Maximo con su nombre (alias de Compras)
+    const names = await this.aliases.resolveMany('maximo', [
+      ...maximoPos.flatMap((r) => [
+        r.requested_by,
+        r.approved_by,
+        r.purchase_agent,
+      ]),
+      ...maximoPrs.map((r) => r.requested_by),
+    ]);
+    const person = (code: string | null) =>
+      code ? (names.get(code) ?? code) : null;
 
     const summary = this.summaryRows(actual, anterior, tiempos, openBalance);
     const periodLabel = `${dmy(from)} al ${dmy(to)}`;
@@ -283,8 +302,15 @@ export class WeeklyReportService {
             { header: 'Moneda', value: (r) => r.currency, width: 10 },
             {
               header: 'Solicitado por',
-              value: (r) => r.requested_by,
-              width: 18,
+              value: (r) => person(r.requested_by),
+              width: 22,
+            },
+            // E4: comprador (PURCHASEAGENT) con su nombre
+            {
+              header: 'Comprador',
+              value: (r) =>
+                maximoBuyerName(r.purchase_agent, r.purchase_agent_name, names),
+              width: 26,
             },
             { header: 'Departamento', value: (r) => r.department, width: 18 },
             {
@@ -299,7 +325,11 @@ export class WeeklyReportService {
               kind: 'date',
               width: 14,
             },
-            { header: 'Aprobó', value: (r) => r.approved_by, width: 14 },
+            {
+              header: 'Aprobó',
+              value: (r) => person(r.approved_by),
+              width: 22,
+            },
           ],
           maximoPos,
         ),
@@ -418,7 +448,8 @@ export class WeeklyReportService {
         'Fuentes: SAP Business One, Maximo (vista vigente: última revisión de cada documento) y la captura propia de ABENT.',
         'Montos por moneda: nunca se suman MXN con USD o EUR. OC de SAP con IVA en la moneda del documento; solicitudes de SAP sin IVA (suma de sus líneas).',
         'Saldo disponible: parte de la OC de SAP aún no recibida ni facturada (cantidad pendiente de cada línea), con IVA.',
-        'Solicitante de una OC de SAP: el de la solicitud de pedido de SAP de la que nació; si la OC viene de Maximo (columna "Origen"), el solicitante de Maximo. Las demás muestran solo quién la capturó.',
+        'Solicitante de una OC de SAP: el de la solicitud de pedido de SAP de la que nació; si la OC viene de Maximo (columna "Origen"), el solicitante de Maximo; si no hay, queda vacío.',
+        'Comprador: en Maximo es el comprador de la OC (PURCHASEAGENT). SAP no tiene comprador capturado en ninguna OC, así que las OC de SAP creadas desde Maximo muestran el comprador de Maximo y las demás "Capturó: …" (el usuario de SAP que la capturó).',
         'Los indicadores marcados "al día de hoy" son una foto al generar el archivo, no del periodo; por eso no tienen columna anterior.',
         'Estado por aprobador: "Retrasado" cuando su pendiente más antigua ya rebasó su promedio histórico de autorización.',
         ...(sapPos.truncated || sapPrs.truncated

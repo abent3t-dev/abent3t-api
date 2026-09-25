@@ -123,7 +123,7 @@ function makeService() {
     config as unknown as ConfigService,
     aliases as unknown as ErpAliasesService,
   );
-  return { service, prisma };
+  return { service, prisma, aliases };
 }
 
 describe('SapRecordsService — listados', () => {
@@ -366,5 +366,136 @@ describe('SapRecordsService — resumen', () => {
     expect(summary.purchaseRequests.diasPromedioGestion).toBeNull();
     expect(summary.approvalRequests).toEqual({ total: 0, pending: 0 });
     expect(summary.lastSync.purchase_orders).toBeNull();
+  });
+});
+
+describe('SapRecordsService — comprador y filtro tipo Excel (E1/E4)', () => {
+  it('E4: sin OC de Maximo el comprador es quien capturó (SAP no trae comprador)', async () => {
+    const { service } = makeService();
+    const result = await service.listPurchaseOrders({});
+    expect(result.data[0]).toMatchObject({
+      buyer_name: 'Comprador Uno',
+      buyer_kind: 'capturo',
+    });
+  });
+
+  it('E4: la OC migrada toma el PURCHASEAGENT de Maximo (alias > nombre)', async () => {
+    const { service, prisma, aliases } = makeService();
+    prisma.sap_purchase_orders.findMany.mockResolvedValueOnce([
+      { ...PO_ROW, maximo_ponum: 'PO104910' },
+    ]);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      {
+        ponum: 'PO104910',
+        requested_by: 'JPEREZ',
+        purchase_agent: 'VMM3',
+        purchase_agent_name: 'Victor M.',
+      },
+    ]);
+    aliases.resolveMany.mockResolvedValueOnce(
+      new Map([['VMM3', 'Víctor Martínez']]),
+    );
+    const result = await service.listPurchaseOrders({});
+    expect(result.data[0]).toMatchObject({
+      buyer_name: 'Víctor Martínez',
+      buyer_kind: 'comprador',
+      maximo_po_exists: true,
+    });
+  });
+
+  it('E4: migrada que existe en Maximo sin comprador → sin comprador (no el usuario de la integración)', async () => {
+    const { service, prisma } = makeService();
+    prisma.sap_purchase_orders.findMany.mockResolvedValueOnce([
+      { ...PO_ROW, maximo_ponum: 'PO104911', created_by_name: 'INTEGRACION' },
+    ]);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      {
+        ponum: 'PO104911',
+        requested_by: null,
+        purchase_agent: null,
+        purchase_agent_name: null,
+      },
+    ]);
+    const result = await service.listPurchaseOrders({});
+    expect(result.data[0]).toMatchObject({
+      buyer_name: null,
+      buyer_kind: null,
+    });
+  });
+
+  it('E1: con filtros por columna filtra sobre la vista completa y pagina en memoria', async () => {
+    const { service, prisma } = makeService();
+    prisma.sap_purchase_orders.findMany.mockResolvedValueOnce([
+      PO_ROW,
+      {
+        ...PO_ROW,
+        id: 'row-2',
+        doc_entry: 9001,
+        card_name: 'OTRO',
+        created_by_name: 'Otra',
+      },
+      {
+        ...PO_ROW,
+        id: 'row-3',
+        doc_entry: 9002,
+        card_name: 'TERCERO',
+        open_total: null,
+      },
+    ]);
+    const result = await service.listPurchaseOrders({
+      filters: JSON.stringify({
+        proveedor: { in: ['PROVEEDOR UNO', 'OTRO'] },
+        comprador: { nin: ['Capturó: Otra'] },
+      }),
+      limit: 10,
+    });
+    expect(result.meta.total).toBe(1);
+    expect(result.data.map((r) => r.doc_entry)).toEqual([9000]);
+    // sin skip/take de página: se cargó la vista completa (tope del export)
+    const args = (
+      prisma.sap_purchase_orders.findMany.mock.calls[0] as [
+        { skip?: number; take: number },
+      ]
+    )[0];
+    expect(args.skip).toBeUndefined();
+    expect(args.take).toBe(20_001);
+    expect(prisma.sap_purchase_orders.count).not.toHaveBeenCalled();
+  });
+
+  it('E1: facetas de proveedor y rango de saldo; export con el mismo filtro', async () => {
+    const { service, prisma } = makeService();
+    const rows = [
+      PO_ROW,
+      { ...PO_ROW, id: 'row-2', doc_entry: 9001, card_name: 'OTRO' },
+      {
+        ...PO_ROW,
+        id: 'row-3',
+        doc_entry: 9002,
+        card_name: 'OTRO',
+        open_total: null,
+      },
+    ];
+    prisma.sap_purchase_orders.findMany.mockResolvedValue(rows);
+    await expect(
+      service.purchaseOrderFacets({ column: 'proveedor' }),
+    ).resolves.toMatchObject({
+      type: 'text',
+      values: [
+        { value: 'OTRO', count: 2 },
+        { value: 'PROVEEDOR UNO', count: 1 },
+      ],
+    });
+    await expect(
+      service.purchaseOrderFacets({ column: 'saldo' }),
+    ).resolves.toMatchObject({
+      type: 'number',
+      min: 667574.63,
+      max: 667574.63,
+      empty: 1,
+    });
+    const exported = await service.listAllForExport('purchase_orders', {
+      filters: JSON.stringify({ saldo: { empty: true } }),
+    });
+    expect(exported.rows.map((r) => r.doc_entry)).toEqual([9002]);
   });
 });

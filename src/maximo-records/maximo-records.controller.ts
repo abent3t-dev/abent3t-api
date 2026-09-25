@@ -20,6 +20,7 @@ import { MaximoContractQueryDto } from './dto/maximo-contract-query.dto';
 import { MaximoPoQueryDto } from './dto/maximo-po-query.dto';
 import { MaximoSummaryQueryDto } from './dto/maximo-summary-query.dto';
 import { MaximoRecordsService } from './maximo-records.service';
+import type { MaximoContractGroupView } from './maximo-contract-groups';
 
 // Roles de compras (§Roles y Permisos de CLAUDE_COMPRAS.md)
 // Lectores de datos Maximo; super_admin bypassa RolesGuard.
@@ -53,6 +54,9 @@ const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
     width: 22,
   },
   { header: 'Usuario solicitante', value: (r) => r.requested_by, width: 16 },
+  // E4: comprador de la OC (PURCHASEAGENT) con su nombre
+  { header: 'Comprador', value: (r) => r.buyer_name, width: 26 },
+  { header: 'Usuario comprador', value: (r) => r.purchase_agent, width: 16 },
   {
     header: 'F. Espera aprobación',
     value: (r) => r.waiting_approval_at,
@@ -142,6 +146,51 @@ const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
   { header: 'Revisión', value: (r) => r.revisionnum, kind: 'int', width: 10 },
 ];
 
+/** E2: export de la vista agrupada por contrato (una fila por contrato). */
+const CONTRACT_GROUP_COLUMNS: ExcelColumn<MaximoContractGroupView>[] = [
+  { header: 'Contrato', value: (r) => r.contractnum, width: 14 },
+  {
+    header: 'Solicitudes (PR)',
+    value: (r) => r.pr_count,
+    kind: 'int',
+    width: 14,
+  },
+  {
+    header: 'PR ligadas',
+    value: (r) => r.prs.map((p) => p.prnum).join(', '),
+    width: 40,
+  },
+  { header: 'Estatus', value: (r) => r.status, width: 10 },
+  { header: 'Proveedor', value: (r) => r.vendor_name, width: 36 },
+  {
+    header: 'Valor contrato',
+    value: (r) => r.contract_value,
+    kind: 'money',
+    width: 16,
+  },
+  {
+    header: 'Consumido',
+    value: (r) => r.consumed_value ?? NO_DISPONIBLE,
+    width: 16,
+  },
+  {
+    header: 'Saldo',
+    value: (r) => r.balance_value ?? NO_DISPONIBLE,
+    width: 16,
+  },
+  { header: 'MAXVOL', value: (r) => r.maxvol ?? NO_DISPONIBLE, width: 14 },
+  { header: 'Moneda', value: (r) => r.currency, width: 10 },
+  {
+    header: 'Inicio vigencia',
+    value: (r) => r.start_date,
+    kind: 'date',
+    width: 14,
+  },
+  { header: 'Fin vigencia', value: (r) => r.end_date, kind: 'date', width: 14 },
+  { header: 'Departamento', value: (r) => r.department, width: 18 },
+  { header: 'Revisión', value: (r) => r.revisionnum, kind: 'int', width: 10 },
+];
+
 /**
  * Fase INT-5 — Lectura de dominio sobre el staging de Maximo (GET only).
  * El disparo manual y el status del sync viven en los endpoints de Int-3
@@ -161,6 +210,12 @@ export class MaximoRecordsController {
   @Get('purchase-orders')
   listPurchaseOrders(@Query() query: MaximoPoQueryDto) {
     return this.service.listPurchaseOrders(query);
+  }
+
+  // E1: valores de una columna para el filtro "tipo Excel"; antes de ':ponum'.
+  @Get('purchase-orders/facets')
+  purchaseOrderFacets(@Query() query: MaximoPoQueryDto) {
+    return this.service.purchaseOrderFacets(query);
   }
 
   // Export Excel (B1), ruta literal antes de ':ponum'. Nunca incluye raw.
@@ -192,7 +247,18 @@ export class MaximoRecordsController {
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('contracts')
   listContracts(@Query() query: MaximoContractQueryDto) {
-    return this.service.listContracts(query);
+    // E2: `group=contract` → una fila por contrato con sus PR
+    return query.group === 'contract'
+      ? this.service.listContractGroups(query)
+      : this.service.listContracts(query);
+  }
+
+  // E1: valores de una columna para el filtro "tipo Excel"; antes de ':key'.
+  @Get('contracts/facets')
+  contractFacets(@Query() query: MaximoContractQueryDto) {
+    return query.group === 'contract'
+      ? this.service.contractGroupFacets(query)
+      : this.service.contractFacets(query);
   }
 
   // Export Excel (B1), ruta literal antes de ':key'.
@@ -201,6 +267,17 @@ export class MaximoRecordsController {
     @Query() query: MaximoContractQueryDto,
     @Res() res: Response,
   ) {
+    if (query.group === 'contract') {
+      const grouped = await this.service.listContractGroupsForExport(query);
+      const buffer = await buildExcel(
+        'Contratos Maximo',
+        CONTRACT_GROUP_COLUMNS,
+        grouped.rows,
+        { truncated: grouped.truncated },
+      );
+      sendExcel(res, buffer, excelFilename('contratos_maximo'));
+      return;
+    }
     const { rows, truncated } =
       await this.service.listContractsForExport(query);
     const buffer = await buildExcel(

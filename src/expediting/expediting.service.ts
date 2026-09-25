@@ -22,6 +22,16 @@ import {
   ReceiptDto,
   RescheduleDto,
 } from './dto/expediting-actions.dto';
+import {
+  applyColumnQuery,
+  columnFacet,
+  paginateRows,
+  parseColumnQuery,
+  requireFacetColumn,
+} from '../common/column-filters/column-filters';
+import { EXPEDITING_FILTER_COLUMNS } from './expediting.columns';
+import { maximoBuyerName } from '../common/utils/buyer.util';
+import type { BuyerKind } from '../common/utils/buyer.util';
 
 /**
  * Fase Expeditación — Seguimiento de entregas de purchase_orders PROPIAS
@@ -41,6 +51,16 @@ import {
  *    omite la de Maximo con ese PONUM.
  *  - D6: `requested_by` de Maximo se traduce con los alias.
  *  - D9: `findAllForExport` (Excel con los mismos filtros, sin paginar).
+ *
+ * Pedidos de Ingrid 2026-09-25:
+ *  - E1: filtro "tipo Excel" por columna (`filters`/`sort`, `/facets`); la
+ *    lista, las tarjetas (`stats`) y el Excel salen de la MISMA colección
+ *    filtrada.
+ *  - E3: "Retraso promedio" = días de retraso promedio de las retrasadas,
+ *    con los filtros aplicados y por fuente.
+ *  - E4: comprador — ABENT: el de la OC; Maximo: PURCHASEAGENT (alias o
+ *    nombre); SAP creada desde Maximo: el de Maximo; SAP propia: quién la
+ *    capturó (SAP no tiene comprador en ninguna OC de PRD).
  */
 
 const SAFETY_SCAN_LIMIT = 2000;
@@ -64,6 +84,13 @@ interface ErpRow {
   requested_by: string | null;
   /** SAP: PONUM de Maximo si la OC nació allá (D1). */
   maximo_ponum: string | null;
+  /** E4: PURCHASEAGENT de Maximo (de la OC de Maximo o de la que originó la de SAP). */
+  buyer_code: string | null;
+  buyer_name: string | null;
+  /** E4: SAP, usuario que capturó la OC (respaldo del comprador). */
+  created_by_name: string | null;
+  /** E4: la OC de SAP migrada existe en el staging de Maximo. */
+  maximo_exists: boolean;
 }
 
 /** Tope del export (D9), mismo criterio que los demás listados. */
@@ -113,22 +140,8 @@ export class ExpeditingService {
   // ── Lectura ─────────────────────────────────────────────────────────────
 
   async findAll(query: ExpeditingQueryDto) {
-    const page = query.page ?? 1;
-    const limit = query.limit ?? 20;
     const filtered = await this.collect(query);
-    const total = filtered.length;
-    const totalPages = Math.max(1, Math.ceil(total / limit));
-    return {
-      data: filtered.slice((page - 1) * limit, page * limit),
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages,
-        hasNext: page < totalPages,
-        hasPrev: page > 1,
-      },
-    };
+    return paginateRows(filtered, query.page ?? 1, query.limit ?? 20);
   }
 
   /** D9: mismos filtros que el listado, sin paginar (tope). */
@@ -140,8 +153,31 @@ export class ExpeditingService {
     };
   }
 
-  /** Lista derivada y filtrada (propias + ERPs), ordenada por fecha vigente. */
-  private async collect(query: ExpeditingQueryDto) {
+  /**
+   * E1: valores de una columna con los DEMÁS filtros aplicados (como el
+   * filtro de Excel), con conteo; rango mín/máx en fechas y números.
+   */
+  async facets(query: ExpeditingQueryDto) {
+    const column = requireFacetColumn(query.column, EXPEDITING_FILTER_COLUMNS);
+    const rows = await this.collect(query, { exclude: column });
+    return columnFacet(
+      rows,
+      EXPEDITING_FILTER_COLUMNS,
+      column,
+      query.facet_search,
+    );
+  }
+
+  /**
+   * Lista derivada y filtrada (propias + ERPs), ordenada por fecha vigente
+   * (o por la columna pedida en `sort`). `exclude` = columna cuya faceta se
+   * arma (su propio filtro no se aplica).
+   */
+  private async collect(
+    query: ExpeditingQueryDto,
+    options: { exclude?: string } = {},
+  ) {
+    const columnQuery = parseColumnQuery(query, EXPEDITING_FILTER_COLUMNS);
     const today = cdmxDateUtc();
     const source = query.source;
 
@@ -194,9 +230,13 @@ export class ExpeditingService {
       if (da !== db) return da - db;
       return a.po_number.localeCompare(b.po_number);
     });
-    return query.status
+    const byStatus = query.status
       ? mapped.filter((item) => item.delivery_status === query.status)
       : mapped;
+    return applyColumnQuery(byStatus, EXPEDITING_FILTER_COLUMNS, columnQuery, {
+      exclude: options.exclude,
+      sort: options.exclude === undefined,
+    });
   }
 
   async findOne(purchaseOrderId: string) {
@@ -241,16 +281,13 @@ export class ExpeditingService {
     };
   }
 
-  async getStats() {
-    const today = cdmxDateUtc();
-    const [rows, erpItems] = await Promise.all([
-      this.prisma.purchase_orders.findMany({
-        where: { is_active: true, status: { not: 'cancelada' } },
-        include: PO_INCLUDE,
-        take: SAFETY_SCAN_LIMIT,
-      }),
-      this.loadErpItems(today, {}, undefined),
-    ]);
+  /**
+   * Tarjetas del semáforo con los MISMOS filtros que la lista (E1). E3:
+   * "Retraso promedio" = promedio de días de retraso de las retrasadas, en
+   * total y por fuente (null = ninguna retrasada, nunca 0).
+   */
+  async getStats(query: ExpeditingQueryDto = {}) {
+    const items = await this.collect(query);
 
     const counts: Record<DerivedDeliveryStatus, number> = {
       sin_fecha: 0,
@@ -266,48 +303,46 @@ export class ExpeditingService {
       sap: { ...counts },
       maximo: { ...counts },
     };
-    for (const item of erpItems) {
-      counts[item.delivery_status] += 1;
-      bySource[item.source][item.delivery_status] += 1;
-    }
-    let lateDeliveredDays = 0;
-    let lateDeliveredCount = 0;
+    const delay = {
+      all: { days: 0, count: 0 },
+      abent: { days: 0, count: 0 },
+      sap: { days: 0, count: 0 },
+      maximo: { days: 0, count: 0 },
+    };
     const bySupplier = new Map<string, { name: string; late: number }>();
 
-    for (const row of rows) {
-      const status = this.deriveFor(row, today);
-      counts[status] += 1;
-      bySource.abent[status] += 1;
-
-      const expectedOriginal = row.expected_delivery_date;
-      const isLateDelivered =
-        status === 'entregada' &&
-        row.actual_delivery_date !== null &&
-        expectedOriginal !== null &&
-        row.actual_delivery_date.getTime() > expectedOriginal.getTime();
-      if (isLateDelivered && row.actual_delivery_date && expectedOriginal) {
-        lateDeliveredDays += daysUntilDate(
-          row.actual_delivery_date,
-          expectedOriginal,
-        );
-        lateDeliveredCount += 1;
+    for (const item of items) {
+      counts[item.delivery_status] += 1;
+      bySource[item.source][item.delivery_status] += 1;
+      if (item.delivery_status !== 'retrasada') continue;
+      if (item.days_left !== null) {
+        for (const bucket of [delay.all, delay[item.source]]) {
+          bucket.days += -item.days_left;
+          bucket.count += 1;
+        }
       }
-      if (status === 'retrasada' || isLateDelivered) {
-        const entry = bySupplier.get(row.supplier_id) ?? {
-          name: row.suppliers.legal_name,
-          late: 0,
-        };
+      const name = item.supplier?.legal_name;
+      if (name) {
+        const key = item.supplier?.id ?? name;
+        const entry = bySupplier.get(key) ?? { name, late: 0 };
         entry.late += 1;
-        bySupplier.set(row.supplier_id, entry);
+        bySupplier.set(key, entry);
       }
     }
 
+    const avg = (bucket: { days: number; count: number }) =>
+      bucket.count ? Math.round((bucket.days / bucket.count) * 10) / 10 : null;
+
     return {
+      total: items.length,
       counts,
       by_source: bySource,
-      avg_delay_days: lateDeliveredCount
-        ? Math.round((lateDeliveredDays / lateDeliveredCount) * 10) / 10
-        : null,
+      avg_delay_days: avg(delay.all),
+      avg_delay_by_source: {
+        abent: avg(delay.abent),
+        sap: avg(delay.sap),
+        maximo: avg(delay.maximo),
+      },
       top_delayed_suppliers: [...bySupplier.entries()]
         .map(([supplier_id, s]) => ({
           supplier_id,
@@ -633,23 +668,35 @@ export class ExpeditingService {
     const [sapRows, maximoRows] = await Promise.all([
       // Aunque se pida solo Maximo, las OC abiertas de SAP se necesitan para
       // no mostrar dos veces las migradas (D1): se descartan después.
+      // E4: comprador de las migradas = PURCHASEAGENT de su OC en Maximo.
       this.prisma.$queryRaw<ErpRow[]>(Prisma.sql`
             SELECT 'sap'::text AS source,
-                   doc_entry::text AS external_key,
-                   coalesce(doc_num::text, doc_entry::text) AS po_number,
-                   document_status AS po_status,
-                   card_name AS supplier_name,
-                   doc_total AS amount,
-                   currency,
-                   doc_due_date AS expected_date,
+                   s.doc_entry::text AS external_key,
+                   coalesce(s.doc_num::text, s.doc_entry::text) AS po_number,
+                   s.document_status AS po_status,
+                   s.card_name AS supplier_name,
+                   s.doc_total AS amount,
+                   s.currency,
+                   s.doc_due_date AS expected_date,
                    NULL::text AS requested_by,
-                   maximo_ponum
-            FROM sap_purchase_orders
-            WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true
-              AND (${term}::text IS NULL OR card_name ILIKE ${term} OR doc_num::text ILIKE ${term})
-              AND (${from}::timestamptz IS NULL OR doc_due_date >= ${from})
-              AND (${to}::timestamptz IS NULL OR doc_due_date <= ${to})
-            ORDER BY doc_due_date ASC NULLS LAST
+                   s.maximo_ponum,
+                   mx.purchase_agent AS buyer_code,
+                   mx.purchase_agent_name AS buyer_name,
+                   s.created_by_name,
+                   (mx.ponum IS NOT NULL) AS maximo_exists
+            FROM sap_purchase_orders s
+            LEFT JOIN LATERAL (
+              SELECT m.ponum, m.purchase_agent, m.purchase_agent_name
+              FROM maximo_purchase_orders m
+              WHERE s.maximo_ponum IS NOT NULL AND m.ponum = s.maximo_ponum
+              ORDER BY coalesce(m.revisionnum, 0) DESC
+              LIMIT 1
+            ) mx ON true
+            WHERE s.document_status = 'bost_Open' AND s.cancelled IS DISTINCT FROM true
+              AND (${term}::text IS NULL OR s.card_name ILIKE ${term} OR s.doc_num::text ILIKE ${term})
+              AND (${from}::timestamptz IS NULL OR s.doc_due_date >= ${from})
+              AND (${to}::timestamptz IS NULL OR s.doc_due_date <= ${to})
+            ORDER BY s.doc_due_date ASC NULLS LAST
             LIMIT ${ERP_SCAN_LIMIT}`),
       source === 'sap'
         ? Promise.resolve([] as ErpRow[])
@@ -665,7 +712,11 @@ export class ExpeditingService {
                    NULLIF(coalesce(raw->'Attributes'->'VENDELIVERYDATE'->>'content',
                                    raw->>'VENDELIVERYDATE'), '')::timestamptz AS expected_date,
                    requested_by,
-                   NULL::text AS maximo_ponum
+                   NULL::text AS maximo_ponum,
+                   purchase_agent AS buyer_code,
+                   purchase_agent_name AS buyer_name,
+                   NULL::text AS created_by_name,
+                   false AS maximo_exists
             FROM current
             WHERE status IN ('APPR', 'INPRG')
               AND (${term}::text IS NULL OR vendor_name ILIKE ${term} OR ponum ILIKE ${term})
@@ -677,11 +728,25 @@ export class ExpeditingService {
     const migrated = new Set(
       sapRows.map((r) => r.maximo_ponum).filter((p): p is string => p !== null),
     );
-    // D6: alias de los solicitantes de Maximo
-    const aliasNames = await this.aliases.resolveMany(
-      'maximo',
-      maximoRows.map((r) => r.requested_by),
-    );
+    // D6/E4: alias de solicitantes y compradores de Maximo
+    const aliasNames = await this.aliases.resolveMany('maximo', [
+      ...maximoRows.map((r) => r.requested_by),
+      ...sapRows.map((r) => r.buyer_code),
+      ...maximoRows.map((r) => r.buyer_code),
+    ]);
+    const buyerOf = (row: ErpRow): { name: string | null; kind: BuyerKind } => {
+      if (row.buyer_code) {
+        return {
+          name: maximoBuyerName(row.buyer_code, row.buyer_name, aliasNames),
+          kind: 'comprador',
+        };
+      }
+      // La migrada la capturó el usuario de la integración: no es comprador
+      if (row.source === 'sap' && row.created_by_name && !row.maximo_exists) {
+        return { name: row.created_by_name, kind: 'capturo' };
+      }
+      return { name: null, kind: null };
+    };
     return [...(source === 'maximo' ? [] : sapRows), ...maximoRows]
       .filter((row) => {
         if (row.source !== 'maximo') return true;
@@ -702,6 +767,7 @@ export class ExpeditingService {
           },
           today,
         );
+        const buyer = buyerOf(row);
         return {
           purchase_order_id: null as string | null,
           source: row.source,
@@ -716,6 +782,8 @@ export class ExpeditingService {
               }
             : null,
           buyer: null,
+          buyer_name: buyer.name,
+          buyer_kind: buyer.kind,
           requisition: null,
           amount: toNumber(row.amount),
           currency: row.currency,
@@ -766,6 +834,8 @@ export class ExpeditingService {
       requested_by: null as string | null,
       maximo_ponum: null as string | null,
       buyer: row.profiles,
+      buyer_name: row.profiles?.full_name ?? null,
+      buyer_kind: (row.profiles?.full_name ? 'comprador' : null) as BuyerKind,
       requisition: row.requisitions,
       amount: toNumber(row.amount),
       expected_delivery_date: row.expected_delivery_date,

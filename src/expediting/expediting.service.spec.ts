@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { ExpeditingService } from './expediting.service';
+import { cdmxDateUtc } from '../contracts/contracts.dates';
 
 /**
  * Fase Expeditación. Prisma EN MEMORIA — sin BD ni red. Cubre: job de
@@ -157,6 +158,8 @@ function makeHarness() {
       ),
     },
     $transaction: jest.fn(),
+    // OC abiertas de SAP y de Maximo (B6), en ese orden
+    $queryRaw: jest.fn().mockResolvedValue([]),
   };
   prisma.$transaction.mockImplementation(
     (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
@@ -202,7 +205,17 @@ function makeHarness() {
     return row;
   };
 
-  return { service, prisma, pos, trackings, events, alerts, emails, addPo };
+  return {
+    service,
+    prisma,
+    aliases,
+    pos,
+    trackings,
+    events,
+    alerts,
+    emails,
+    addPo,
+  };
 }
 
 /** Réplica EXACTA del cálculo de suppliers.service (assert A5). */
@@ -408,5 +421,200 @@ describe('ExpeditingService — recepciones (regla 2b) y tasa del proveedor (A5)
       'u-1',
     );
     expect(h.trackings).toHaveLength(1);
+  });
+});
+
+describe('ExpeditingService — filtro tipo Excel, retraso y comprador (E1/E3/E4)', () => {
+  // Fechas relativas a HOY en CDMX (el servicio deriva días con la fecha real)
+  const today = cdmxDateUtc();
+  const rel = (days: number) => new Date(today.getTime() + days * 86_400_000);
+  const erp = (overrides: Record<string, unknown>) => ({
+    source: 'sap',
+    external_key: '1',
+    po_number: '1',
+    po_status: 'bost_Open',
+    supplier_name: 'Acme',
+    amount: '100.00',
+    currency: 'MXN',
+    expected_date: rel(-31),
+    requested_by: null,
+    maximo_ponum: null,
+    buyer_code: null,
+    buyer_name: null,
+    created_by_name: null,
+    maximo_exists: false,
+    ...overrides,
+  });
+
+  function seeded() {
+    const h = makeHarness();
+    h.addPo({ po_number: 'PO-ABENT', expected_delivery_date: rel(30) });
+    h.prisma.$queryRaw
+      .mockResolvedValueOnce([
+        // migrada de Maximo: el comprador es el PURCHASEAGENT de allá
+        erp({
+          external_key: '10',
+          po_number: '5001',
+          supplier_name: 'Acme',
+          expected_date: rel(-31),
+          maximo_ponum: 'PO9',
+          buyer_code: 'USR9',
+          buyer_name: 'Compradora Nueve',
+          created_by_name: 'INTEGRACION',
+          maximo_exists: true,
+        }),
+        // migrada cuya OC en Maximo no trae comprador: no se muestra al
+        // usuario de la integración que la capturó en SAP
+        erp({
+          external_key: '13',
+          po_number: '5004',
+          supplier_name: 'Delta',
+          expected_date: rel(40),
+          maximo_ponum: 'PO10',
+          created_by_name: 'INTEGRACION',
+          maximo_exists: true,
+        }),
+        erp({
+          external_key: '11',
+          po_number: '5002',
+          supplier_name: 'Beta',
+          expected_date: rel(-608),
+          created_by_name: 'jgonzalez',
+        }),
+        erp({
+          external_key: '12',
+          po_number: '5003',
+          supplier_name: 'Gamma',
+          expected_date: rel(-12),
+          created_by_name: 'jgonzalez',
+        }),
+      ])
+      .mockResolvedValueOnce([
+        erp({
+          source: 'maximo',
+          external_key: 'PO200',
+          po_number: 'PO200',
+          po_status: 'APPR',
+          supplier_name: 'Beta',
+          expected_date: rel(-48),
+          buyer_code: 'VMM3',
+          buyer_name: 'Victor M.',
+        }),
+      ]);
+    h.aliases.resolveMany.mockResolvedValue(
+      new Map([['VMM3', 'Víctor Martínez']]),
+    );
+    return h;
+  }
+
+  const ingrid = JSON.stringify({
+    proveedor: { in: ['Acme', 'Beta'] },
+    dias: { min: -400, max: 0 },
+  });
+
+  it('criterio de Ingrid: 2 proveedores y días -400..0 → lista, tarjetas y Excel iguales', async () => {
+    let h = seeded();
+    const list = await h.service.findAll({ filters: ingrid });
+    expect(list.meta.total).toBe(2);
+    expect(list.data.map((r) => r.po_number)).toEqual(['PO200', '5001']);
+
+    h = seeded();
+    const stats = await h.service.getStats({ filters: ingrid });
+    expect(stats.total).toBe(2);
+    expect(stats.counts.retrasada).toBe(2);
+    expect(stats.by_source.sap.retrasada).toBe(1);
+    expect(stats.by_source.maximo.retrasada).toBe(1);
+
+    h = seeded();
+    const excel = await h.service.findAllForExport({ filters: ingrid });
+    expect(excel.rows.map((r) => r.po_number)).toEqual(['PO200', '5001']);
+  });
+
+  it('E3: retraso promedio de las retrasadas, total y por fuente', async () => {
+    const h = seeded();
+    const stats = await h.service.getStats({});
+    // SAP: 31, 608, 12; Maximo: 48 → (31+608+12+48)/4
+    expect(stats.avg_delay_days).toBe(174.8);
+    expect(stats.avg_delay_by_source).toEqual({
+      abent: null,
+      sap: 217,
+      maximo: 48,
+    });
+    expect(stats.counts.en_tiempo).toBe(2);
+  });
+
+  it('E4: comprador por fuente (alias > nombre de Maximo; SAP propia = Capturó)', async () => {
+    const h = seeded();
+    const { data } = await h.service.findAll({ limit: 50 });
+    const byPo = new Map(data.map((r) => [r.po_number, r]));
+    expect(byPo.get('PO-ABENT')).toMatchObject({
+      buyer_name: 'Comprador',
+      buyer_kind: 'comprador',
+    });
+    expect(byPo.get('5001')).toMatchObject({
+      buyer_name: 'Compradora Nueve',
+      buyer_kind: 'comprador',
+    });
+    expect(byPo.get('5002')).toMatchObject({
+      buyer_name: 'jgonzalez',
+      buyer_kind: 'capturo',
+    });
+    expect(byPo.get('PO200')).toMatchObject({
+      buyer_name: 'Víctor Martínez',
+      buyer_kind: 'comprador',
+    });
+    expect(byPo.get('5004')).toMatchObject({
+      buyer_name: null,
+      buyer_kind: null,
+    });
+  });
+
+  it('facetas: valores con los DEMÁS filtros; rango en días', async () => {
+    let h = seeded();
+    const suppliers = await h.service.facets({
+      column: 'proveedor',
+      filters: ingrid,
+    });
+    // el filtro de proveedor no se aplica a su propia faceta; el de días sí
+    expect(suppliers).toMatchObject({
+      type: 'text',
+      values: [
+        { value: 'Acme', count: 1 },
+        { value: 'Beta', count: 1 },
+        { value: 'Gamma', count: 1 },
+      ],
+    });
+    h = seeded();
+    const days = await h.service.facets({ column: 'dias', filters: ingrid });
+    expect(days).toMatchObject({ type: 'number', min: -608, max: -31 });
+    h = seeded();
+    const buyers = await h.service.facets({ column: 'comprador' });
+    expect(buyers).toMatchObject({
+      values: expect.arrayContaining([
+        { value: 'Capturó: jgonzalez', count: 2 },
+      ]) as unknown,
+    });
+  });
+
+  it('ordena por la columna pedida y rechaza columnas desconocidas', async () => {
+    let h = seeded();
+    const sorted = await h.service.findAll({
+      sort: 'dias',
+      order: 'desc',
+      limit: 50,
+    });
+    expect(sorted.data.map((r) => r.po_number)).toEqual([
+      '5004',
+      'PO-ABENT',
+      '5003',
+      '5001',
+      'PO200',
+      '5002',
+    ]);
+    h = seeded();
+    await expect(
+      h.service.findAll({ filters: JSON.stringify({ nope: { in: ['x'] } }) }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(h.service.facets({})).rejects.toThrow(/column/);
   });
 });

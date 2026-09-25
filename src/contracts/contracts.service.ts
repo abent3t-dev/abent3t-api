@@ -8,6 +8,14 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StorageService } from '../storage/storage.service';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
+import {
+  applyColumnQuery,
+  facetOf,
+  isColumnQueryActive,
+  paginateRows,
+  parseColumnQuery,
+} from '../common/column-filters/column-filters';
+import type { ColumnDefs } from '../common/column-filters/column-filters';
 import { addDaysUtc, cdmxDateUtc } from './contracts.dates';
 import { ContractQueryDto } from './dto/contract-query.dto';
 import { CreateContractDto } from './dto/create-contract.dto';
@@ -21,6 +29,9 @@ import { UpdateContractDto } from './dto/update-contract.dto';
  *
  * NO toca las tablas de staging de la integración (0005) ni conoce a la
  * fuente externa: son dos mundos separados (regla 1 de la fase).
+ *
+ * E1 (2026-09-25, pedido también por César): filtro "tipo Excel" por
+ * columna sobre el listado, con el mismo motor que el resto de Compras.
  */
 
 const MAX_PDF_SIZE = 20 * 1024 * 1024; // 20 MB (§15)
@@ -92,6 +103,25 @@ function aliasContract(row: ContractRow) {
   };
 }
 
+type ContractListRow = ReturnType<typeof aliasContract>;
+
+/** E1: columnas filtrables = tabla de /compras/contratos. */
+export const CONTRACT_FILTER_COLUMNS: ColumnDefs<ContractListRow> = {
+  numero: { type: 'text', value: (r) => r.contract_number },
+  tipo: { type: 'text', value: (r) => r.document_type },
+  servicio: { type: 'text', value: (r) => r.service_description },
+  proveedor: { type: 'text', value: (r) => r.supplier?.legal_name },
+  inicio: { type: 'date', value: (r) => r.start_date },
+  fin: { type: 'date', value: (r) => r.end_date },
+  estatus: { type: 'text', value: (r) => r.status },
+  monto: { type: 'number', value: (r) => r.total_amount },
+  consumido: { type: 'number', value: (r) => r.consumed_amount },
+  saldo: { type: 'number', value: (r) => r.balance_amount },
+  moneda: { type: 'text', value: (r) => r.currency },
+  comprador: { type: 'text', value: (r) => r.buyer?.full_name },
+  responsable: { type: 'text', value: (r) => r.responsible_user_name },
+};
+
 @Injectable()
 export class ContractsService {
   private readonly logger = new Logger(ContractsService.name);
@@ -132,6 +162,16 @@ export class ContractsService {
   async findAll(query: ContractQueryDto) {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
+    // E1: filtros por columna u orden → sobre el listado completo
+    const columnQuery = parseColumnQuery(query, CONTRACT_FILTER_COLUMNS);
+    if (isColumnQueryActive(columnQuery)) {
+      const { rows } = await this.loadAll(query);
+      return paginateRows(
+        applyColumnQuery(rows, CONTRACT_FILTER_COLUMNS, columnQuery),
+        page,
+        limit,
+      );
+    }
     const where = this.buildWhere(query);
 
     const [total, rows] = await Promise.all([
@@ -163,6 +203,22 @@ export class ContractsService {
 
   /** Export (B1): mismos filtros que findAll, sin paginar, con tope. */
   async findAllForExport(query: ContractQueryDto) {
+    const columnQuery = parseColumnQuery(query, CONTRACT_FILTER_COLUMNS);
+    const { rows, truncated } = await this.loadAll(query);
+    return {
+      rows: applyColumnQuery(rows, CONTRACT_FILTER_COLUMNS, columnQuery),
+      truncated,
+    };
+  }
+
+  /** E1: valores de una columna con los demás filtros aplicados. */
+  async facets(query: ContractQueryDto) {
+    const { rows } = await this.loadAll(query);
+    return facetOf(rows, CONTRACT_FILTER_COLUMNS, query);
+  }
+
+  /** Listado completo con los filtros propios (tope del export). */
+  private async loadAll(query: ContractQueryDto) {
     const where = this.buildWhere(query);
     const rows = await this.prisma.contracts.findMany({
       where,

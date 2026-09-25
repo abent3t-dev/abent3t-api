@@ -5,9 +5,55 @@ import { BaseCrudPrismaService } from '../common/services/base-crud-prisma.servi
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import {
+  applyColumnQuery,
+  facetOf,
+  isColumnQueryActive,
+  paginateRows,
+  parseColumnQuery,
+} from '../common/column-filters/column-filters';
+import type {
+  ColumnDefs,
+  ColumnQueryParams,
+} from '../common/column-filters/column-filters';
 
 /** Tope del export (B1). */
 const SUPPLIERS_EXPORT_MAX = 20_000;
+
+type SupplierRow = Awaited<
+  ReturnType<PrismaService['suppliers']['findMany']>
+>[number];
+
+/** Parámetros del listado: paginación + filtros por columna (E1). */
+type SupplierListQuery = PaginationDto &
+  ColumnQueryParams & { column?: string; facet_search?: string };
+
+/**
+ * E1 (2026-09-25): columnas filtrables = tabla de /compras/proveedores. La
+ * puntuación 0 es "Sin evaluar" (DEFAULT 0 en BD), no una calificación.
+ */
+export const SUPPLIER_FILTER_COLUMNS: ColumnDefs<SupplierRow> = {
+  proveedor: { type: 'text', value: (r) => r.legal_name },
+  rfc: { type: 'text', value: (r) => r.tax_id },
+  contacto: { type: 'text', value: (r) => r.contact_name },
+  email: { type: 'text', value: (r) => r.contact_email ?? r.email },
+  moneda: {
+    type: 'text',
+    value: (r) => (r.currency === '##' ? 'Multi' : r.currency),
+  },
+  puntuacion: {
+    type: 'number',
+    value: (r) => {
+      const score = Number(r.performance_score);
+      return score > 0 ? score : null;
+    },
+  },
+  estado: {
+    type: 'text',
+    value: (r) => (r.is_blocked ? 'bloqueado' : 'activo'),
+  },
+  origen: { type: 'text', value: (r) => r.source },
+};
 
 @Injectable()
 export class SuppliersService extends BaseCrudPrismaService<
@@ -52,6 +98,28 @@ export class SuppliersService extends BaseCrudPrismaService<
 
   /** Export (B1): mismos filtros, sin paginar, con tope. */
   async findAllForExport(
+    pagination: SupplierListQuery,
+    filters?: { is_blocked?: boolean; min_score?: number },
+  ) {
+    const columnQuery = parseColumnQuery(pagination, SUPPLIER_FILTER_COLUMNS);
+    const { rows, truncated } = await this.loadAll(pagination, filters);
+    return {
+      rows: applyColumnQuery(rows, SUPPLIER_FILTER_COLUMNS, columnQuery),
+      truncated,
+    };
+  }
+
+  /** E1: valores de una columna con los demás filtros aplicados. */
+  async facets(
+    query: SupplierListQuery,
+    filters?: { is_blocked?: boolean; min_score?: number },
+  ) {
+    const { rows } = await this.loadAll(query, filters);
+    return facetOf(rows, SUPPLIER_FILTER_COLUMNS, query);
+  }
+
+  /** Catálogo completo con los filtros propios (tope del export). */
+  private async loadAll(
     pagination: PaginationDto,
     filters?: { is_blocked?: boolean; min_score?: number },
   ) {
@@ -68,11 +136,21 @@ export class SuppliersService extends BaseCrudPrismaService<
   }
 
   async findAllFiltered(
-    pagination: PaginationDto,
+    pagination: SupplierListQuery,
     filters?: { is_blocked?: boolean; min_score?: number },
   ) {
     const page = pagination.page ?? 1;
     const limit = pagination.limit ?? 20;
+    // E1: filtros por columna u orden → sobre el catálogo completo
+    const columnQuery = parseColumnQuery(pagination, SUPPLIER_FILTER_COLUMNS);
+    if (isColumnQueryActive(columnQuery)) {
+      const { rows } = await this.loadAll(pagination, filters);
+      return paginateRows(
+        applyColumnQuery(rows, SUPPLIER_FILTER_COLUMNS, columnQuery),
+        page,
+        limit,
+      );
+    }
     const skip = (page - 1) * limit;
     const where = this.filteredWhere(pagination, filters);
 

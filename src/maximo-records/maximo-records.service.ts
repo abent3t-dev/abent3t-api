@@ -6,6 +6,23 @@ import { PaginatedResponse } from '../common/interfaces/paginated-response.inter
 import { andYear } from '../common/sql/erp-views.sql';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import {
+  applyColumnQuery,
+  facetOf,
+  isColumnQueryActive,
+  paginateRows,
+  parseColumnQuery,
+} from '../common/column-filters/column-filters';
+import { maximoBuyerName } from '../common/utils/buyer.util';
+import {
+  MAXIMO_CONTRACT_FILTER_COLUMNS,
+  MAXIMO_PO_FILTER_COLUMNS,
+} from './maximo-records.columns';
+import {
+  groupContracts,
+  MAXIMO_CONTRACT_GROUP_FILTER_COLUMNS,
+} from './maximo-contract-groups';
+import type { MaximoContractGroupView } from './maximo-contract-groups';
+import {
   deriveContractLines,
   deriveContractStatusHistory,
 } from './maximo-contract-raw';
@@ -41,6 +58,15 @@ import {
  *    existe (si no, null y la UI muestra el código).
  *  - D7: `pr_total` (monto de la PR) — null = la OS no lo expone.
  *  - D8: `consumed_value` y `balance_value` (valor − consumido) en contratos.
+ *
+ * Pedidos de Ingrid 2026-09-25:
+ *  - E1: filtro "tipo Excel" por columna. Sin filtros por columna ni orden
+ *    el listado sigue paginado en SQL; con ellos se evalúa sobre la vista
+ *    actual completa (mismo loader que el export).
+ *  - E4: comprador de la OC (`purchase_agent`, migración 0014) con su
+ *    nombre: alias de Compras > DISPLAYNAME de Maximo > usuario.
+ *  - E2 (parte independiente): `group=contract` agrupa por contrato (una
+ *    fila por contractnum con sus PR) — ver maximo-contract-groups.ts.
  */
 
 /** Vista actual de POs: mayor revisionnum por (ponum, siteid). */
@@ -60,6 +86,7 @@ const CURRENT_CONTRACTS = Prisma.sql`
 const PO_LIST_COLUMNS = Prisma.sql`
   id, ponum, siteid, revisionnum, status, description, vendor_id, vendor_name,
   total_cost, currency, ab_ahorro, ab_tipocomp, ab_clasfpo, requested_by,
+  purchase_agent, purchase_agent_name,
   department, approved_at, approved_by, waiting_approval_at, created_at_source,
   last_changed_at, last_seen_at`;
 
@@ -76,7 +103,12 @@ const EXPORT_MAX_ROWS = 20_000;
 /** Filas crudas del driver: numerics llegan como Prisma.Decimal. */
 type PoSqlRow = Omit<
   MaximoPurchaseOrderView,
-  'total_cost' | 'ab_ahorro' | 'raw' | 'requested_by_name' | 'approved_by_name'
+  | 'total_cost'
+  | 'ab_ahorro'
+  | 'raw'
+  | 'requested_by_name'
+  | 'approved_by_name'
+  | 'buyer_name'
 > & { total_cost: unknown; ab_ahorro: unknown };
 
 type ContractSqlRow = Omit<
@@ -167,6 +199,16 @@ export class MaximoRecordsService {
   ): Promise<PaginatedResponse<MaximoPurchaseOrderView>> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
+    // E1: filtros por columna u orden → sobre la vista actual completa
+    const columnQuery = parseColumnQuery(query, MAXIMO_PO_FILTER_COLUMNS);
+    if (isColumnQueryActive(columnQuery)) {
+      const { rows } = await this.loadPurchaseOrders(query);
+      return paginateRows(
+        applyColumnQuery(rows, MAXIMO_PO_FILTER_COLUMNS, columnQuery),
+        page,
+        limit,
+      );
+    }
     const where = this.poWhere(query);
 
     const [rows, counts] = await Promise.all([
@@ -192,6 +234,24 @@ export class MaximoRecordsService {
   async listPurchaseOrdersForExport(
     query: MaximoPoQueryDto,
   ): Promise<{ rows: MaximoPurchaseOrderView[]; truncated: boolean }> {
+    const columnQuery = parseColumnQuery(query, MAXIMO_PO_FILTER_COLUMNS);
+    const { rows, truncated } = await this.loadPurchaseOrders(query);
+    return {
+      rows: applyColumnQuery(rows, MAXIMO_PO_FILTER_COLUMNS, columnQuery),
+      truncated,
+    };
+  }
+
+  /** E1: valores de una columna con los demás filtros aplicados. */
+  async purchaseOrderFacets(query: MaximoPoQueryDto) {
+    const { rows } = await this.loadPurchaseOrders(query);
+    return facetOf(rows, MAXIMO_PO_FILTER_COLUMNS, query);
+  }
+
+  /** Vista actual completa con los filtros propios del listado (tope). */
+  private async loadPurchaseOrders(
+    query: MaximoPoQueryDto,
+  ): Promise<{ rows: MaximoPurchaseOrderView[]; truncated: boolean }> {
     const where = this.poWhere(query);
     const rows = await this.prisma.$queryRaw<PoSqlRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_POS})
@@ -209,6 +269,76 @@ export class MaximoRecordsService {
   }
 
   async listContractsForExport(
+    query: MaximoContractQueryDto,
+  ): Promise<{ rows: MaximoContractView[]; truncated: boolean }> {
+    const columnQuery = parseColumnQuery(query, MAXIMO_CONTRACT_FILTER_COLUMNS);
+    const { rows, truncated } = await this.loadContracts(query);
+    return {
+      rows: applyColumnQuery(rows, MAXIMO_CONTRACT_FILTER_COLUMNS, columnQuery),
+      truncated,
+    };
+  }
+
+  // ── Agrupado por contrato (E2) ──────────────────────────────────────────
+
+  async listContractGroups(
+    query: MaximoContractQueryDto,
+  ): Promise<PaginatedResponse<MaximoContractGroupView>> {
+    const columnQuery = parseColumnQuery(
+      query,
+      MAXIMO_CONTRACT_GROUP_FILTER_COLUMNS,
+    );
+    const { rows } = await this.loadContractGroups(query);
+    return paginateRows(
+      applyColumnQuery(rows, MAXIMO_CONTRACT_GROUP_FILTER_COLUMNS, columnQuery),
+      query.page ?? 1,
+      query.limit ?? 20,
+    );
+  }
+
+  async listContractGroupsForExport(
+    query: MaximoContractQueryDto,
+  ): Promise<{ rows: MaximoContractGroupView[]; truncated: boolean }> {
+    const columnQuery = parseColumnQuery(
+      query,
+      MAXIMO_CONTRACT_GROUP_FILTER_COLUMNS,
+    );
+    const { rows, truncated } = await this.loadContractGroups(query);
+    return {
+      rows: applyColumnQuery(
+        rows,
+        MAXIMO_CONTRACT_GROUP_FILTER_COLUMNS,
+        columnQuery,
+      ),
+      truncated,
+    };
+  }
+
+  async contractGroupFacets(query: MaximoContractQueryDto) {
+    const { rows } = await this.loadContractGroups(query);
+    return facetOf(rows, MAXIMO_CONTRACT_GROUP_FILTER_COLUMNS, query);
+  }
+
+  /** Solo filas con contrato (una PR sin contrato no forma grupo). */
+  private async loadContractGroups(
+    query: MaximoContractQueryDto,
+  ): Promise<{ rows: MaximoContractGroupView[]; truncated: boolean }> {
+    const { rows, truncated } = await this.loadContracts(
+      Object.assign(new MaximoContractQueryDto(), query, {
+        has_contract: 'true' as const,
+      }),
+    );
+    return { rows: groupContracts(rows), truncated };
+  }
+
+  /** E1: valores de una columna con los demás filtros aplicados. */
+  async contractFacets(query: MaximoContractQueryDto) {
+    const { rows } = await this.loadContracts(query);
+    return facetOf(rows, MAXIMO_CONTRACT_FILTER_COLUMNS, query);
+  }
+
+  /** Vista actual completa con los filtros propios del listado (tope). */
+  private async loadContracts(
     query: MaximoContractQueryDto,
   ): Promise<{ rows: MaximoContractView[]; truncated: boolean }> {
     const where = this.contractWhere(query);
@@ -303,6 +433,15 @@ export class MaximoRecordsService {
   ): Promise<PaginatedResponse<MaximoContractView>> {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
+    const columnQuery = parseColumnQuery(query, MAXIMO_CONTRACT_FILTER_COLUMNS);
+    if (isColumnQueryActive(columnQuery)) {
+      const { rows } = await this.loadContracts(query);
+      return paginateRows(
+        applyColumnQuery(rows, MAXIMO_CONTRACT_FILTER_COLUMNS, columnQuery),
+        page,
+        limit,
+      );
+    }
     const where = this.contractWhere(query);
 
     const [rows, counts] = await Promise.all([
@@ -468,7 +607,7 @@ export class MaximoRecordsService {
   ): Promise<MaximoPurchaseOrderView[]> {
     const names = await this.aliases.resolveMany(
       'maximo',
-      rows.flatMap((r) => [r.requested_by, r.approved_by]),
+      rows.flatMap((r) => [r.requested_by, r.approved_by, r.purchase_agent]),
     );
     return rows.map((r) => ({
       ...r,
@@ -478,6 +617,11 @@ export class MaximoRecordsService {
       approved_by_name: r.approved_by
         ? (names.get(r.approved_by) ?? null)
         : null,
+      buyer_name: maximoBuyerName(
+        r.purchase_agent,
+        r.purchase_agent_name,
+        names,
+      ),
     }));
   }
 
@@ -516,6 +660,9 @@ export class MaximoRecordsService {
       ab_clasfpo: row.ab_clasfpo,
       requested_by: row.requested_by,
       requested_by_name: null,
+      purchase_agent: row.purchase_agent ?? null,
+      purchase_agent_name: row.purchase_agent_name ?? null,
+      buyer_name: null,
       department: row.department,
       approved_at: row.approved_at,
       approved_by: row.approved_by,

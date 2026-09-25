@@ -18,6 +18,7 @@ import type { ExcelColumn } from '../common/utils/excel-export.util';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ExpeditingService } from './expediting.service';
+import { buyerLabel, expeditingDays } from './expediting.columns';
 import { ExpeditingQueryDto } from './dto/expediting-query.dto';
 import {
   FollowUpDto,
@@ -46,7 +47,7 @@ const STATUS_LABEL: Record<string, string> = {
   entregada: 'Entregada',
 };
 
-/** D9: columnas del export = tabla de /compras/expeditacion. */
+/** D9: columnas del export = tabla de /compras/expeditacion (+ monto). */
 const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
   { header: 'PO', value: (r) => r.po_number, width: 14 },
   {
@@ -58,11 +59,8 @@ const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
     width: 30,
   },
   { header: 'Proveedor', value: (r) => r.supplier?.legal_name, width: 40 },
-  {
-    header: 'Comprador / solicitante',
-    value: (r) => r.buyer?.full_name ?? r.requested_by,
-    width: 28,
-  },
+  // E4: comprador (o "Capturó: …" en las OC de SAP, que no lo traen)
+  { header: 'Comprador', value: buyerLabel, width: 30 },
   { header: 'Monto', value: (r) => r.amount, kind: 'money', width: 16 },
   { header: 'Moneda', value: (r) => r.currency, width: 10 },
   {
@@ -71,7 +69,13 @@ const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
     kind: 'date',
     width: 14,
   },
-  { header: 'Días', value: (r) => r.days_left, kind: 'int', width: 8 },
+  // E3: el número conserva el signo para poder sumar/filtrar en Excel
+  {
+    header: 'Días (negativo = retraso)',
+    value: expeditingDays,
+    kind: 'int',
+    width: 14,
+  },
   {
     header: 'Estatus',
     value: (r) => STATUS_LABEL[r.delivery_status] ?? r.delivery_status,
@@ -101,9 +105,16 @@ export class ExpeditingController {
   }
 
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
+  // E1: las tarjetas reciben los mismos filtros que la lista.
   @Get('stats')
-  getStats() {
-    return this.service.getStats();
+  getStats(@Query() query: ExpeditingQueryDto) {
+    return this.service.getStats(query);
+  }
+
+  // E1: valores de una columna para el filtro "tipo Excel"; antes de ':poId'.
+  @Get('facets')
+  facets(@Query() query: ExpeditingQueryDto) {
+    return this.service.facets(query);
   }
 
   // D9: export Excel con los mismos filtros; ruta literal ANTES de ':poId'.
