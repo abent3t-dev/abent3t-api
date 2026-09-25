@@ -1,4 +1,5 @@
 import type { ColumnDefs } from '../common/column-filters/column-filters';
+import { buyerLabel } from '../common/utils/buyer.util';
 import type {
   MaximoContractView,
   MaximoPurchaseOrderView,
@@ -34,7 +35,7 @@ export const MAXIMO_PO_FILTER_COLUMNS: ColumnDefs<MaximoPurchaseOrderView> = {
     type: 'text',
     value: (r) => r.requested_by_name ?? r.requested_by,
   },
-  comprador: { type: 'text', value: (r) => r.buyer_name },
+  comprador: { type: 'text', value: buyerLabel },
   depto: { type: 'text', value: (r) => r.department },
   clasificacion: { type: 'text', value: (r) => r.ab_clasfpo },
   ahorro: { type: 'number', value: (r) => r.ab_ahorro },

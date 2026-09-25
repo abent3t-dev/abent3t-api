@@ -596,3 +596,49 @@ describe('Contratos Maximo agrupados por contrato (E2)', () => {
     });
   });
 });
+
+describe('MaximoRecordsService — comprador de respaldo (F1)', () => {
+  it('sin PURCHASEAGENT: "Capturó: …" con quien creó la OC; filtrable aparte del comprador', async () => {
+    const { service, prisma, aliases } = makeService();
+    prisma.$queryRaw.mockResolvedValue([
+      poRow({
+        id: 'a',
+        ponum: 'PO1',
+        purchase_agent: 'DYMP1',
+        purchase_agent_name: 'Diana Yohara',
+        created_by: 'X',
+      }),
+      poRow({
+        id: 'b',
+        ponum: 'PO2',
+        purchase_agent: null,
+        purchase_agent_name: null,
+        created_by: 'DYMP1',
+      }),
+      poRow({
+        id: 'c',
+        ponum: 'PO3',
+        purchase_agent: null,
+        purchase_agent_name: null,
+        created_by: null,
+      }),
+    ]);
+    aliases.resolveMany.mockResolvedValue(new Map([['DYMP1', 'Diana Yohara']]));
+    const { data } = await service.listPurchaseOrders({ sort: 'ponum' });
+    expect(data.map((r) => [r.buyer_name, r.buyer_kind])).toEqual([
+      ['Diana Yohara', 'comprador'],
+      ['Diana Yohara', 'capturo'],
+      [null, null],
+    ]);
+    await expect(
+      service.purchaseOrderFacets({ column: 'comprador' }),
+    ).resolves.toMatchObject({
+      // empate de conteo: orden alfabético, las vacías al final
+      values: [
+        { value: 'Capturó: Diana Yohara', count: 1 },
+        { value: 'Diana Yohara', count: 1 },
+        { value: null, count: 1 },
+      ],
+    });
+  });
+});

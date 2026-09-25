@@ -666,3 +666,17 @@ describe('comprador de la OC (E4, 2026-09-25)', () => {
     expect(same.purchaseAgentName).toBe('Compradora Demo');
   });
 });
+
+describe('quién creó la OC (F1, respaldo del comprador)', () => {
+  it('es el CHANGEBY del primer estatus del historial (por fecha)', () => {
+    const [po100012, po100026] = legacyRecords(
+      'ab-compras.legacy-nested.page.json',
+      'AB_COMPRAS',
+    ).map(toPurchaseOrder);
+    // WAPPR 2019-07-01 por USR002, aunque el historial llegue desordenado
+    expect(po100012.createdBy).toBe('USR002');
+    expect(po100026.purchaseAgent).toBeNull();
+    expect(po100026.createdBy).toBe('USR002');
+    expect(toPurchaseOrder({ PONUM: 'PO-MIN' }).createdBy).toBeNull();
+  });
+});

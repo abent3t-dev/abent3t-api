@@ -21,6 +21,7 @@ import { MaximoPoQueryDto } from './dto/maximo-po-query.dto';
 import { MaximoSummaryQueryDto } from './dto/maximo-summary-query.dto';
 import { MaximoRecordsService } from './maximo-records.service';
 import type { MaximoContractGroupView } from './maximo-contract-groups';
+import { buyerLabel } from '../common/utils/buyer.util';
 
 // Roles de compras (§Roles y Permisos de CLAUDE_COMPRAS.md)
 // Lectores de datos Maximo; super_admin bypassa RolesGuard.
@@ -55,8 +56,10 @@ const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
   },
   { header: 'Usuario solicitante', value: (r) => r.requested_by, width: 16 },
   // E4: comprador de la OC (PURCHASEAGENT) con su nombre
-  { header: 'Comprador', value: (r) => r.buyer_name, width: 26 },
+  // F1: sin PURCHASEAGENT, "Capturó: …" = quién creó la OC en Maximo
+  { header: 'Comprador', value: buyerLabel, width: 28 },
   { header: 'Usuario comprador', value: (r) => r.purchase_agent, width: 16 },
+  { header: 'Creó la OC (usuario)', value: (r) => r.created_by, width: 16 },
   {
     header: 'F. Espera aprobación',
     value: (r) => r.waiting_approval_at,

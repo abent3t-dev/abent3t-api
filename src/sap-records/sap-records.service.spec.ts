@@ -499,3 +499,29 @@ describe('SapRecordsService — comprador y filtro tipo Excel (E1/E4)', () => {
     expect(exported.rows.map((r) => r.doc_entry)).toEqual([9002]);
   });
 });
+
+describe('SapRecordsService — comprador de respaldo de Maximo (F1)', () => {
+  it('migrada sin PURCHASEAGENT: "Capturó" es quien la creó en Maximo, no la integración', async () => {
+    const { service, prisma, aliases } = makeService();
+    prisma.sap_purchase_orders.findMany.mockResolvedValueOnce([
+      { ...PO_ROW, maximo_ponum: 'PO104912', created_by_name: 'INTEGRACION' },
+    ]);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      {
+        ponum: 'PO104912',
+        requested_by: null,
+        purchase_agent: null,
+        purchase_agent_name: null,
+        created_by: 'AMONDRAG',
+      },
+    ]);
+    aliases.resolveMany.mockResolvedValueOnce(
+      new Map([['AMONDRAG', 'Ana Aurora Mondragón']]),
+    );
+    const result = await service.listPurchaseOrders({});
+    expect(result.data[0]).toMatchObject({
+      buyer_name: 'Ana Aurora Mondragón',
+      buyer_kind: 'capturo',
+    });
+  });
+});

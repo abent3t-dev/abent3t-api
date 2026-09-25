@@ -79,6 +79,12 @@ export interface MaximoPurchaseOrderDto {
   approvedBy: string | null;
   /** Primera POSTATUS con STATUS=WAPPR (se registra por separado, sin derivar nada). */
   waitingApprovalDate: string | null;
+  /**
+   * F1 (2026-09-25): CHANGEBY del PRIMER estatus del historial (quien creó
+   * la OC y la mandó a aprobación). Respaldo del comprador cuando no hay
+   * PURCHASEAGENT; se muestra como "Capturó: …".
+   */
+  createdBy: string | null;
   /** Historial completo ordenado por CHANGEDATE ascendente (desempate por POSTATUSID). */
   statusHistory: MaximoStatusChangeDto[];
 

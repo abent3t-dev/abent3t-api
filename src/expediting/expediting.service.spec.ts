@@ -442,6 +442,7 @@ describe('ExpeditingService — filtro tipo Excel, retraso y comprador (E1/E3/E4
     buyer_code: null,
     buyer_name: null,
     created_by_name: null,
+    maximo_created_by: null,
     maximo_exists: false,
     ...overrides,
   });
@@ -616,5 +617,121 @@ describe('ExpeditingService — filtro tipo Excel, retraso y comprador (E1/E3/E4
       h.service.findAll({ filters: JSON.stringify({ nope: { in: ['x'] } }) }),
     ).rejects.toThrow(BadRequestException);
     await expect(h.service.facets({})).rejects.toThrow(/column/);
+  });
+});
+
+describe('ExpeditingService — comprador de respaldo de Maximo (F1)', () => {
+  const today = cdmxDateUtc();
+  const rel = (days: number) => new Date(today.getTime() + days * 86_400_000);
+  const base = {
+    po_status: 'bost_Open',
+    amount: '100.00',
+    currency: 'MXN',
+    expected_date: rel(10),
+    requested_by: null,
+    maximo_ponum: null,
+    buyer_code: null,
+    buyer_name: null,
+    created_by_name: null,
+    maximo_created_by: null,
+    maximo_exists: false,
+  };
+
+  it('sin PURCHASEAGENT muestra quién creó la OC en Maximo (alias), también en la SAP migrada', async () => {
+    const h = makeHarness();
+    h.prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          ...base,
+          source: 'sap',
+          external_key: '20',
+          po_number: '6001',
+          supplier_name: 'Acme',
+          maximo_ponum: 'PO500',
+          created_by_name: 'FAVOR DE NO TOCAR USUARIO PP XAMAI',
+          maximo_created_by: 'VMM3',
+          maximo_exists: true,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          ...base,
+          source: 'maximo',
+          external_key: 'PO600',
+          po_number: 'PO600',
+          po_status: 'APPR',
+          supplier_name: 'Beta',
+          requested_by: 'JPEREZ',
+          maximo_created_by: 'AMONDRAG',
+        },
+        {
+          ...base,
+          source: 'maximo',
+          external_key: 'PO601',
+          po_number: 'PO601',
+          po_status: 'APPR',
+          supplier_name: 'Gamma',
+          buyer_code: 'DYMP1',
+          buyer_name: 'Diana Yohara',
+          maximo_created_by: 'AMONDRAG',
+        },
+      ]);
+    h.aliases.resolveMany.mockResolvedValue(
+      new Map([
+        ['VMM3', 'Víctor Martínez'],
+        ['AMONDRAG', 'Ana Aurora Mondragón'],
+      ]),
+    );
+    const { data } = await h.service.findAll({ limit: 50 });
+    const byPo = new Map(data.map((r) => [r.po_number, r]));
+    expect(byPo.get('6001')).toMatchObject({
+      buyer_name: 'Víctor Martínez',
+      buyer_kind: 'capturo',
+    });
+    expect(byPo.get('PO600')).toMatchObject({
+      buyer_name: 'Ana Aurora Mondragón',
+      buyer_kind: 'capturo',
+    });
+    // con PURCHASEAGENT manda el comprador aunque haya creador
+    expect(byPo.get('PO601')).toMatchObject({
+      buyer_name: 'Diana Yohara',
+      buyer_kind: 'comprador',
+    });
+  });
+
+  it('la faceta distingue comprador de "Capturó: …"', async () => {
+    const h = makeHarness();
+    h.prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        ...base,
+        source: 'maximo',
+        external_key: 'PO700',
+        po_number: 'PO700',
+        po_status: 'APPR',
+        supplier_name: 'Beta',
+        buyer_code: 'DYMP1',
+        buyer_name: 'Diana Yohara',
+      },
+      {
+        ...base,
+        source: 'maximo',
+        external_key: 'PO701',
+        po_number: 'PO701',
+        po_status: 'APPR',
+        supplier_name: 'Beta',
+        maximo_created_by: 'DYMP1',
+      },
+    ]);
+    h.aliases.resolveMany.mockResolvedValue(
+      new Map([['DYMP1', 'Diana Yohara']]),
+    );
+    await expect(
+      h.service.facets({ column: 'comprador', source: 'maximo' }),
+    ).resolves.toMatchObject({
+      values: expect.arrayContaining([
+        { value: 'Diana Yohara', count: 1 },
+        { value: 'Capturó: Diana Yohara', count: 1 },
+      ]) as unknown,
+    });
   });
 });

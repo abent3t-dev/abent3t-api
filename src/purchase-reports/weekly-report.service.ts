@@ -9,7 +9,7 @@ import {
 import type { ExcelColumn } from '../common/utils/excel-export.util';
 import { SapRecordsService } from '../sap-records/sap-records.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
-import { maximoBuyerName } from '../common/utils/buyer.util';
+import { buyerText, maximoBuyer } from '../common/utils/buyer.util';
 import {
   SAP_PO_EXPORT_COLUMNS,
   SAP_PR_EXPORT_COLUMNS,
@@ -97,6 +97,7 @@ interface MaximoPoRow {
   requested_by: string | null;
   purchase_agent: string | null;
   purchase_agent_name: string | null;
+  created_by: string | null;
   department: string | null;
   created_at_source: Date | null;
   approved_at: Date | null;
@@ -199,7 +200,7 @@ export class WeeklyReportService {
       this.sap.listAllForExport('purchase_requests', { from, to }),
       this.prisma.$queryRaw<MaximoPoRow[]>(Prisma.sql`
         SELECT ponum, description, status, vendor_name, total_cost, currency,
-               requested_by, purchase_agent, purchase_agent_name,
+               requested_by, purchase_agent, purchase_agent_name, created_by,
                department, created_at_source, approved_at, approved_by
         FROM (${CURRENT_MAXIMO_POS}) current
         WHERE created_at_source BETWEEN ${period.from} AND ${periodTo}
@@ -233,6 +234,7 @@ export class WeeklyReportService {
         r.requested_by,
         r.approved_by,
         r.purchase_agent,
+        r.created_by,
       ]),
       ...maximoPrs.map((r) => r.requested_by),
     ]);
@@ -308,8 +310,7 @@ export class WeeklyReportService {
             // E4: comprador (PURCHASEAGENT) con su nombre
             {
               header: 'Comprador',
-              value: (r) =>
-                maximoBuyerName(r.purchase_agent, r.purchase_agent_name, names),
+              value: (r) => buyerText(maximoBuyer(r, names)),
               width: 26,
             },
             { header: 'Departamento', value: (r) => r.department, width: 18 },
@@ -449,7 +450,7 @@ export class WeeklyReportService {
         'Montos por moneda: nunca se suman MXN con USD o EUR. OC de SAP con IVA en la moneda del documento; solicitudes de SAP sin IVA (suma de sus líneas).',
         'Saldo disponible: parte de la OC de SAP aún no recibida ni facturada (cantidad pendiente de cada línea), con IVA.',
         'Solicitante de una OC de SAP: el de la solicitud de pedido de SAP de la que nació; si la OC viene de Maximo (columna "Origen"), el solicitante de Maximo; si no hay, queda vacío.',
-        'Comprador: en Maximo es el comprador de la OC (PURCHASEAGENT). SAP no tiene comprador capturado en ninguna OC, así que las OC de SAP creadas desde Maximo muestran el comprador de Maximo y las demás "Capturó: …" (el usuario de SAP que la capturó).',
+        'Comprador: en Maximo es el comprador de la OC (PURCHASEAGENT); si no lo trae (casi todas), "Capturó: …" es quien creó la OC en Maximo. SAP no tiene comprador capturado en ninguna OC: las OC de SAP creadas desde Maximo muestran lo de Maximo y las demás "Capturó: …" (el usuario de SAP que la capturó).',
         'Los indicadores marcados "al día de hoy" son una foto al generar el archivo, no del periodo; por eso no tienen columna anterior.',
         'Estado por aprobador: "Retrasado" cuando su pendiente más antigua ya rebasó su promedio histórico de autorización.',
         ...(sapPos.truncated || sapPrs.truncated

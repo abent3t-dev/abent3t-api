@@ -12,7 +12,8 @@ import {
   paginateRows,
   parseColumnQuery,
 } from '../common/column-filters/column-filters';
-import { maximoBuyerName } from '../common/utils/buyer.util';
+import { maximoBuyer } from '../common/utils/buyer.util';
+import type { Buyer } from '../common/utils/buyer.util';
 import {
   MAXIMO_CONTRACT_FILTER_COLUMNS,
   MAXIMO_PO_FILTER_COLUMNS,
@@ -64,7 +65,8 @@ import {
  *    el listado sigue paginado en SQL; con ellos se evalúa sobre la vista
  *    actual completa (mismo loader que el export).
  *  - E4: comprador de la OC (`purchase_agent`, migración 0014) con su
- *    nombre: alias de Compras > DISPLAYNAME de Maximo > usuario.
+ *    nombre: alias de Compras > DISPLAYNAME de Maximo > usuario. F1: sin
+ *    PURCHASEAGENT, "Capturó: …" = quién la creó (`created_by`, 0015).
  *  - E2 (parte independiente): `group=contract` agrupa por contrato (una
  *    fila por contractnum con sus PR) — ver maximo-contract-groups.ts.
  */
@@ -86,7 +88,7 @@ const CURRENT_CONTRACTS = Prisma.sql`
 const PO_LIST_COLUMNS = Prisma.sql`
   id, ponum, siteid, revisionnum, status, description, vendor_id, vendor_name,
   total_cost, currency, ab_ahorro, ab_tipocomp, ab_clasfpo, requested_by,
-  purchase_agent, purchase_agent_name,
+  purchase_agent, purchase_agent_name, created_by,
   department, approved_at, approved_by, waiting_approval_at, created_at_source,
   last_changed_at, last_seen_at`;
 
@@ -100,6 +102,12 @@ const CONTRACT_LIST_COLUMNS = Prisma.sql`
 /** Tope del export (B1). */
 const EXPORT_MAX_ROWS = 20_000;
 
+/** Campos de comprador de la vista (E4/F1). */
+const buyerFields = (buyer: Buyer) => ({
+  buyer_name: buyer.name,
+  buyer_kind: buyer.kind,
+});
+
 /** Filas crudas del driver: numerics llegan como Prisma.Decimal. */
 type PoSqlRow = Omit<
   MaximoPurchaseOrderView,
@@ -109,6 +117,7 @@ type PoSqlRow = Omit<
   | 'requested_by_name'
   | 'approved_by_name'
   | 'buyer_name'
+  | 'buyer_kind'
 > & { total_cost: unknown; ab_ahorro: unknown };
 
 type ContractSqlRow = Omit<
@@ -607,7 +616,12 @@ export class MaximoRecordsService {
   ): Promise<MaximoPurchaseOrderView[]> {
     const names = await this.aliases.resolveMany(
       'maximo',
-      rows.flatMap((r) => [r.requested_by, r.approved_by, r.purchase_agent]),
+      rows.flatMap((r) => [
+        r.requested_by,
+        r.approved_by,
+        r.purchase_agent,
+        r.created_by,
+      ]),
     );
     return rows.map((r) => ({
       ...r,
@@ -617,11 +631,7 @@ export class MaximoRecordsService {
       approved_by_name: r.approved_by
         ? (names.get(r.approved_by) ?? null)
         : null,
-      buyer_name: maximoBuyerName(
-        r.purchase_agent,
-        r.purchase_agent_name,
-        names,
-      ),
+      ...buyerFields(maximoBuyer(r, names)),
     }));
   }
 
@@ -662,6 +672,8 @@ export class MaximoRecordsService {
       requested_by_name: null,
       purchase_agent: row.purchase_agent ?? null,
       purchase_agent_name: row.purchase_agent_name ?? null,
+      created_by: row.created_by ?? null,
+      buyer_kind: null,
       buyer_name: null,
       department: row.department,
       approved_at: row.approved_at,

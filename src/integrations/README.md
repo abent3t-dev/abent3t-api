@@ -351,6 +351,19 @@ contenedor del api (el de contratos no cambia) → sin re-sync de SAP ni env
 nuevas. El filtro "tipo Excel" (`common/column-filters`) no toca el staging:
 se evalúa sobre las vistas de lectura.
 
+**Post-deploy 2026-09-25 (F1/F2, migración `0015`):** en prod solo 11 de
+5,008 OC de Maximo traen `PURCHASEAGENT`, así que el comprador salía vacío.
+Respaldo, como en SAP: quién creó la OC = `CHANGEBY` del **primer** estatus
+del historial POSTATUS (`createdBy` en el mapper `2026.09.25-2`, columna
+`maximo_purchase_orders.created_by`); se muestra "Capturó: …" con el alias de
+Compras si existe. La OC de SAP migrada hereda ese respaldo, nunca el usuario
+de la integración de SAP. F2: la limpieza de corridas zombie al arrancar
+(Maximo y SAP) ya no usa el umbral de 30 min: marca `failed` toda corrida
+`running` anterior al arranque del proceso (`common/sync/zombie-runs.ts`), así
+que un `--force-recreate` a media corrida ya no deja filas colgadas. Para
+desplegar: migración `0015` en B → pull + rebuild api/next → `npm run
+maximo:remap -- purchase_orders` → sin sync de SAP ni env nuevas.
+
 ## Qué NO hacer
 
 - Agregar cualquier operación de escritura al cliente genérico ("ni solo para

@@ -27,7 +27,7 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
  * `maximo:remap` para re-derivar las filas ya sincronizadas.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.09.25-1'; // 25-1: nombre del comprador (PURCHASEAGENT → PERSON, E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
+export const MAXIMO_MAPPER_VERSION = '2026.09.25-2'; // 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -306,6 +306,9 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
     approvedDate: firstChangeDate(history, 'APPR'),
     approvedBy: firstChangeBy(history, 'APPR'),
     waitingApprovalDate: firstChangeDate(history, 'WAPPR'),
+    // F1: quien creó la OC y la mandó a aprobación (respaldo del comprador:
+    // en prod solo 11 de 5,008 OC traen PURCHASEAGENT)
+    createdBy: history[0]?.changedBy ?? null,
     statusHistory: history,
 
     vendorDeliveryDate: str(r, 'VENDELIVERYDATE'),

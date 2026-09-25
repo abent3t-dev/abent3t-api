@@ -30,8 +30,8 @@ import {
   requireFacetColumn,
 } from '../common/column-filters/column-filters';
 import { EXPEDITING_FILTER_COLUMNS } from './expediting.columns';
-import { maximoBuyerName } from '../common/utils/buyer.util';
-import type { BuyerKind } from '../common/utils/buyer.util';
+import { maximoBuyer, NO_BUYER } from '../common/utils/buyer.util';
+import type { Buyer, BuyerKind } from '../common/utils/buyer.util';
 
 /**
  * Fase Expeditación — Seguimiento de entregas de purchase_orders PROPIAS
@@ -61,6 +61,9 @@ import type { BuyerKind } from '../common/utils/buyer.util';
  *  - E4: comprador — ABENT: el de la OC; Maximo: PURCHASEAGENT (alias o
  *    nombre); SAP creada desde Maximo: el de Maximo; SAP propia: quién la
  *    capturó (SAP no tiene comprador en ninguna OC de PRD).
+ *  - F1 (post-deploy): sin PURCHASEAGENT (casi todas en prod), Maximo usa
+ *    quién creó la OC ("Capturó: …"); la SAP migrada hereda ese respaldo,
+ *    nunca el usuario de la integración de SAP.
  */
 
 const SAFETY_SCAN_LIMIT = 2000;
@@ -89,6 +92,8 @@ interface ErpRow {
   buyer_name: string | null;
   /** E4: SAP, usuario que capturó la OC (respaldo del comprador). */
   created_by_name: string | null;
+  /** F1: Maximo, quién creó la OC (CHANGEBY del primer estatus). */
+  maximo_created_by: string | null;
   /** E4: la OC de SAP migrada existe en el staging de Maximo. */
   maximo_exists: boolean;
 }
@@ -683,10 +688,11 @@ export class ExpeditingService {
                    mx.purchase_agent AS buyer_code,
                    mx.purchase_agent_name AS buyer_name,
                    s.created_by_name,
+                   mx.created_by AS maximo_created_by,
                    (mx.ponum IS NOT NULL) AS maximo_exists
             FROM sap_purchase_orders s
             LEFT JOIN LATERAL (
-              SELECT m.ponum, m.purchase_agent, m.purchase_agent_name
+              SELECT m.ponum, m.purchase_agent, m.purchase_agent_name, m.created_by
               FROM maximo_purchase_orders m
               WHERE s.maximo_ponum IS NOT NULL AND m.ponum = s.maximo_ponum
               ORDER BY coalesce(m.revisionnum, 0) DESC
@@ -716,6 +722,7 @@ export class ExpeditingService {
                    purchase_agent AS buyer_code,
                    purchase_agent_name AS buyer_name,
                    NULL::text AS created_by_name,
+                   created_by AS maximo_created_by,
                    false AS maximo_exists
             FROM current
             WHERE status IN ('APPR', 'INPRG')
@@ -728,24 +735,32 @@ export class ExpeditingService {
     const migrated = new Set(
       sapRows.map((r) => r.maximo_ponum).filter((p): p is string => p !== null),
     );
-    // D6/E4: alias de solicitantes y compradores de Maximo
+    // D6/E4/F1: alias de solicitantes, compradores y creadores de Maximo
     const aliasNames = await this.aliases.resolveMany('maximo', [
       ...maximoRows.map((r) => r.requested_by),
-      ...sapRows.map((r) => r.buyer_code),
-      ...maximoRows.map((r) => r.buyer_code),
+      ...[...sapRows, ...maximoRows].flatMap((r) => [
+        r.buyer_code,
+        r.maximo_created_by,
+      ]),
     ]);
-    const buyerOf = (row: ErpRow): { name: string | null; kind: BuyerKind } => {
-      if (row.buyer_code) {
-        return {
-          name: maximoBuyerName(row.buyer_code, row.buyer_name, aliasNames),
-          kind: 'comprador',
-        };
+    const buyerOf = (row: ErpRow): Buyer => {
+      // Maximo (y la OC de SAP que nació allá): PURCHASEAGENT o quién la
+      // creó en Maximo; la migrada la capturó en SAP el usuario de la
+      // integración, que no es comprador.
+      if (row.source === 'maximo' || row.maximo_exists) {
+        return maximoBuyer(
+          {
+            purchase_agent: row.buyer_code,
+            purchase_agent_name: row.buyer_name,
+            created_by: row.maximo_created_by,
+          },
+          aliasNames,
+        );
       }
-      // La migrada la capturó el usuario de la integración: no es comprador
-      if (row.source === 'sap' && row.created_by_name && !row.maximo_exists) {
+      if (row.created_by_name) {
         return { name: row.created_by_name, kind: 'capturo' };
       }
-      return { name: null, kind: null };
+      return NO_BUYER;
     };
     return [...(source === 'maximo' ? [] : sapRows), ...maximoRows]
       .filter((row) => {

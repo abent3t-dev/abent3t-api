@@ -1199,6 +1199,7 @@ model maximo_purchase_orders {
   department        String?   @db.VarChar(100)
   purchase_agent    String?   @db.VarChar(100)
   purchase_agent_name String? @db.VarChar(255)
+  created_by        String?   @db.VarChar(100)
   approved_at       DateTime? @db.Timestamptz(6)
   waiting_approval_at DateTime? @db.Timestamptz(6)
   approved_by       String?   @db.VarChar(100)

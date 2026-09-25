@@ -29,8 +29,14 @@ export interface MaximoPurchaseOrderView {
   /** E4: comprador (PO.PURCHASEAGENT) y su DISPLAYNAME en Maximo. */
   purchase_agent: string | null;
   purchase_agent_name: string | null;
-  /** E4: nombre a mostrar: alias de Compras > DISPLAYNAME > usuario. */
+  /** F1: quién creó la OC (CHANGEBY del primer estatus). */
+  created_by: string | null;
+  /**
+   * E4/F1: comprador a mostrar. `comprador` = PURCHASEAGENT (alias >
+   * DISPLAYNAME > usuario); `capturo` = sin PURCHASEAGENT, quién la creó.
+   */
   buyer_name: string | null;
+  buyer_kind: 'comprador' | 'capturo' | null;
   department: string | null;
   approved_at: Date | null;
   /** Usuario Maximo que aprobó (CHANGEBY del primer APPR); null si no aplica. */

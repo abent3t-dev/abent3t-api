@@ -13,8 +13,8 @@ import {
   paginateRows,
   parseColumnQuery,
 } from '../common/column-filters/column-filters';
-import { maximoBuyerName } from '../common/utils/buyer.util';
-import type { BuyerKind } from '../common/utils/buyer.util';
+import { maximoBuyer } from '../common/utils/buyer.util';
+import type { Buyer, BuyerKind } from '../common/utils/buyer.util';
 import {
   SAP_PO_FILTER_COLUMNS,
   SAP_PR_FILTER_COLUMNS,
@@ -70,6 +70,8 @@ import {
  *  - E4: comprador de la OC — SAP no lo trae en ninguna OC de PRD
  *    (SalesPersonCode = -1): la migrada de Maximo toma el PURCHASEAGENT de
  *    su OC allá; las demás, quién la capturó ("Capturó: …").
+ *  - F1: si la OC de Maximo no trae PURCHASEAGENT, la migrada muestra quién
+ *    la creó en Maximo ("Capturó: …"), no el usuario de la integración.
  */
 
 const DEFAULT_LIMIT = 20;
@@ -599,7 +601,7 @@ export class SapRecordsService {
     ];
     const names = new Map<number, string>();
     const maximoRequesters = new Map<string, string>();
-    const maximoBuyers = new Map<string, string>();
+    const maximoBuyers = new Map<string, Buyer>();
     const maximoExists = new Set<string>();
     const [requests, maximo] = await Promise.all([
       entries.length === 0
@@ -616,10 +618,11 @@ export class SapRecordsService {
               requested_by: string | null;
               purchase_agent: string | null;
               purchase_agent_name: string | null;
+              created_by: string | null;
             }>
           >(Prisma.sql`
             SELECT DISTINCT ON (ponum) ponum, requested_by,
-                   purchase_agent, purchase_agent_name
+                   purchase_agent, purchase_agent_name, created_by
             FROM maximo_purchase_orders
             WHERE ponum IN (${Prisma.join(ponums)})
             ORDER BY ponum, coalesce(revisionnum, 0) DESC`),
@@ -628,10 +631,11 @@ export class SapRecordsService {
       const name = r.requester_name ?? r.requester;
       if (name) names.set(r.doc_entry, name);
     }
-    // D6/E4: REQUESTEDBY y PURCHASEAGENT de Maximo son códigos → alias.
+    // D6/E4/F1: REQUESTEDBY, PURCHASEAGENT y creador son códigos → alias.
     const aliasNames = await this.aliases.resolveMany('maximo', [
       ...maximo.map((m) => m.requested_by),
       ...maximo.map((m) => m.purchase_agent ?? null),
+      ...maximo.map((m) => m.created_by ?? null),
     ]);
     for (const m of maximo) {
       maximoExists.add(m.ponum);
@@ -641,32 +645,34 @@ export class SapRecordsService {
           aliasNames.get(m.requested_by) ?? m.requested_by,
         );
       }
-      const buyer = maximoBuyerName(
-        m.purchase_agent ?? null,
-        m.purchase_agent_name ?? null,
-        aliasNames,
+      maximoBuyers.set(
+        m.ponum,
+        maximoBuyer(
+          {
+            purchase_agent: m.purchase_agent ?? null,
+            purchase_agent_name: m.purchase_agent_name ?? null,
+            created_by: m.created_by ?? null,
+          },
+          aliasNames,
+        ),
       );
-      if (buyer) maximoBuyers.set(m.ponum, buyer);
     }
     return rows.map((row) => {
-      const maximoBuyer =
+      // Una OC migrada la capturó en SAP el usuario de la integración (no
+      // es su comprador): si existe en Maximo, manda el de allá
+      // (PURCHASEAGENT o quién la creó); si no, quién la capturó en SAP.
+      const fromMaximo =
         row.maximo_ponum === null
           ? undefined
           : maximoBuyers.get(row.maximo_ponum);
-      // Una OC migrada la capturó el usuario de la integración (no es su
-      // comprador): si existe en Maximo, el comprador es el de allá o nadie.
-      const capturer =
-        row.maximo_ponum !== null && maximoExists.has(row.maximo_ponum)
-          ? null
-          : row.created_by_name;
+      const buyer: Buyer = fromMaximo ?? {
+        name: row.created_by_name,
+        kind: row.created_by_name ? 'capturo' : null,
+      };
       return {
         ...row,
-        buyer_name: maximoBuyer ?? capturer,
-        buyer_kind: (maximoBuyer
-          ? 'comprador'
-          : capturer
-            ? 'capturo'
-            : null) as BuyerKind,
+        buyer_name: buyer.name,
+        buyer_kind: buyer.kind,
         maximo_po_exists:
           row.maximo_ponum !== null && maximoExists.has(row.maximo_ponum),
         maximo_requested_by:
