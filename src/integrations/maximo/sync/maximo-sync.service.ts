@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import type { LoggerLike } from '../../common';
+import { ZOMBIE_RUN_SUMMARY, zombieRunCutoff } from '../../common';
 import { MAXIMO_CONFIG, MAXIMO_LOGGER } from '../maximo.config';
 import type { MaximoConfig } from '../maximo.config';
 import { MaximoClient } from '../maximo.client';
@@ -62,9 +63,6 @@ interface RunState extends MaximoSyncCounters {
   errors: string[];
 }
 
-/** Corridas `running` más viejas que esto se consideran zombies al arrancar. */
-const STALE_RUN_THRESHOLD_MS = 30 * 60_000;
-
 @Injectable()
 export class MaximoSyncService implements OnModuleInit {
   private readonly logger: LoggerLike;
@@ -84,18 +82,18 @@ export class MaximoSyncService implements OnModuleInit {
   /**
    * Limpieza de zombies al arrancar (mismo patrón que platform_sync_logs):
    * el mutex es in-memory, así que tras un crash/redeploy una corrida puede
-   * quedar `running` para siempre en la bitácora. Se marca `failed`.
+   * quedar `running` para siempre en la bitácora. Se marca `failed` TODA
+   * corrida `running` que empezó antes de este arranque (F2: antes solo las
+   * de más de 30 min, y la que cortaba el deploy se quedaba colgada).
    */
   async onModuleInit(): Promise<void> {
     try {
-      const cutoff = new Date(Date.now() - STALE_RUN_THRESHOLD_MS);
       const stale = await this.prisma.maximo_sync_runs.updateMany({
-        where: { status: 'running', started_at: { lt: cutoff } },
+        where: { status: 'running', started_at: { lt: zombieRunCutoff() } },
         data: {
           status: 'failed',
           finished_at: new Date(),
-          error_summary:
-            'Marcada como fallida al reiniciar el servidor (zombie cleanup)',
+          error_summary: ZOMBIE_RUN_SUMMARY,
         },
       });
       if (stale.count > 0) {

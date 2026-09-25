@@ -266,8 +266,9 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
     expect(result.recordsInserted).toBe(2);
   });
 
-  it('zombie cleanup al arrancar: corridas running viejas quedan failed', async () => {
+  it('zombie cleanup al arrancar: toda corrida running anterior al arranque queda failed (F2)', async () => {
     const { service, prisma } = makeService();
+    const processStart = Date.now() - process.uptime() * 1000;
     await prisma.maximo_sync_runs.create({
       data: {
         target: 'purchase_orders',
@@ -281,15 +282,26 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
         target: 'contracts',
         triggered_by: 'cron',
         mapper_version: 'v',
-        started_at: new Date(), // reciente: se respeta
+        // cortada por un redeploy segundos antes del arranque: antes (umbral
+        // de 30 min) se quedaba en running
+        started_at: new Date(processStart - 5_000),
+      },
+    });
+    await prisma.maximo_sync_runs.create({
+      data: {
+        target: 'contracts',
+        triggered_by: 'manual',
+        mapper_version: 'v',
+        started_at: new Date(), // posterior al arranque: se respeta
       },
     });
 
     await service.onModuleInit();
-    const [old, recent] = prisma.maximo_sync_runs.rows;
+    const [old, cut, current] = prisma.maximo_sync_runs.rows;
     expect(old.status).toBe('failed');
     expect(String(old.error_summary)).toContain('zombie');
-    expect(recent.status).toBe('running');
+    expect(cut.status).toBe('failed');
+    expect(current.status).toBe('running');
   });
 
   it('todas las páginas fallan sin total conocido → failed tras 3 intentos', async () => {

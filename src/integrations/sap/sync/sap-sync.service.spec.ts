@@ -303,3 +303,28 @@ describe('SapSyncService — paginación y resultado', () => {
     expect(h.runs[0].triggered_by_user_id).toBe('user-1');
   });
 });
+
+describe('SapSyncService — zombie cleanup al arrancar (F2)', () => {
+  it('marca failed toda corrida running iniciada antes del arranque del proceso', async () => {
+    const h = makeHarness();
+    await h.service.onModuleInit();
+    const call = (
+      h.prisma.sap_sync_runs.updateMany.mock.calls as unknown as Array<
+        [
+          {
+            where: { status: string; started_at: { lt: Date } };
+            data: { status: string; error_summary: string };
+          },
+        ]
+      >
+    )[0][0];
+    expect(call.where.status).toBe('running');
+    const processStart = Date.now() - process.uptime() * 1000;
+    // corte = arranque del proceso (±1 s), no "hace 30 min"
+    expect(
+      Math.abs(call.where.started_at.lt.getTime() - processStart),
+    ).toBeLessThan(1_000);
+    expect(call.data.status).toBe('failed');
+    expect(call.data.error_summary).toContain('zombie');
+  });
+});

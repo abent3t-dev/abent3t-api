@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../../prisma/prisma.service';
 import type { LoggerLike } from '../../common';
+import { ZOMBIE_RUN_SUMMARY, zombieRunCutoff } from '../../common';
 import { SAP_LOGGER } from '../sap.config';
 import { SapClient } from '../sap.client';
 import type { SapFetchResult } from '../sap.client';
@@ -60,9 +61,6 @@ const MAX_CONSECUTIVE_PAGE_FAILURES = 3;
 /** Margen del corte incremental (granularidad día de UpdateDate). */
 const INCREMENTAL_MARGIN_MS = 2 * 24 * 60 * 60 * 1000;
 
-/** Corridas `running` más viejas que esto se consideran zombies al arrancar. */
-const STALE_RUN_THRESHOLD_MS = 30 * 60_000;
-
 interface RunState extends SapSyncCounters {
   runId: string;
   target: SapSyncTarget;
@@ -94,14 +92,14 @@ export class SapSyncService implements OnModuleInit {
   /** Zombie cleanup al arrancar (el mutex es in-memory). */
   async onModuleInit(): Promise<void> {
     try {
-      const cutoff = new Date(Date.now() - STALE_RUN_THRESHOLD_MS);
+      // F2: toda corrida `running` anterior a este arranque está muerta
+      // (el mutex es in-memory), no solo las de más de 30 min.
       const stale = await this.prisma.sap_sync_runs.updateMany({
-        where: { status: 'running', started_at: { lt: cutoff } },
+        where: { status: 'running', started_at: { lt: zombieRunCutoff() } },
         data: {
           status: 'failed',
           finished_at: new Date(),
-          error_summary:
-            'Marcada como fallida al reiniciar el servidor (zombie cleanup)',
+          error_summary: ZOMBIE_RUN_SUMMARY,
         },
       });
       if (stale.count > 0) {

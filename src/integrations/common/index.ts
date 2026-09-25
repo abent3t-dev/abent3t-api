@@ -7,3 +7,4 @@ export * from './logging/integration-logger';
 export * from './http/integration-http.types';
 export * from './http/integration-http.client';
 export * from './http/integration-http-client.factory';
+export * from './sync/zombie-runs';
