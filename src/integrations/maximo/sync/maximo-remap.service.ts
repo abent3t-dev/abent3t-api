@@ -91,6 +91,8 @@ export class MaximoRemapService {
               ab_clasfpo: dto.abClasfPo,
               requested_by: dto.requestedBy,
               department: dto.area,
+              purchase_agent: dto.purchaseAgent,
+              purchase_agent_name: dto.purchaseAgentName,
               approved_at: toDate(dto.approvedDate),
               approved_by: dto.approvedBy,
               waiting_approval_at: toDate(dto.waitingApprovalDate),

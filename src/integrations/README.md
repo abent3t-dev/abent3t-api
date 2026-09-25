@@ -331,6 +331,26 @@ existe en `maximo_purchase_orders` se cuenta una sola vez (se descuenta del
 lado SAP) en dashboard, reportes y expeditación; `/sap/summary` sigue con el
 total propio y expone `migradas`.
 
+**Pedidos de Ingrid 2026-09-25 (E1/E3/E4 y "Agrupar por contrato", migración
+`0014`):** el comprador de la OC de SAP **no existe en PRD_ABENT**: ninguna
+de las 3,379 OC trae `SalesPersonCode` distinto de -1, el catálogo
+`SalesPersons` solo tiene "-Ningún empleado de ventas/comprador-" y
+`DocumentsOwner` viene vacío (sondeo read-only del 2026-09-25). Por eso el
+cliente SAP no cambia (sin `SalesPersonCode` en `PO_SELECT`, sin subir
+`SAP_MAPPER_VERSION`, sin sync de SAP) y la OC de SAP muestra "Capturó: …"
+(`created_by_name`). Maximo sí trae al comprador: `PO.PURCHASEAGENT` y su
+`PERSON` con `DISPLAYNAME` (misma persona, validado en los fixtures reales).
+Mapper de Maximo `2026.09.25-1` (`purchaseAgentName` solo si el `PERSONID`
+coincide con el `PURCHASEAGENT`) y migración `0014_comprador_maximo.sql`
+(`maximo_purchase_orders.purchase_agent` / `purchase_agent_name`, nullables).
+La OC de SAP creada desde Maximo toma el comprador de su OC en Maximo; si
+existe allá sin comprador queda vacía (no se muestra al usuario de la
+integración que la capturó en SAP). Para desplegar: migración `0014` en B →
+pull + rebuild api/next → `npm run maximo:remap -- purchase_orders` dentro del
+contenedor del api (el de contratos no cambia) → sin re-sync de SAP ni env
+nuevas. El filtro "tipo Excel" (`common/column-filters`) no toca el staging:
+se evalúa sobre las vistas de lectura.
+
 ## Qué NO hacer
 
 - Agregar cualquier operación de escritura al cliente genérico ("ni solo para

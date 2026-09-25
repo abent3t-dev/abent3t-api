@@ -629,3 +629,40 @@ describe('MaximoMapper (agrupador)', () => {
     expect(MaximoMapper.toCanonical).toBe(toCanonical);
   });
 });
+
+describe('comprador de la OC (E4, 2026-09-25)', () => {
+  it('PURCHASEAGENT + DISPLAYNAME de su PERSON en las tres formas', () => {
+    const [nested] = legacyRecords(
+      'ab-compras.legacy-nested.page.json',
+      'AB_COMPRAS',
+    ).map(toPurchaseOrder);
+    expect(nested.purchaseAgent).toBe('USR001');
+    expect(nested.purchaseAgentName).toBe('Persona Demo 1');
+    const [compact] = legacyRecords(
+      'ab-compras.legacy-compact.po102249.json',
+      'AB_COMPRAS',
+    ).map(toPurchaseOrder);
+    const [oslc] = oslcRecords('ab-compras.oslc.po102249.json').map(
+      toPurchaseOrder,
+    );
+    expect(compact.purchaseAgentName).toBe('Persona Demo 4');
+    expect(oslc.purchaseAgentName).toBe('Persona Demo 4');
+  });
+
+  it('sin PURCHASEAGENT o con otra PERSON no se nombra a nadie', () => {
+    expect(toPurchaseOrder({ PONUM: 'PO-MIN' }).purchaseAgentName).toBeNull();
+    const other = toPurchaseOrder({
+      PONUM: 'PO-X',
+      PURCHASEAGENT: 'USR010',
+      PERSON: [{ PERSONID: 'USR011', DISPLAYNAME: 'Otra persona' }],
+    });
+    expect(other.purchaseAgent).toBe('USR010');
+    expect(other.purchaseAgentName).toBeNull();
+    const same = toPurchaseOrder({
+      PONUM: 'PO-Y',
+      PURCHASEAGENT: 'usr010',
+      PERSON: [{ PERSONID: 'USR010', DISPLAYNAME: 'Compradora Demo' }],
+    });
+    expect(same.purchaseAgentName).toBe('Compradora Demo');
+  });
+});

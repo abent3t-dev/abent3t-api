@@ -93,7 +93,10 @@ export interface MaximoPurchaseOrderDto {
   abTipoComp: string | null;
   /** 'CAPEX' | 'OPEX' | otro valor de Maximo; nullable (población incremental). */
   abClasfPo: string | null;
+  /** PO.PURCHASEAGENT: usuario de Maximo del comprador. */
   purchaseAgent: string | null;
+  /** DISPLAYNAME de la PERSON de la OC cuando es el PURCHASEAGENT (E4). */
+  purchaseAgentName: string | null;
 
   /** PERSON.DEPARTMENT. */
   area: string | null;

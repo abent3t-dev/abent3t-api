@@ -27,7 +27,7 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
  * `maximo:remap` para re-derivar las filas ya sincronizadas.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.09.23-1'; // 23-1: prStatus/prTotal/consumedValue (bloque D2/D7/D8)
+export const MAXIMO_MAPPER_VERSION = '2026.09.25-1'; // 25-1: nombre del comprador (PURCHASEAGENT → PERSON, E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -221,6 +221,22 @@ function mapPerson(
   };
 }
 
+/**
+ * E4 (2026-09-25): nombre del comprador de la OC. En AB_COMPRAS la PERSON de
+ * la OC es la del PURCHASEAGENT (validado en los fixtures reales: mismo
+ * PERSONID); solo se toma su DISPLAYNAME si coincide, para no nombrar a
+ * otra persona si algún día la relación cambia.
+ */
+function purchaseAgentName(
+  agent: string | null,
+  person: MaximoPersonDto | null,
+): string | null {
+  if (!agent || !person?.personId || !person.displayName) return null;
+  return person.personId.toUpperCase() === agent.toUpperCase()
+    ? person.displayName
+    : null;
+}
+
 function mapVendor(
   company: MaximoCanonicalRecord | null,
 ): MaximoVendorDto | null {
@@ -301,6 +317,10 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
     abTipoComp: str(r, 'AB_TIPOCOMP'),
     abClasfPo: str(r, 'AB_CLASFPO'),
     purchaseAgent: str(r, 'PURCHASEAGENT'),
+    purchaseAgentName: purchaseAgentName(
+      str(r, 'PURCHASEAGENT'),
+      mapPerson(buyerPerson),
+    ),
 
     area: str(buyerPerson, 'DEPARTMENT'),
     buyer: mapPerson(buyerPerson),
