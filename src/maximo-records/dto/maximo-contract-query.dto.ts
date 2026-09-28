@@ -56,4 +56,24 @@ export class MaximoContractQueryDto extends ColumnFilterablePaginationDto {
   @IsOptional()
   @IsIn(['contract'])
   group?: 'contract';
+
+  /** G1 (2026-09-28): proveedor efectivo (`sap:P0000323` / `maximo:P0000544`). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  proveedor?: string;
+
+  /**
+   * G3 (2026-09-28): `true` = PR pendientes de gestionar (sin contrato y
+   * sin OC vigente que las use). Con `year` o `pr_desde`, el periodo se
+   * ubica por folio (AB_CONTRATOS no expone la fecha de la PR).
+   */
+  @IsOptional()
+  @IsIn(['true'])
+  sin_oc?: 'true';
+
+  /** G3: PR creadas desde esta fecha (ubicadas por folio). */
+  @IsOptional()
+  @IsISO8601()
+  pr_desde?: string;
 }

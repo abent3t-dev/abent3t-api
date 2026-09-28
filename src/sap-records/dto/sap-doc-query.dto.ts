@@ -1,4 +1,10 @@
-import { IsIn, IsISO8601, IsOptional } from 'class-validator';
+import {
+  IsIn,
+  IsISO8601,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
 import { IsYearQuery } from '../../common/dto/year-query.util';
 import { ColumnFilterablePaginationDto } from '../../common/column-filters/column-query.dto';
@@ -57,4 +63,26 @@ export class SapDocQueryDto extends ColumnFilterablePaginationDto {
   @IsOptional()
   @IsIn(['sap', 'maximo'])
   origin?: 'sap' | 'maximo';
+
+  /** G1 (2026-09-28), solo OC: proveedor exacto (clic en el top de Reportes). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  card_code?: string;
+
+  /**
+   * G1, solo OC: `true` = sin las migradas de Maximo que existen allá (D1),
+   * las mismas OC que cuenta el top de proveedores de SAP.
+   */
+  @IsOptional()
+  @IsIn(['true'])
+  counted_once?: 'true';
+
+  /**
+   * G3 (2026-09-28), solo solicitudes: `true` = pendientes de gestionar,
+   * que ninguna OC no cancelada usa como base (sin OC todavía).
+   */
+  @IsOptional()
+  @IsIn(['true'])
+  sin_oc?: 'true';
 }

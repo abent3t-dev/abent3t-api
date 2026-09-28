@@ -680,3 +680,62 @@ describe('quién creó la OC (F1, respaldo del comprador)', () => {
     expect(toPurchaseOrder({ PONUM: 'PO-MIN' }).createdBy).toBeNull();
   });
 });
+
+describe('solicitudes de la OC (G2/G3, 2026-09-28)', () => {
+  it('prNums = PRNUM distintos de todas las líneas; prIssueDate = la PR más antigua', () => {
+    const po = toPurchaseOrder({
+      PONUM: 'PO-G2',
+      POLINE: [
+        {
+          POLINENUM: 1,
+          PRNUM: 'PR200002',
+          PRLINE: [
+            {
+              PRNUM: 'PR200002',
+              PR: [
+                { PRNUM: 'PR200002', ISSUEDATE: '2026-03-10T09:00:00+00:00' },
+              ],
+            },
+          ],
+        },
+        {
+          POLINENUM: 2,
+          PRNUM: 'PR200001',
+          PRLINE: [
+            {
+              PRNUM: 'PR200001',
+              PR: [
+                { PRNUM: 'PR200001', ISSUEDATE: '2026-02-01T09:00:00+00:00' },
+              ],
+            },
+          ],
+        },
+        { POLINENUM: 3, PRNUM: 'PR200002' },
+        { POLINENUM: 4 },
+      ],
+    });
+    expect(po.prNums).toEqual(['PR200001', 'PR200002']);
+    // La gestión empieza con la primera solicitud (misma regla que SAP D3)
+    expect(po.prIssueDate).toBe('2026-02-01T09:00:00+00:00');
+    // prnum sigue siendo el de la primera línea con PR (compatibilidad)
+    expect(po.prnum).toBe('PR200002');
+  });
+
+  it('OC sin solicitud: prNums vacío y prIssueDate null (fuera del promedio)', () => {
+    const po = toPurchaseOrder({
+      PONUM: 'PO-SIN-PR',
+      POLINE: [{ POLINENUM: 1 }],
+    });
+    expect(po.prNums).toEqual([]);
+    expect(po.prIssueDate).toBeNull();
+  });
+
+  it('fixtures reales: la PR de la OC con su ISSUEDATE', () => {
+    const [po100012] = legacyRecords(
+      'ab-compras.legacy-nested.page.json',
+      'AB_COMPRAS',
+    ).map(toPurchaseOrder);
+    expect(po100012.prNums).toEqual(['PR100014']);
+    expect(po100012.prIssueDate).toBe('2019-06-25T15:28:46+00:00');
+  });
+});

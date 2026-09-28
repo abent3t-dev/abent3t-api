@@ -3,13 +3,22 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  andMaximoPrInWindow,
   andSapPoCountedOnce,
   andYear,
   CURRENT_MAXIMO_CONTRACTS,
   CURRENT_MAXIMO_POS,
+  loadMaximoPrFolioWindow,
+  pendingWindowStart,
   sapPoDuplicatedInMaximo,
 } from '../common/sql/erp-views.sql';
-import { sapGestionDays } from './sap-gestion-days';
+import {
+  MAXIMO_GESTION_DEFINICION,
+  maximoGestionDays,
+  SAP_GESTION_DEFINICION,
+  sapGestionDays,
+} from './sap-gestion-days';
+import { loadPendingRequests } from './pending-requests';
 
 /**
  * Sprint 2026-09-22 (A1) — Resumen agregado del dashboard de Compras.
@@ -36,13 +45,20 @@ import { sapGestionDays } from './sap-gestion-days';
  *    propias por created_at) y cabecera "datos desde… / última sync".
  *  - D5: `getOrdersKpis` — ahorro acumulado y CAPEX/OPEX por moneda.
  *
+ * Reunión con Ingrid 2026-09-28:
+ *  - G2: UNA definición de gestión por sistema (la de Ingrid: de que se crea
+ *    la RQ a que se crea la OC), con promedio, mediana y N. SAP = D3; Maximo
+ *    = fecha de la OC − PR.ISSUEDATE (`pr_issue_date`, 0016). Salen de aquí
+ *    "SAP solicitudes" (cierre del documento, no es gestión) y el tiempo de
+ *    aprobación de Maximo (vive en Aprobaciones/Reportes).
+ *  - G3: pendientes de gestionar = RQ sin OC (ver pending-requests.ts), en el
+ *    año elegido o en los últimos 12 meses.
+ *
  * Definiciones (van también en los tooltips de las tarjetas):
- *  - Solicitudes pendientes: SAP PR abiertas no canceladas; Maximo PR (raíz
- *    de maximo_contracts) en WAPPR/PNDREV; propias en revisión/aprobación.
- *  - Días de gestión: SAP solicitudes = closing_date (o update_date_source)
- *    − doc_date de las cerradas; SAP OC = D3; Maximo = approved_at −
- *    waiting_approval_at (o created_at_source) de las OC aprobadas; propias
- *    = business_days.
+ *  - Solicitudes: SAP por doc_date; Maximo PR (raíz de maximo_contracts)
+ *    ubicadas por folio en el año (AB_CONTRATOS no expone su fecha).
+ *  - Pendientes de gestionar: G3.
+ *  - Días de gestión: G2; propias = business_days.
  *  - Por recibir: SAP OC abiertas no canceladas; Maximo OC APPR/INPRG;
  *    propias emitida/en_transito (enum po_status real de la BD). SAP no
  *    reporta "tránsito".
@@ -65,6 +81,7 @@ export interface SourceOrders {
 }
 
 type CountRow = { total: number; pendientes: number };
+type TotalRow = { total: number };
 type AmountRow = { currency: string | null; total: unknown; count: number };
 type AvgRow = { dias: unknown };
 type MigratedRow = { total: number; en_maximo: number };
@@ -140,17 +157,29 @@ export class PurchaseDashboardService {
     const sapPoYear = andYear('doc_date', year);
     const sapPrYear = andYear('doc_date', year);
     const maximoPoYear = andYear('created_at_source', year);
-    const maximoPrYear = andYear('created_at_source', year);
     const abentYear = andYear('created_at', year);
     const countedOnce = andSapPoCountedOnce('sap_purchase_orders');
+    // G3: periodo de las solicitudes: el año elegido o, para los
+    // pendientes sin año, los últimos 12 meses
+    const yearFrom = year ? new Date(Date.UTC(year, 0, 1)) : null;
+    const yearTo = year ? new Date(Date.UTC(year + 1, 0, 1)) : null;
+    const [prYearWindow, pending] = await Promise.all([
+      yearFrom
+        ? loadMaximoPrFolioWindow(this.prisma, yearFrom, yearTo)
+        : Promise.resolve(null),
+      loadPendingRequests(
+        this.prisma,
+        yearFrom ?? pendingWindowStart(),
+        yearTo,
+      ),
+    ]);
 
     const [
       sapPr,
-      sapPrDias,
       sapPo,
       sapPoOpen,
       maximoPr,
-      maximoPoDias,
+      maximoGestion,
       maximoPo,
       maximoPoOpen,
       abentRq,
@@ -162,19 +191,10 @@ export class PurchaseDashboardService {
       range,
       years,
     ] = await Promise.all([
-      // SAP — solicitudes de pedido
-      this.prisma.$queryRaw<CountRow[]>(Prisma.sql`
-        SELECT count(*)::int AS total,
-               count(*) FILTER (
-                 WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true
-               )::int AS pendientes
+      // SAP — solicitudes de pedido (los pendientes vienen de G3)
+      this.prisma.$queryRaw<TotalRow[]>(Prisma.sql`
+        SELECT count(*)::int AS total
         FROM sap_purchase_requests WHERE true ${sapPrYear}`),
-      this.prisma.$queryRaw<AvgRow[]>(Prisma.sql`
-        SELECT avg(extract(epoch FROM (coalesce(closing_date, update_date_source) - doc_date)) / 86400) AS dias
-        FROM sap_purchase_requests
-        WHERE document_status = 'bost_Close' AND cancelled IS DISTINCT FROM true
-          AND doc_date IS NOT NULL
-          AND coalesce(closing_date, update_date_source) >= doc_date ${sapPrYear}`),
       // SAP — órdenes de compra (no canceladas, contadas una vez), por moneda
       this.prisma.$queryRaw<AmountRow[]>(Prisma.sql`
         SELECT currency, coalesce(sum(doc_total), 0) AS total, count(*)::int AS count
@@ -187,19 +207,20 @@ export class PurchaseDashboardService {
         WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true
           ${countedOnce} ${sapPoYear}
         GROUP BY currency`),
-      // Maximo — PR (raíz de maximo_contracts, vista actual)
-      this.prisma.$queryRaw<CountRow[]>(Prisma.sql`
+      // Maximo — PR (raíz de maximo_contracts, vista actual); con año, por folio
+      this.prisma.$queryRaw<TotalRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
-        SELECT count(*)::int AS total,
-               count(*) FILTER (WHERE status IN ('WAPPR', 'PNDREV'))::int AS pendientes
-        FROM current WHERE prnum IS NOT NULL ${maximoPrYear}`),
-      this.prisma.$queryRaw<AvgRow[]>(Prisma.sql`
+        SELECT count(*)::int AS total
+        FROM current c WHERE c.prnum IS NOT NULL
+          ${andMaximoPrInWindow('c', prYearWindow)}`),
+      // G2: días de gestión Maximo = fecha de la OC − PR.ISSUEDATE
+      this.prisma.$queryRaw<Array<{ dias: unknown }>>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
-        SELECT avg(extract(epoch FROM (approved_at - coalesce(waiting_approval_at, created_at_source))) / 86400) AS dias
+        SELECT CASE WHEN pr_issue_date IS NOT NULL AND created_at_source IS NOT NULL
+                    THEN extract(epoch FROM (created_at_source - pr_issue_date)) / 86400
+               END AS dias
         FROM current
-        WHERE approved_at IS NOT NULL
-          AND coalesce(waiting_approval_at, created_at_source) IS NOT NULL
-          AND approved_at >= coalesce(waiting_approval_at, created_at_source) ${maximoPoYear}`),
+        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL') ${maximoPoYear}`),
       // Maximo — OC vigentes (no canceladas), por moneda
       this.prisma.$queryRaw<AmountRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
@@ -266,11 +287,13 @@ export class PurchaseDashboardService {
             SELECT doc_entry, doc_date FROM sap_purchase_requests
             WHERE doc_entry IN (${Prisma.join(requestEntries)})`);
     const sapOcGestion = sapGestionDays(gestionPos, gestionPrs);
+    const maximoOcGestion = maximoGestionDays(maximoGestion);
 
     const src = (row: CountRow[] | undefined): SourceCount => ({
       total: Number(row?.[0]?.total ?? 0),
       pendientes: Number(row?.[0]?.pendientes ?? 0),
     });
+    const totalOf = (rows: TotalRow[]) => Number(rows[0]?.total ?? 0);
     const orders = (rows: AmountRow[]): SourceOrders => {
       const amounts = toAmounts(rows);
       return {
@@ -280,8 +303,17 @@ export class PurchaseDashboardService {
     };
 
     const solicitudes = {
-      sap: src(sapPr),
-      maximo: src(maximoPr),
+      sap: {
+        total: totalOf(sapPr),
+        pendientes: pending.sap.pendientes,
+        pendientes_sin_limite: pending.sap.sin_limite,
+      },
+      maximo: {
+        total: totalOf(maximoPr),
+        // null = sin fechas de PR conocidas para ubicar el periodo
+        pendientes: pending.maximo.pendientes,
+        pendientes_sin_limite: pending.maximo.sin_limite,
+      },
       abent: src(abentRq),
     };
     const ordenes = {
@@ -311,25 +343,17 @@ export class PurchaseDashboardService {
           solicitudes.abent.total,
         pendientes:
           solicitudes.sap.pendientes +
-          solicitudes.maximo.pendientes +
+          (solicitudes.maximo.pendientes ?? 0) +
           solicitudes.abent.pendientes,
         por_fuente: solicitudes,
+        // G3: periodo de los pendientes (año elegido o últimos 12 meses)
+        pendientes_periodo: { desde: pending.desde, hasta: pending.hasta },
       },
-      // null = sin base para calcular en esa fuente ("No disponible").
+      // G2: una definición por sistema; null = sin base ("No disponible").
       dias_gestion: {
-        sap_solicitudes: avgOrNull(sapPrDias),
-        sap_ordenes: sapOcGestion.promedio_dias,
-        maximo_ordenes: avgOrNull(maximoPoDias),
-        abent_requisiciones: avgOrNull(abentRqDias),
-      },
-      // D3: base del promedio de SAP OC (N visible en la tarjeta)
-      dias_gestion_base: {
-        sap_ordenes: {
-          total: sapOcGestion.total,
-          descartadas: sapOcGestion.descartadas,
-          definicion:
-            'De la fecha de la solicitud de pedido (la más antigua) a la fecha de la OC; solo OC con solicitud de pedido en SAP',
-        },
+        sap: { ...sapOcGestion, definicion: SAP_GESTION_DEFINICION },
+        maximo: { ...maximoOcGestion, definicion: MAXIMO_GESTION_DEFINICION },
+        abent: avgOrNull(abentRqDias),
       },
       ordenes: {
         total: sum(ordenes),

@@ -22,19 +22,107 @@ import { MaximoSummaryQueryDto } from './dto/maximo-summary-query.dto';
 import { MaximoRecordsService } from './maximo-records.service';
 import type { MaximoContractGroupView } from './maximo-contract-groups';
 import { buyerLabel } from '../common/utils/buyer.util';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import type { VendorMismatchExportRow } from '../erp-vendors/maximo-vendor-xref.service';
+import {
+  MISMATCH_LABELS,
+  VENDOR_SOURCE_LABELS,
+} from '../erp-vendors/maximo-vendor-xref';
+import type { SupplierFields } from './maximo-records.types';
 
 // Roles de compras (§Roles y Permisos de CLAUDE_COMPRAS.md)
 // Lectores de datos Maximo; super_admin bypassa RolesGuard.
 // El `raw` del detalle solo viaja a los admins de compras.
 const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
 
+/**
+ * G1 (2026-09-28): columnas del proveedor efectivo (según SAP si la OC migró
+ * o por cruce de código) + lo que dice el maestro de Maximo.
+ */
+function supplierColumns<
+  T extends SupplierFields & {
+    vendor_id: string | null;
+    vendor_name: string | null;
+  },
+>(): ExcelColumn<T>[] {
+  return [
+    { header: 'Proveedor', value: (r) => r.supplier_name, width: 36 },
+    { header: 'Código proveedor', value: (r) => r.supplier_code, width: 14 },
+    {
+      header: 'Origen del proveedor',
+      value: (r) =>
+        r.supplier_source ? VENDOR_SOURCE_LABELS[r.supplier_source] : null,
+      width: 26,
+    },
+    { header: 'Proveedor en Maximo', value: (r) => r.vendor_name, width: 36 },
+    { header: 'ID proveedor Maximo', value: (r) => r.vendor_id, width: 14 },
+  ];
+}
+
+/** G1.3: lista para corregir el maestro de proveedores de Maximo. */
+const VENDOR_MISMATCH_COLUMNS: ExcelColumn<VendorMismatchExportRow>[] = [
+  { header: 'Código en Maximo', value: (r) => r.maximo_code, width: 14 },
+  { header: 'Nombre en Maximo', value: (r) => r.maximo_name, width: 40 },
+  { header: 'Código en SAP', value: (r) => r.sap_code, width: 14 },
+  { header: 'Nombre en SAP', value: (r) => r.sap_name, width: 40 },
+  { header: 'Caso', value: (r) => MISMATCH_LABELS[r.kind], width: 34 },
+  {
+    header: 'OC migradas (este par)',
+    value: (r) => r.migrated,
+    kind: 'int',
+    width: 12,
+  },
+  {
+    header: 'OC migradas del proveedor Maximo',
+    value: (r) => r.migrated_total,
+    kind: 'int',
+    width: 14,
+  },
+  {
+    header: '% de cobertura',
+    value: (r) => r.coverage_pct,
+    width: 12,
+  },
+  {
+    header: 'OC vigentes en Maximo',
+    value: (r) => r.maximo_orders,
+    kind: 'int',
+    width: 12,
+  },
+  {
+    header: 'Monto en Maximo MXN',
+    value: (r) =>
+      r.maximo_amounts.find((a) => a.currency === 'MXN')?.total ?? null,
+    kind: 'money',
+    width: 18,
+  },
+  {
+    header: 'Monto en Maximo USD',
+    value: (r) =>
+      r.maximo_amounts.find((a) => a.currency === 'USD')?.total ?? null,
+    kind: 'money',
+    width: 16,
+  },
+  {
+    header: 'Otras monedas',
+    value: (r) =>
+      r.maximo_amounts
+        .filter((a) => a.currency !== 'MXN' && a.currency !== 'USD')
+        .map(
+          (a) =>
+            `${a.currency ?? 'sin moneda'} ${a.total.toLocaleString('es-MX')}`,
+        )
+        .join(' · ') || null,
+    width: 22,
+  },
+];
+
 /** Columnas del export = pestaña "Ordenes Maximo" (B1). AB_* no expuestos → "No disponible". */
 const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
   { header: 'PONUM', value: (r) => r.ponum, width: 14 },
   { header: 'Descripción', value: (r) => r.description, width: 44 },
   { header: 'Estatus', value: (r) => r.status, width: 10 },
-  { header: 'Proveedor', value: (r) => r.vendor_name, width: 36 },
-  { header: 'ID proveedor', value: (r) => r.vendor_id, width: 14 },
+  ...supplierColumns<MaximoPurchaseOrderView>(),
   { header: 'Monto', value: (r) => r.total_cost, kind: 'money', width: 16 },
   { header: 'Moneda', value: (r) => r.currency, width: 10 },
   { header: 'Departamento', value: (r) => r.department, width: 18 },
@@ -96,7 +184,7 @@ const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
     width: 14,
   },
   { header: 'Estatus', value: (r) => r.status, width: 10 },
-  { header: 'Proveedor', value: (r) => r.vendor_name, width: 36 },
+  ...supplierColumns<MaximoContractView>(),
   {
     header: 'Valor contrato',
     value: (r) => r.contract_value,
@@ -164,7 +252,7 @@ const CONTRACT_GROUP_COLUMNS: ExcelColumn<MaximoContractGroupView>[] = [
     width: 40,
   },
   { header: 'Estatus', value: (r) => r.status, width: 10 },
-  { header: 'Proveedor', value: (r) => r.vendor_name, width: 36 },
+  ...supplierColumns<MaximoContractGroupView>(),
   {
     header: 'Valor contrato',
     value: (r) => r.contract_value,
@@ -201,7 +289,31 @@ const CONTRACT_GROUP_COLUMNS: ExcelColumn<MaximoContractGroupView>[] = [
  */
 @Controller('maximo')
 export class MaximoRecordsController {
-  constructor(private readonly service: MaximoRecordsService) {}
+  constructor(
+    private readonly service: MaximoRecordsService,
+    private readonly vendors: MaximoVendorXrefService,
+  ) {}
+
+  // G1: cuántos proveedores de Maximo tienen otro nombre en SAP (lectura abierta)
+  @Get('vendor-xref')
+  vendorXrefSummary() {
+    return this.vendors.mismatchSummary();
+  }
+
+  // G1.3: "Proveedores con nombre distinto en Maximo y SAP" (para Alfredo)
+  @Get('vendor-xref/export')
+  async exportVendorXref(@Res() res: Response) {
+    const rows = await this.vendors.mismatchRows();
+    const buffer = await buildExcel(
+      'Nombres distintos',
+      VENDOR_MISMATCH_COLUMNS,
+      rows,
+      {
+        note: 'Cruce por las OC de Maximo que migraron a SAP (NumAtCard = PONUM). Nombre distinto: el proveedor de SAP cubre al menos el 90% de sus OC migradas (mínimo 2). Ambiguo: sus OC cayeron en varios proveedores de SAP. Montos de Maximo por moneda (OC vigentes no canceladas).',
+      },
+    );
+    sendExcel(res, buffer, excelFilename('proveedores_maximo_vs_sap'));
+  }
 
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
   @Get('summary')

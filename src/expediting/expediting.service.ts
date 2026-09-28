@@ -8,6 +8,11 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import {
+  effectiveMaximoVendor,
+  maximoVendorNote,
+} from '../erp-vendors/maximo-vendor-xref';
 import { cdmxDateUtc } from '../contracts/contracts.dates';
 import {
   CRITICAL_AFTER_DAYS,
@@ -64,6 +69,9 @@ import type { Buyer, BuyerKind } from '../common/utils/buyer.util';
  *  - F1 (post-deploy): sin PURCHASEAGENT (casi todas en prod), Maximo usa
  *    quién creó la OC ("Capturó: …"); la SAP migrada hereda ese respaldo,
  *    nunca el usuario de la integración de SAP.
+ *  - G1 (2026-09-28): las filas de Maximo muestran el proveedor EFECTIVO
+ *    (según SAP si la OC migró o por cruce de código; ver erp-vendors) y
+ *    `supplier_note` = "en Maximo: …" cuando el nombre de Maximo es otro.
  */
 
 const SAFETY_SCAN_LIMIT = 2000;
@@ -81,6 +89,8 @@ interface ErpRow {
   po_number: string;
   po_status: string | null;
   supplier_name: string | null;
+  /** SAP: card_code; Maximo: vendor_id (código de su maestro). */
+  supplier_code: string | null;
   amount: unknown;
   currency: string | null;
   expected_date: Date | null;
@@ -140,6 +150,7 @@ export class ExpeditingService {
     private readonly prisma: PrismaService,
     private readonly emailService: EmailService,
     private readonly aliases: ErpAliasesService,
+    private readonly vendors: MaximoVendorXrefService,
   ) {}
 
   // ── Lectura ─────────────────────────────────────────────────────────────
@@ -680,6 +691,7 @@ export class ExpeditingService {
                    coalesce(s.doc_num::text, s.doc_entry::text) AS po_number,
                    s.document_status AS po_status,
                    s.card_name AS supplier_name,
+                   s.card_code AS supplier_code,
                    s.doc_total AS amount,
                    s.currency,
                    s.doc_due_date AS expected_date,
@@ -713,6 +725,7 @@ export class ExpeditingService {
                    ponum AS po_number,
                    status AS po_status,
                    vendor_name AS supplier_name,
+                   vendor_id AS supplier_code,
                    total_cost AS amount,
                    currency,
                    NULLIF(coalesce(raw->'Attributes'->'VENDELIVERYDATE'->>'content',
@@ -726,10 +739,33 @@ export class ExpeditingService {
                    false AS maximo_exists
             FROM current
             WHERE status IN ('APPR', 'INPRG')
-              AND (${term}::text IS NULL OR vendor_name ILIKE ${term} OR ponum ILIKE ${term})
             ORDER BY ponum ASC
             LIMIT ${ERP_SCAN_LIMIT}`),
     ]);
+    // G1: proveedor efectivo de las OC de Maximo; la búsqueda también
+    // encuentra el nombre efectivo (por eso se filtra aquí y no en SQL)
+    const xref = await this.vendors.get();
+    const maximoVendor = new Map(
+      maximoRows.map((row) => [
+        row.external_key,
+        effectiveMaximoVendor(
+          {
+            ponum: row.po_number,
+            vendor_id: row.supplier_code,
+            vendor_name: row.supplier_name,
+          },
+          xref,
+        ),
+      ]),
+    );
+    const needle = query.search?.trim().toLowerCase() ?? '';
+    const matchesSearch = (row: ErpRow) =>
+      !needle ||
+      [
+        row.po_number,
+        row.supplier_name,
+        maximoVendor.get(row.external_key)?.name ?? null,
+      ].some((v) => v?.toLowerCase().includes(needle));
     // D1: PONUM de las OC de SAP que nacieron en Maximo → la fila de Maximo
     // con ese PONUM se omite (queda la de SAP, que trae la fecha comprometida).
     const migrated = new Set(
@@ -766,6 +802,7 @@ export class ExpeditingService {
       .filter((row) => {
         if (row.source !== 'maximo') return true;
         if (migrated.has(row.po_number)) return false;
+        if (!matchesSearch(row)) return false;
         const d = row.expected_date;
         if (from && (!d || d < from)) return false;
         if (to && (!d || d > to)) return false;
@@ -783,19 +820,26 @@ export class ExpeditingService {
           today,
         );
         const buyer = buyerOf(row);
+        const vendor =
+          row.source === 'maximo'
+            ? maximoVendor.get(row.external_key)
+            : undefined;
+        const supplierName = vendor ? vendor.name : row.supplier_name;
         return {
           purchase_order_id: null as string | null,
           source: row.source,
           external_key: row.external_key,
           po_number: row.po_number,
           po_status: row.po_status,
-          supplier: row.supplier_name
+          supplier: supplierName
             ? {
                 id: null as string | null,
-                legal_name: row.supplier_name,
+                legal_name: supplierName,
                 email: null as string | null,
               }
             : null,
+          supplier_code: vendor ? vendor.code : row.supplier_code,
+          supplier_note: vendor ? maximoVendorNote(vendor) : null,
           buyer: null,
           buyer_name: buyer.name,
           buyer_kind: buyer.kind,
@@ -845,6 +889,8 @@ export class ExpeditingService {
         legal_name: string;
         email: string | null;
       } | null,
+      supplier_code: null as string | null,
+      supplier_note: null as string | null,
       currency: 'MXN' as string | null,
       requested_by: null as string | null,
       maximo_ponum: null as string | null,

@@ -5,6 +5,11 @@ import { ExpeditingService } from '../expediting/expediting.service';
 import { PurchaseCommitteesService } from '../purchase-committees/purchase-committees.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { PurchaseReportsService } from './purchase-reports.service';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import {
+  buildVendorXref,
+  MaximoVendorXref,
+} from '../erp-vendors/maximo-vendor-xref';
 
 /**
  * Fase Reportes. Prisma y services consumidos MOCKEADOS — sin BD/red.
@@ -13,7 +18,10 @@ import { PurchaseReportsService } from './purchase-reports.service';
  * MONEDA (T10) y consumo de las fórmulas existentes sin variantes.
  */
 
-function makeService(queryResults: unknown[][] = []) {
+function makeService(
+  queryResults: unknown[][] = [],
+  xref: MaximoVendorXref = buildVendorXref([], new Map()),
+) {
   let call = 0;
   const prisma = {
     $queryRaw: jest.fn(() => Promise.resolve(queryResults[call++] ?? [])),
@@ -77,12 +85,14 @@ function makeService(queryResults: unknown[][] = []) {
     forProfiles: jest.fn().mockResolvedValue([]),
     byCode: jest.fn().mockResolvedValue(new Map()),
   };
+  const vendors = { get: jest.fn().mockResolvedValue(xref) };
   const service = new PurchaseReportsService(
     prisma as unknown as PrismaService,
     approvals as unknown as ApprovalsService,
     expediting as unknown as ExpeditingService,
     committees as unknown as PurchaseCommitteesService,
     aliases as unknown as ErpAliasesService,
+    vendors as unknown as MaximoVendorXrefService,
   );
   return { service, prisma, approvals, expediting, committees };
 }
@@ -220,19 +230,26 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
     expect(resumen.proveedores.bloqueados).toBe(1);
     // Sin staging ERP: los totales de todas las fuentes = los propios
     expect(resumen.todas_las_fuentes.solicitudes.creadas).toBe(4);
-    expect(resumen.todas_las_fuentes.dias_gestion.sap).toBeNull();
+    expect(resumen.todas_las_fuentes.dias_gestion.sap.promedio_dias).toBeNull();
+    // sin fechas de PR de Maximo no se inventan pendientes
+    expect(
+      resumen.todas_las_fuentes.solicitudes.por_fuente.maximo.pendientes,
+    ).toBeNull();
   });
 
   it('resumen: suma SAP + Maximo + ABENT; montos de la misma moneda se juntan, monedas distintas no', async () => {
+    const d = (iso: string) => new Date(`${iso}T00:00:00Z`);
     const { service } = makeService([
+      // G3: ventana de folios del periodo y la de pendientes (12 meses)
+      [{ lower: BigInt(104000), upper: null }],
+      [{ lower: BigInt(104500), upper: null }],
+      // G3: pendientes SAP y Maximo (RQ sin OC)
+      [{ pendientes: 27, sin_limite: 30 }],
+      [{ pendientes: 1, sin_limite: 50 }],
       [
         {
           sap_rq_creadas: 300,
-          sap_rq_abiertas: 27,
-          sap_dias: '6.34',
           maximo_rq_creadas: 4,
-          maximo_rq_abiertas: 1,
-          maximo_dias: null,
           maximo_contratos_por_vencer: 2,
         },
       ],
@@ -241,6 +258,15 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
         { fuente: 'sap', currency: 'USD', count: 10, total: '70' },
         { fuente: 'maximo', currency: 'MXN', count: 5, total: '100' },
       ],
+      // G2: OC de SAP del periodo con su solicitud base
+      [
+        { doc_entry: 1, doc_date: d('2026-03-11'), base_request_entries: [7] },
+        { doc_entry: 2, doc_date: d('2026-03-04'), base_request_entries: [7] },
+      ],
+      // G2: días de gestión de las OC de Maximo del periodo
+      [{ dias: null }],
+      // fechas de las solicitudes base
+      [{ doc_entry: 7, doc_date: d('2026-03-01') }],
     ]);
     const resumen = await service.getResumen({
       from: '2026-01-01',
@@ -248,8 +274,14 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
     });
     const todas = resumen.todas_las_fuentes;
     expect(todas.solicitudes.creadas).toBe(308); // 300 + 4 + 4 propias
-    expect(todas.solicitudes.abiertas).toBe(32);
-    expect(todas.dias_gestion).toEqual({ sap: 6.3, maximo: null, abent: 6.5 });
+    // G3: pendientes = RQ sin OC (27 SAP + 1 Maximo + 4 propias)
+    expect(todas.solicitudes.pendientes).toBe(32);
+    // G2: SAP (10 + 3) / 2 = 6.5 días; Maximo sin OC con solicitud → null
+    expect(todas.dias_gestion).toEqual({
+      sap: { promedio_dias: 6.5, mediana_dias: 6.5, total: 2 },
+      maximo: { promedio_dias: null, mediana_dias: null, total: 0 },
+      abent: 6.5,
+    });
     expect(todas.ordenes.total).toBe(1018); // 1000 + 10 + 5 + 3 propias
     expect(todas.ordenes.monto_por_moneda).toEqual([
       { currency: 'MXN', total: 6000.5, count: 1008 },
@@ -332,5 +364,125 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
         sap_pendientes: 0,
       },
     ]);
+  });
+});
+
+describe('PurchaseReportsService — top de proveedores (G1, 2026-09-28)', () => {
+  const ASOCIACION = 'ASOCIACION MEXICANA DE ENERGIA';
+  const NAES = 'NAES ENERGIA S DE RL DE CV';
+  // Fixture del diagnóstico: la OC de Maximo de P0000440 "ASOCIACION…"
+  // migró a SAP a nombre de P0000219 "NAES…"
+  const xref = buildVendorXref(
+    [
+      {
+        ponum: 'PO104279',
+        vendor_id: 'P0000440',
+        vendor_name: ASOCIACION,
+        card_code: 'P0000219',
+        card_name: 'NAES ENERGIA',
+      },
+      {
+        ponum: 'PO104356',
+        vendor_id: 'P0000440',
+        vendor_name: ASOCIACION,
+        card_code: 'P0000219',
+        card_name: NAES,
+      },
+    ],
+    new Map([['P0000219', NAES]]),
+  );
+  const maximoPos = [
+    // migradas (regla a) y una aún sin migrar (regla b)
+    {
+      ponum: 'PO104279',
+      vendor_id: 'P0000440',
+      vendor_name: ASOCIACION,
+      currency: 'MXN',
+      total_cost: '4270000',
+    },
+    {
+      ponum: 'PO104356',
+      vendor_id: 'P0000440',
+      vendor_name: ASOCIACION,
+      currency: 'MXN',
+      total_cost: '4650000',
+    },
+    {
+      ponum: 'PO104851',
+      vendor_id: 'P0000440',
+      vendor_name: ASOCIACION,
+      currency: 'MXN',
+      total_cost: '4300000',
+    },
+    {
+      ponum: 'PO200001',
+      vendor_id: 'P0000500',
+      vendor_name: 'LOCAL SA DE CV',
+      currency: 'MXN',
+      total_cost: '1000',
+    },
+  ];
+  const sapVendors = [
+    // SAP contado una vez: la anualidad real de la Asociación y otra de NAES
+    {
+      card_code: 'P0000440',
+      card_name: ASOCIACION,
+      currency: 'MXN',
+      count: 1,
+      monto: '412500',
+    },
+    {
+      card_code: 'P0000219',
+      card_name: NAES,
+      currency: 'MXN',
+      count: 1,
+      monto: '100000',
+    },
+  ];
+
+  it('Maximo muestra NAES (con "en Maximo: ASOCIACION…"); SAP y combinado por código', async () => {
+    const { service } = makeService(
+      [[], [], [], [], sapVendors, [], [], [], maximoPos],
+      xref,
+    );
+    const report = await service.getErp({
+      from: '2026-01-01',
+      to: '2026-09-28',
+    });
+
+    const [top] = report.maximo.top_proveedores;
+    expect(top).toMatchObject({
+      key: 'sap:P0000219',
+      sistema: 'sap',
+      codigo: 'P0000219',
+      proveedor: NAES,
+      currency: 'MXN',
+      count: 3,
+      monto: 13220000,
+      nota: `en Maximo: ${ASOCIACION} (P0000440)`,
+    });
+    expect(
+      report.maximo.top_proveedores.some((r) => r.proveedor === ASOCIACION),
+    ).toBe(false);
+
+    // SAP: con código; la Asociación de SAP sigue siendo la Asociación
+    expect(
+      report.sap.top_proveedores.map((r) => [r.codigo, r.proveedor]),
+    ).toEqual([
+      ['P0000440', ASOCIACION],
+      ['P0000219', NAES],
+    ]);
+
+    // Combinado: NAES junta SAP + Maximo sin duplicar
+    const naes = report.combinado.top_proveedores[0];
+    expect(naes).toMatchObject({
+      key: 'sap:P0000219',
+      count: 4,
+      monto: 13320000,
+      por_fuente: {
+        sap: { count: 1, monto: 100000 },
+        maximo: { count: 3, monto: 13220000 },
+      },
+    });
   });
 });

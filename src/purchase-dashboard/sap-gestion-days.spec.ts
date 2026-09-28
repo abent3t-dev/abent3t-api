@@ -1,4 +1,8 @@
-import { sapGestionDays } from './sap-gestion-days';
+import {
+  averageAndMedian,
+  maximoGestionDays,
+  sapGestionDays,
+} from './sap-gestion-days';
 
 /**
  * D3 (2026-09-23): días de gestión SAP = fecha de la OC − fecha de la
@@ -32,7 +36,12 @@ describe('sapGestionDays', () => {
       ],
       requests,
     );
-    expect(result).toEqual({ promedio_dias: 15, total: 2, descartadas: 0 });
+    expect(result).toEqual({
+      promedio_dias: 15,
+      mediana_dias: 15,
+      total: 2,
+      descartadas: 0,
+    });
   });
 
   it('ignora OC sin solicitud base y descarta negativas o sin fecha', () => {
@@ -65,12 +74,18 @@ describe('sapGestionDays', () => {
       ],
       requests,
     );
-    expect(result).toEqual({ promedio_dias: 3, total: 1, descartadas: 3 });
+    expect(result).toEqual({
+      promedio_dias: 3,
+      mediana_dias: 3,
+      total: 1,
+      descartadas: 3,
+    });
   });
 
   it('sin base devuelve null (nunca 0)', () => {
     expect(sapGestionDays([], requests)).toEqual({
       promedio_dias: null,
+      mediana_dias: null,
       total: 0,
       descartadas: 0,
     });
@@ -98,5 +113,40 @@ describe('sapGestionDays', () => {
       requests,
     );
     expect(result.promedio_dias).toBe(1.7);
+  });
+});
+
+describe('mediana y gestión de Maximo (G2, 2026-09-28)', () => {
+  it('la mediana resiste a las OC capturadas meses después', () => {
+    expect(averageAndMedian([5, 6, 7, 200])).toEqual({
+      promedio_dias: 54.5,
+      mediana_dias: 6.5,
+    });
+    expect(averageAndMedian([3, 1, 2])).toEqual({
+      promedio_dias: 2,
+      mediana_dias: 2,
+    });
+    expect(averageAndMedian([])).toEqual({
+      promedio_dias: null,
+      mediana_dias: null,
+    });
+  });
+
+  it('Maximo: OC − PR.ISSUEDATE; sin solicitud y negativas quedan fuera y se cuentan', () => {
+    expect(
+      maximoGestionDays([
+        { dias: 10 },
+        { dias: '20.5' }, // numeric de Postgres llega como Decimal/string
+        { dias: null }, // OC sin solicitud
+        { dias: -3 }, // OC fechada antes que su PR
+        { dias: 30 },
+      ]),
+    ).toEqual({
+      promedio_dias: 20.2,
+      mediana_dias: 20.5,
+      total: 3,
+      descartadas: 1,
+      sin_solicitud: 1,
+    });
   });
 });

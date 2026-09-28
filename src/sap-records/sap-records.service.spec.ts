@@ -179,7 +179,8 @@ describe('SapRecordsService — listados', () => {
     expect(where.AND[1]).toEqual({
       doc_date: {
         gte: new Date('2026-01-01'),
-        lte: new Date('2026-06-30'),
+        // G1: un `to` de solo fecha incluye el día completo (como Reportes)
+        lte: new Date('2026-06-30T23:59:59.999Z'),
       },
     });
     // búsqueda numérica agrega doc_num/doc_entry además del texto

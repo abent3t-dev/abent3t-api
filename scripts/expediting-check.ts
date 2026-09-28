@@ -11,6 +11,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 import { EmailService } from '../src/email/email.service';
 import { ExpeditingService } from '../src/expediting/expediting.service';
 import { ErpAliasesService } from '../src/erp-aliases/erp-aliases.service';
+import { MaximoVendorXrefService } from '../src/erp-vendors/maximo-vendor-xref.service';
 
 async function main(): Promise<void> {
   const arg = process.argv[2];
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
       prisma,
       new EmailService(new ConfigService()),
       new ErpAliasesService(prisma),
+      new MaximoVendorXrefService(prisma),
     );
     const result = await service.runAlertCheck(now);
     console.log('Alertas de expeditación:');

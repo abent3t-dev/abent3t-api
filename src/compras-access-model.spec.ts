@@ -109,6 +109,9 @@ const OPEN_READS = [
   '/maximo/contracts/facets',
   '/compras/contratos/facets',
   '/suppliers/facets',
+  // 2026-09-28 (G1): proveedores con nombre distinto en Maximo y SAP
+  '/maximo/vendor-xref',
+  '/maximo/vendor-xref/export',
   '/approvals/requisition/:rqId',
   '/approvals/stats',
   '/requisitions',

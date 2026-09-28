@@ -3,6 +3,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { ExpeditingService } from './expediting.service';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import { buildVendorXref } from '../erp-vendors/maximo-vendor-xref';
 import { cdmxDateUtc } from '../contracts/contracts.dates';
 
 /**
@@ -182,10 +184,28 @@ function makeHarness() {
     forProfiles: jest.fn().mockResolvedValue([]),
     byCode: jest.fn().mockResolvedValue(new Map()),
   };
+  // G1: cruce de proveedores (PO9001 de Maximo migró a SAP a nombre de NAES)
+  const vendors = {
+    get: jest.fn().mockResolvedValue(
+      buildVendorXref(
+        [
+          {
+            ponum: 'PO9001',
+            vendor_id: 'P0000440',
+            vendor_name: 'ASOCIACION MEXICANA DE ENERGIA',
+            card_code: 'P0000219',
+            card_name: 'NAES ENERGIA S DE RL DE CV',
+          },
+        ],
+        new Map(),
+      ),
+    ),
+  };
   const service = new ExpeditingService(
     prisma as unknown as PrismaService,
     email as unknown as EmailService,
     aliases as unknown as ErpAliasesService,
+    vendors as unknown as MaximoVendorXrefService,
   );
 
   const addPo = (overrides: Record<string, unknown> = {}) => {
@@ -732,6 +752,57 @@ describe('ExpeditingService — comprador de respaldo de Maximo (F1)', () => {
         { value: 'Diana Yohara', count: 1 },
         { value: 'Capturó: Diana Yohara', count: 1 },
       ]) as unknown,
+    });
+  });
+});
+
+describe('ExpeditingService — proveedor efectivo de Maximo (G1)', () => {
+  const today = new Date();
+  const rel = (days: number) => new Date(today.getTime() + days * 86_400_000);
+  const maximoRow = {
+    source: 'maximo',
+    po_status: 'INPRG',
+    amount: '4270000.00',
+    currency: 'MXN',
+    expected_date: rel(5),
+    requested_by: null,
+    maximo_ponum: null,
+    buyer_code: null,
+    buyer_name: null,
+    created_by_name: null,
+    maximo_created_by: null,
+    maximo_exists: false,
+  };
+
+  it('la OC de Maximo migrada (su OC de SAP ya cerró) sale a nombre del proveedor de SAP y se busca por él', async () => {
+    const h = makeHarness();
+    h.prisma.$queryRaw.mockResolvedValue([]);
+    h.prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        ...maximoRow,
+        external_key: 'PO9001',
+        po_number: 'PO9001',
+        supplier_name: 'ASOCIACION MEXICANA DE ENERGIA',
+        supplier_code: 'P0000440',
+      },
+      {
+        ...maximoRow,
+        external_key: 'PO9002',
+        po_number: 'PO9002',
+        supplier_name: 'LOCAL SA DE CV',
+        supplier_code: 'P0000500',
+      },
+    ]);
+    const { data } = await h.service.findAll({
+      search: 'naes',
+      source: 'maximo',
+    });
+    expect(data).toHaveLength(1);
+    expect(data[0]).toMatchObject({
+      po_number: 'PO9001',
+      supplier: { legal_name: 'NAES ENERGIA S DE RL DE CV' },
+      supplier_code: 'P0000219',
+      supplier_note: 'en Maximo: ASOCIACION MEXICANA DE ENERGIA (P0000440)',
     });
   });
 });

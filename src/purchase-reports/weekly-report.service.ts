@@ -10,6 +10,13 @@ import type { ExcelColumn } from '../common/utils/excel-export.util';
 import { SapRecordsService } from '../sap-records/sap-records.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { buyerText, maximoBuyer } from '../common/utils/buyer.util';
+import { maximoStatusWithCode } from '../common/utils/maximo-status.util';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import {
+  andMaximoPrInWindow,
+  loadMaximoPrFolioWindow,
+  MAXIMO_PRS_WITH_PO,
+} from '../common/sql/erp-views.sql';
 import {
   SAP_PO_EXPORT_COLUMNS,
   SAP_PR_EXPORT_COLUMNS,
@@ -35,6 +42,10 @@ import {
  * Solo lectura: reutiliza el resumen de Reportes (una sola definición por
  * métrica) y el listado de SAP (saldo y solicitante incluidos). Montos por
  * moneda, nunca sumados entre monedas; sin dato = "Sin datos", nunca 0.
+ *
+ * 2026-09-28: G1 proveedor efectivo en las OC de Maximo; G2 días de gestión
+ * RQ → OC por sistema (promedio y mediana); G3 pendientes = RQ sin OC; las
+ * PR de Maximo del periodo se ubican por folio; G7 etiquetas de estatus.
  */
 
 const DAY_MS = 86_400_000;
@@ -64,20 +75,8 @@ const SAP_PR_HEADERS = [
   'F. Requerida',
 ];
 
-const MAXIMO_STATUS: Record<string, string> = {
-  APPR: 'Aprobada',
-  WAPPR: 'En espera de aprobación',
-  PNDREV: 'Pendiente de revisión',
-  REVISD: 'Revisada',
-  INPRG: 'En progreso',
-  COMP: 'Completada',
-  CLOSE: 'Cerrada',
-  CAN: 'Cancelada',
-  CANCEL: 'Cancelada',
-  DRAFT: 'Borrador',
-};
-const maximoStatus = (status: string | null) =>
-  (status && MAXIMO_STATUS[status]) || status || '';
+// G7: etiqueta provisional + código ("En aprobación · nivel 1 aprobado (APPR1)")
+const maximoStatus = (status: string | null) => maximoStatusWithCode(status);
 
 interface SummaryRow {
   indicador: string;
@@ -91,6 +90,7 @@ interface MaximoPoRow {
   ponum: string;
   description: string | null;
   status: string | null;
+  vendor_id: string | null;
   vendor_name: string | null;
   total_cost: unknown;
   currency: string | null;
@@ -108,6 +108,8 @@ interface MaximoPrRow {
   prnum: string | null;
   contractnum: string | null;
   status: string | null;
+  /** G3: la PR ya tiene OC vigente (o contrato). */
+  con_oc: boolean;
   vendor_name: string | null;
   contract_value: unknown;
   currency: string | null;
@@ -160,6 +162,7 @@ export class WeeklyReportService {
     private readonly reports: PurchaseReportsService,
     private readonly sap: SapRecordsService,
     private readonly aliases: ErpAliasesService,
+    private readonly vendors: MaximoVendorXrefService,
   ) {}
 
   /** Periodo anterior: mismos días, justo antes de `from`. */
@@ -181,6 +184,12 @@ export class WeeklyReportService {
     const to = period.to.toISOString().slice(0, 10);
     const prev = this.previousPeriod(from, to);
     const periodTo = period.to;
+    // G3: las PR de Maximo del periodo se ubican por folio (sin fecha propia)
+    const prWindow = await loadMaximoPrFolioWindow(
+      this.prisma,
+      period.from,
+      new Date(periodTo.getTime() + 1),
+    );
 
     const [
       actual,
@@ -199,7 +208,7 @@ export class WeeklyReportService {
       this.sap.listAllForExport('purchase_orders', { from, to }),
       this.sap.listAllForExport('purchase_requests', { from, to }),
       this.prisma.$queryRaw<MaximoPoRow[]>(Prisma.sql`
-        SELECT ponum, description, status, vendor_name, total_cost, currency,
+        SELECT ponum, description, status, vendor_id, vendor_name, total_cost, currency,
                requested_by, purchase_agent, purchase_agent_name, created_by,
                department, created_at_source, approved_at, approved_by
         FROM (${CURRENT_MAXIMO_POS}) current
@@ -207,11 +216,11 @@ export class WeeklyReportService {
         ORDER BY created_at_source DESC`),
       this.prisma.$queryRaw<MaximoPrRow[]>(Prisma.sql`
         SELECT prnum, contractnum, status, vendor_name, contract_value, currency,
-               requested_by, created_at_source, approved_at
+               requested_by, created_at_source, approved_at,
+               (has_contract OR prnum IN (${MAXIMO_PRS_WITH_PO})) AS con_oc
         FROM (${CURRENT_MAXIMO_CONTRACTS}) current
-        WHERE prnum IS NOT NULL
-          AND created_at_source BETWEEN ${period.from} AND ${periodTo}
-        ORDER BY created_at_source DESC`),
+        WHERE prnum IS NOT NULL ${andMaximoPrInWindow('current', prWindow)}
+        ORDER BY prnum DESC`),
       this.prisma.$queryRaw<PendingApprovalRow[]>(Prisma.sql`
         SELECT object_type, doc_num, card_name, doc_total, currency,
                requester_name, originator_name, current_stage,
@@ -240,6 +249,8 @@ export class WeeklyReportService {
     ]);
     const person = (code: string | null) =>
       code ? (names.get(code) ?? code) : null;
+    // G1: proveedor efectivo de las OC de Maximo
+    const maximoPoRows = await this.vendors.resolve(maximoPos);
 
     const summary = this.summaryRows(actual, anterior, tiempos, openBalance);
     const periodLabel = `${dmy(from)} al ${dmy(to)}`;
@@ -284,7 +295,7 @@ export class WeeklyReportService {
           pick(SAP_PR_EXPORT_COLUMNS, SAP_PR_HEADERS),
           sapPrs.rows as SapPurchaseRequestRow[],
         ),
-        excelSheet<MaximoPoRow>(
+        excelSheet<(typeof maximoPoRows)[number]>(
           'OC Maximo',
           [
             { header: 'PONUM', value: (r) => r.ponum, width: 14 },
@@ -294,7 +305,18 @@ export class WeeklyReportService {
               value: (r) => maximoStatus(r.status),
               width: 22,
             },
-            { header: 'Proveedor', value: (r) => r.vendor_name, width: 36 },
+            // G1: según SAP si la OC migró o por cruce; si no, Maximo
+            { header: 'Proveedor', value: (r) => r.supplier.name, width: 36 },
+            {
+              header: 'Código proveedor',
+              value: (r) => r.supplier.code,
+              width: 14,
+            },
+            {
+              header: 'Proveedor en Maximo',
+              value: (r) => (r.supplier.differs ? r.vendor_name : null),
+              width: 32,
+            },
             {
               header: 'Monto',
               value: (r) => num(r.total_cost),
@@ -332,7 +354,7 @@ export class WeeklyReportService {
               width: 22,
             },
           ],
-          maximoPos,
+          maximoPoRows,
         ),
         excelSheet<MaximoPrRow>(
           'Solicitudes Maximo',
@@ -343,6 +365,11 @@ export class WeeklyReportService {
               header: 'Estatus',
               value: (r) => maximoStatus(r.status),
               width: 22,
+            },
+            {
+              header: 'Con OC',
+              value: (r) => (r.con_oc ? 'Sí' : 'No (pendiente de gestionar)'),
+              width: 24,
             },
             { header: 'Proveedor', value: (r) => r.vendor_name, width: 36 },
             {
@@ -534,17 +561,30 @@ export class WeeklyReportService {
       });
     }
     rows.push(
+      // G2: de que se crea la RQ a que se crea la OC (OC del periodo)
       {
         indicador: 'Días de gestión SAP (promedio)',
-        actual: days(a.dias_gestion.sap),
-        anterior: days(b.dias_gestion.sap),
-        nota: 'Solicitudes cerradas: de la fecha del documento al cierre',
+        actual: days(a.dias_gestion.sap.promedio_dias),
+        anterior: days(b.dias_gestion.sap.promedio_dias),
+        nota: `De la solicitud de pedido a la OC · ${a.dias_gestion.sap.total} OC del periodo con solicitud`,
+      },
+      {
+        indicador: 'Días de gestión SAP (mediana)',
+        actual: days(a.dias_gestion.sap.mediana_dias),
+        anterior: days(b.dias_gestion.sap.mediana_dias),
+        nota: 'La mitad de las OC se gestionó en menos días que esto',
       },
       {
         indicador: 'Días de gestión Maximo (promedio)',
-        actual: days(a.dias_gestion.maximo),
-        anterior: days(b.dias_gestion.maximo),
-        nota: 'De la solicitud a su aprobación',
+        actual: days(a.dias_gestion.maximo.promedio_dias),
+        anterior: days(b.dias_gestion.maximo.promedio_dias),
+        nota: `De la creación de la solicitud (PR) a la OC · ${a.dias_gestion.maximo.total} OC del periodo con solicitud`,
+      },
+      {
+        indicador: 'Días de gestión Maximo (mediana)',
+        actual: days(a.dias_gestion.maximo.mediana_dias),
+        anterior: days(b.dias_gestion.maximo.mediana_dias),
+        nota: 'La mitad de las OC se gestionó en menos días que esto',
       },
       {
         indicador: 'Días de gestión ABENT (promedio)',
@@ -553,10 +593,10 @@ export class WeeklyReportService {
         nota: 'Días hábiles de requisiciones cerradas',
       },
       {
-        indicador: 'Solicitudes abiertas',
-        actual: a.solicitudes.abiertas,
+        indicador: 'Pendientes de gestionar (solicitudes sin OC)',
+        actual: a.solicitudes.pendientes,
         anterior: null,
-        nota: 'Al día de hoy',
+        nota: `Al día de hoy · creadas desde ${dmy(a.solicitudes.pendientes_periodo.desde)} · SAP ${a.solicitudes.por_fuente.sap.pendientes} · Maximo ${a.solicitudes.por_fuente.maximo.pendientes ?? NO_DISPONIBLE}`,
       },
     );
     for (const row of openBalance) {

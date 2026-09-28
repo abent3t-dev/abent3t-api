@@ -3,8 +3,18 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
-import { andYear } from '../common/sql/erp-views.sql';
+import {
+  andMaximoPrInWindow,
+  andYear,
+  loadMaximoPrFolioWindow,
+  maximoPrWithoutPo,
+} from '../common/sql/erp-views.sql';
+import type { MaximoPrFolioWindow } from '../common/sql/erp-views.sql';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import { maximoVendorNote } from '../erp-vendors/maximo-vendor-xref';
+import type { EffectiveVendor } from '../erp-vendors/maximo-vendor-xref';
+import { rangeEnd } from '../common/utils/date-range.util';
 import {
   applyColumnQuery,
   facetOf,
@@ -37,6 +47,7 @@ import {
   MaximoPurchaseOrderView,
   MaximoStatusCount,
   MaximoSummary,
+  SupplierFields,
 } from './maximo-records.types';
 
 /**
@@ -69,6 +80,12 @@ import {
  *    PURCHASEAGENT, "Capturó: …" = quién la creó (`created_by`, 0015).
  *  - E2 (parte independiente): `group=contract` agrupa por contrato (una
  *    fila por contractnum con sus PR) — ver maximo-contract-groups.ts.
+ *
+ * Reunión con Ingrid 2026-09-28:
+ *  - G1: proveedor EFECTIVO (`supplier_*`): el de SAP si la OC migró o por
+ *    el cruce de su código; si no, el de Maximo. Columna, faceta, detalle y
+ *    export lo usan; `proveedor` (llave) + `from`/`to` filtran desde el top
+ *    de Reportes. Los contratos aplican el cruce por código.
  */
 
 /** Vista actual de POs: mayor revisionnum por (ponum, siteid). */
@@ -108,6 +125,25 @@ const buyerFields = (buyer: Buyer) => ({
   buyer_kind: buyer.kind,
 });
 
+/** G1: proveedor efectivo en la vista. */
+const supplierFields = (vendor: EffectiveVendor): SupplierFields => ({
+  supplier_key: vendor.key,
+  supplier_code: vendor.code,
+  supplier_name: vendor.name,
+  supplier_source: vendor.source,
+  supplier_note: maximoVendorNote(vendor),
+});
+
+const NO_SUPPLIER: SupplierFields = {
+  supplier_key: null,
+  supplier_code: null,
+  supplier_name: null,
+  supplier_source: null,
+  supplier_note: null,
+};
+
+type SupplierKey = keyof SupplierFields;
+
 /** Filas crudas del driver: numerics llegan como Prisma.Decimal. */
 type PoSqlRow = Omit<
   MaximoPurchaseOrderView,
@@ -118,6 +154,7 @@ type PoSqlRow = Omit<
   | 'approved_by_name'
   | 'buyer_name'
   | 'buyer_kind'
+  | SupplierKey
 > & { total_cost: unknown; ab_ahorro: unknown };
 
 type ContractSqlRow = Omit<
@@ -131,6 +168,7 @@ type ContractSqlRow = Omit<
   | 'raw'
   | 'requested_by_name'
   | 'approved_by_name'
+  | SupplierKey
 > & {
   maxvol: unknown;
   total_cost: unknown;
@@ -161,6 +199,7 @@ export class MaximoRecordsService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly aliases: ErpAliasesService,
+    private readonly vendors: MaximoVendorXrefService,
   ) {}
 
   // ── Purchase orders ─────────────────────────────────────────────────────
@@ -198,6 +237,13 @@ export class MaximoRecordsService {
         Prisma.sql`true ${andYear('c.created_at_source', query.year)}`,
       );
     }
+    // G1: periodo del top de proveedores (fecha de la OC en Maximo)
+    if (query.from)
+      conditions.push(
+        Prisma.sql`c.created_at_source >= ${new Date(query.from)}`,
+      );
+    if (query.to)
+      conditions.push(Prisma.sql`c.created_at_source <= ${rangeEnd(query.to)}`);
     return conditions.length
       ? Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`
       : Prisma.empty;
@@ -209,8 +255,9 @@ export class MaximoRecordsService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
     // E1: filtros por columna u orden → sobre la vista actual completa
+    // (G1: el proveedor efectivo se resuelve en memoria, igual)
     const columnQuery = parseColumnQuery(query, MAXIMO_PO_FILTER_COLUMNS);
-    if (isColumnQueryActive(columnQuery)) {
+    if (isColumnQueryActive(columnQuery) || query.proveedor) {
       const { rows } = await this.loadPurchaseOrders(query);
       return paginateRows(
         applyColumnQuery(rows, MAXIMO_PO_FILTER_COLUMNS, columnQuery),
@@ -234,7 +281,7 @@ export class MaximoRecordsService {
     ]);
 
     return {
-      data: await this.withPoAliases(rows.map((row) => this.mapPoRow(row))),
+      data: await this.enrichPos(rows.map((row) => this.mapPoRow(row))),
       meta: buildMeta(counts[0]?.count ?? 0, page, limit),
     };
   }
@@ -269,10 +316,13 @@ export class MaximoRecordsService {
         ${where}
         ORDER BY c.approved_at DESC NULLS LAST, c.ponum ASC
         LIMIT ${EXPORT_MAX_ROWS + 1}`);
+    const enriched = await this.enrichPos(
+      rows.slice(0, EXPORT_MAX_ROWS).map((row) => this.mapPoRow(row)),
+    );
     return {
-      rows: await this.withPoAliases(
-        rows.slice(0, EXPORT_MAX_ROWS).map((row) => this.mapPoRow(row)),
-      ),
+      rows: query.proveedor
+        ? enriched.filter((r) => r.supplier_key === query.proveedor)
+        : enriched,
       truncated: rows.length > EXPORT_MAX_ROWS,
     };
   }
@@ -350,7 +400,7 @@ export class MaximoRecordsService {
   private async loadContracts(
     query: MaximoContractQueryDto,
   ): Promise<{ rows: MaximoContractView[]; truncated: boolean }> {
-    const where = this.contractWhere(query);
+    const where = this.contractWhere(query, await this.prWindow(query));
     const rows = await this.prisma.$queryRaw<ContractSqlRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_CONTRACTS})
         SELECT ${CONTRACT_LIST_COLUMNS}
@@ -359,10 +409,13 @@ export class MaximoRecordsService {
         ORDER BY c.end_date DESC NULLS LAST,
           coalesce(c.prnum, '') ASC, coalesce(c.contractnum, '') ASC
         LIMIT ${EXPORT_MAX_ROWS + 1}`);
+    const enriched = await this.enrichContracts(
+      rows.slice(0, EXPORT_MAX_ROWS).map((row) => this.mapContractRow(row)),
+    );
     return {
-      rows: await this.withContractAliases(
-        rows.slice(0, EXPORT_MAX_ROWS).map((row) => this.mapContractRow(row)),
-      ),
+      rows: query.proveedor
+        ? enriched.filter((r) => r.supplier_key === query.proveedor)
+        : enriched,
       truncated: rows.length > EXPORT_MAX_ROWS,
     };
   }
@@ -381,7 +434,7 @@ export class MaximoRecordsService {
       (a, b) => (b.revisionnum ?? -1) - (a.revisionnum ?? -1),
     );
     const current = sorted[0];
-    const [view] = await this.withPoAliases([this.mapPoRow(current)]);
+    const [view] = await this.enrichPos([this.mapPoRow(current)]);
     return {
       current: {
         ...view,
@@ -401,9 +454,44 @@ export class MaximoRecordsService {
 
   // ── Contracts ───────────────────────────────────────────────────────────
 
+  /**
+   * G3: ventana de folios de las PR pendientes (`sin_oc`) para el año o
+   * desde `pr_desde`; sin `sin_oc` no aplica.
+   */
+  private async prWindow(
+    query: MaximoContractQueryDto,
+  ): Promise<MaximoPrFolioWindow | null> {
+    if (query.sin_oc !== 'true') return null;
+    if (query.year) {
+      return loadMaximoPrFolioWindow(
+        this.prisma,
+        new Date(Date.UTC(query.year, 0, 1)),
+        new Date(Date.UTC(query.year + 1, 0, 1)),
+      );
+    }
+    if (query.pr_desde) {
+      return loadMaximoPrFolioWindow(
+        this.prisma,
+        new Date(query.pr_desde),
+        null,
+      );
+    }
+    return null;
+  }
+
   /** WHERE del listado de contratos (compartido con el export). */
-  private contractWhere(query: MaximoContractQueryDto): Prisma.Sql {
+  private contractWhere(
+    query: MaximoContractQueryDto,
+    window: MaximoPrFolioWindow | null = null,
+  ): Prisma.Sql {
     const conditions: Prisma.Sql[] = [];
+    // G3: PR pendientes de gestionar; el periodo va por folio
+    if (query.sin_oc === 'true') {
+      conditions.push(maximoPrWithoutPo('c'));
+      if (window) {
+        conditions.push(Prisma.sql`true ${andMaximoPrInWindow('c', window)}`);
+      }
+    }
     if (query.status && query.status.length > 0) {
       conditions.push(Prisma.sql`c.status IN (${Prisma.join(query.status)})`);
     }
@@ -427,7 +515,9 @@ export class MaximoRecordsService {
         Prisma.sql`(c.prnum ILIKE ${term} OR c.contractnum ILIKE ${term} OR c.vendor_name ILIKE ${term})`,
       );
     }
-    if (query.year) {
+    // Con `sin_oc` el año ya va en la ventana de folios (las PR sin
+    // contrato no tienen fecha en Maximo)
+    if (query.year && query.sin_oc !== 'true') {
       conditions.push(
         Prisma.sql`true ${andYear('c.created_at_source', query.year)}`,
       );
@@ -443,7 +533,7 @@ export class MaximoRecordsService {
     const page = query.page ?? 1;
     const limit = query.limit ?? 20;
     const columnQuery = parseColumnQuery(query, MAXIMO_CONTRACT_FILTER_COLUMNS);
-    if (isColumnQueryActive(columnQuery)) {
+    if (isColumnQueryActive(columnQuery) || query.proveedor) {
       const { rows } = await this.loadContracts(query);
       return paginateRows(
         applyColumnQuery(rows, MAXIMO_CONTRACT_FILTER_COLUMNS, columnQuery),
@@ -451,7 +541,7 @@ export class MaximoRecordsService {
         limit,
       );
     }
-    const where = this.contractWhere(query);
+    const where = this.contractWhere(query, await this.prWindow(query));
 
     const [rows, counts] = await Promise.all([
       this.prisma.$queryRaw<ContractSqlRow[]>(Prisma.sql`
@@ -468,7 +558,7 @@ export class MaximoRecordsService {
     ]);
 
     return {
-      data: await this.withContractAliases(
+      data: await this.enrichContracts(
         rows.map((row) => this.mapContractRow(row)),
       ),
       meta: buildMeta(counts[0]?.count ?? 0, page, limit),
@@ -498,9 +588,7 @@ export class MaximoRecordsService {
       (a, b) => (b.revisionnum ?? -1) - (a.revisionnum ?? -1),
     );
     const current = sorted[0];
-    const [view] = await this.withContractAliases([
-      this.mapContractRow(current),
-    ]);
+    const [view] = await this.enrichContracts([this.mapContractRow(current)]);
     return {
       current: {
         ...view,
@@ -610,6 +698,40 @@ export class MaximoRecordsService {
     return run ?? null;
   }
 
+  /** Alias (D6/E4/F1) + proveedor efectivo (G1) de las OC. */
+  private async enrichPos(
+    rows: MaximoPurchaseOrderView[],
+  ): Promise<MaximoPurchaseOrderView[]> {
+    const [named, resolved] = await Promise.all([
+      this.withPoAliases(rows),
+      this.vendors.resolve(rows),
+    ]);
+    return named.map((row, i) => ({
+      ...row,
+      ...supplierFields(resolved[i].supplier),
+    }));
+  }
+
+  /** Alias (D6) + proveedor efectivo por cruce de código (G1) de contratos. */
+  private async enrichContracts(
+    rows: MaximoContractView[],
+  ): Promise<MaximoContractView[]> {
+    const [named, resolved] = await Promise.all([
+      this.withContractAliases(rows),
+      // Los contratos no migran a SAP: solo aplica el cruce por código (b)
+      this.vendors.resolve(
+        rows.map((r) => ({
+          vendor_id: r.vendor_id,
+          vendor_name: r.vendor_name,
+        })),
+      ),
+    ]);
+    return named.map((row, i) => ({
+      ...row,
+      ...supplierFields(resolved[i].supplier),
+    }));
+  }
+
   /** D6: nombres de solicitante/aprobador según los alias de Maximo. */
   private async withPoAliases(
     rows: MaximoPurchaseOrderView[],
@@ -683,6 +805,7 @@ export class MaximoRecordsService {
       created_at_source: row.created_at_source,
       last_changed_at: row.last_changed_at,
       last_seen_at: row.last_seen_at,
+      ...NO_SUPPLIER,
     };
   }
 
@@ -722,6 +845,7 @@ export class MaximoRecordsService {
       has_contract: row.has_contract,
       last_changed_at: row.last_changed_at,
       last_seen_at: row.last_seen_at,
+      ...NO_SUPPLIER,
     };
   }
 }

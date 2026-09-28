@@ -27,7 +27,7 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
  * `maximo:remap` para re-derivar las filas ya sincronizadas.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.09.25-2'; // 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
+export const MAXIMO_MAPPER_VERSION = '2026.09.28-1'; // 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -293,6 +293,17 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
   const buyerPerson = first(r, 'PERSON');
   const lines = children(r, 'POLINE').map(mapPurchaseOrderLine);
   const firstPr = lines.find((l) => l.pr !== null)?.pr ?? null;
+  // G2/G3 (2026-09-28): todas las PR de la OC y la fecha de la más antigua
+  // (la gestión empieza con la primera solicitud; misma regla que SAP D3).
+  const prNums = [
+    ...new Set(
+      lines.map((l) => l.prnum).filter((p): p is string => !!p && p !== ''),
+    ),
+  ].sort();
+  const prIssueDates = lines
+    .map((l) => l.pr?.issueDate ?? null)
+    .filter((d): d is string => d !== null && !Number.isNaN(Date.parse(d)))
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
 
   return {
     erp: MAXIMO_ERP,
@@ -331,7 +342,8 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
 
     prnum: firstPr?.prnum ?? lines.find((l) => l.prnum !== null)?.prnum ?? null,
     requestedBy: firstPr?.requestedBy ?? null,
-    prIssueDate: firstPr?.issueDate ?? null,
+    prIssueDate: prIssueDates[0] ?? null,
+    prNums,
     prStatusDate: firstPr?.statusDate ?? null,
 
     lines,

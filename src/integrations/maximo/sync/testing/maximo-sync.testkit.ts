@@ -155,12 +155,30 @@ class FakeTable {
     this.rows = this.rows.filter((r) => !matches(r, where));
     return Promise.resolve({ count: before - this.rows.length });
   });
+
+  createMany = jest.fn(({ data }: { data: Record<string, unknown>[] }) => {
+    for (const item of data) {
+      this.rows.push({ id: nextId(), ...structuredClone(item) });
+    }
+    return Promise.resolve({ count: data.length });
+  });
 }
 
 export class FakePrisma {
   maximo_sync_runs = new FakeTable();
   maximo_purchase_orders = new FakeTable();
   maximo_contracts = new FakeTable();
+  maximo_po_status_history = new FakeTable();
+
+  /**
+   * Forma "batch" de Prisma: las operaciones ya se dispararon al construir
+   * el arreglo (en memoria no hay rollback); se esperan en orden.
+   */
+  $transaction = jest.fn(async (ops: Array<Promise<unknown>>) => {
+    const results: unknown[] = [];
+    for (const op of ops) results.push(await op);
+    return results;
+  });
 
   asService(): PrismaService {
     return this as unknown as PrismaService;

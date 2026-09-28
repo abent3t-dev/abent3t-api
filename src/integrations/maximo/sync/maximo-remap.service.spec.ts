@@ -88,4 +88,29 @@ describe('MaximoRemapService', () => {
       expect(after.last_sync_run_id).toBe(b.last_sync_run_id);
     }
   });
+
+  it('G6: reescribe el historial POSTATUS de cada OC (sin duplicar al repetir)', async () => {
+    const prisma = await seededPrisma();
+    const remap = new MaximoRemapService(prisma.asService(), silentLogger());
+    await remap.remapAll('purchase_orders');
+    const firstRun = prisma.maximo_po_status_history.rows.length;
+    expect(firstRun).toBeGreaterThan(0);
+    await remap.remapAll('purchase_orders');
+    expect(prisma.maximo_po_status_history.rows.length).toBe(firstRun);
+
+    const po102249 = prisma.maximo_purchase_orders.rows.find(
+      (r) => r.ponum === 'PO102249',
+    )!;
+    const history = prisma.maximo_po_status_history.rows
+      .filter((h) => h.po_id === po102249.id)
+      .sort((a, b) => Number(a.seq) - Number(b.seq));
+    expect(history.map((h) => h.seq)).toEqual(history.map((_, i) => i));
+    expect(history.some((h) => h.status === 'WAPPR')).toBe(true);
+    expect(history.every((h) => h.ponum === 'PO102249')).toBe(true);
+    // G2/G3: columnas de la solicitud derivadas del raw
+    expect(po102249.pr_nums).toEqual(['PR102826']);
+    expect(po102249.pr_issue_date).toEqual(
+      new Date('2026-06-05T12:35:06+00:00'),
+    );
+  });
 });

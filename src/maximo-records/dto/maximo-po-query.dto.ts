@@ -42,4 +42,23 @@ export class MaximoPoQueryDto extends ColumnFilterablePaginationDto {
   /** D4 (2026-09-23): año calendario de la fecha en Maximo (created_at_source). */
   @IsYearQuery()
   year?: number;
+
+  /**
+   * G1 (2026-09-28): rango sobre la fecha de la OC en Maximo
+   * (created_at_source), el mismo del top de proveedores de Reportes. Un
+   * `to` de solo fecha incluye el día completo.
+   */
+  @IsOptional()
+  @IsISO8601()
+  from?: string;
+
+  @IsOptional()
+  @IsISO8601()
+  to?: string;
+
+  /** G1: proveedor efectivo (`sap:P0000219` / `maximo:P0000440`). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  proveedor?: string;
 }

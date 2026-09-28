@@ -8,6 +8,12 @@ import {
   findContractRecord,
 } from './maximo-contract-raw';
 import { MaximoRecordsService } from './maximo-records.service';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import {
+  buildVendorXref,
+  effectiveMaximoVendor,
+  MaximoVendorXref,
+} from '../erp-vendors/maximo-vendor-xref';
 
 /**
  * Fase INT-5. Service probado con Prisma MOCKEADO — cero red, cero BD.
@@ -60,7 +66,31 @@ interface FakePrismaShape {
   maximo_sync_runs: { findFirst: jest.Mock };
 }
 
-function makeService(env: Record<string, string> = {}) {
+/** G1: cruce de proveedores de prueba (por defecto, vacío = según Maximo). */
+function makeVendors(xref: MaximoVendorXref = buildVendorXref([], new Map())) {
+  return {
+    resolve: jest.fn(
+      (
+        rows: Array<{
+          vendor_id: string | null;
+          vendor_name: string | null;
+          ponum?: string | null;
+        }>,
+      ) =>
+        Promise.resolve(
+          rows.map((row) => ({
+            ...row,
+            supplier: effectiveMaximoVendor(row, xref),
+          })),
+        ),
+    ),
+  };
+}
+
+function makeService(
+  env: Record<string, string> = {},
+  xref?: MaximoVendorXref,
+) {
   const prisma: FakePrismaShape = {
     $queryRaw: jest.fn(),
     maximo_purchase_orders: { findMany: jest.fn().mockResolvedValue([]) },
@@ -76,12 +106,14 @@ function makeService(env: Record<string, string> = {}) {
     forProfiles: jest.fn().mockResolvedValue([]),
     byCode: jest.fn().mockResolvedValue(new Map()),
   };
+  const vendors = makeVendors(xref);
   const service = new MaximoRecordsService(
     prisma as unknown as PrismaService,
     config,
     aliases as unknown as ErpAliasesService,
+    vendors as unknown as MaximoVendorXrefService,
   );
-  return { service, prisma, aliases };
+  return { service, prisma, aliases, vendors };
 }
 
 const poRow = (overrides: Record<string, unknown> = {}) => ({
@@ -640,5 +672,85 @@ describe('MaximoRecordsService — comprador de respaldo (F1)', () => {
         { value: null, count: 1 },
       ],
     });
+  });
+});
+
+describe('MaximoRecordsService — proveedor efectivo (G1, 2026-09-28)', () => {
+  const ASOCIACION = 'ASOCIACION MEXICANA DE ENERGIA';
+  const NAES = 'NAES ENERGIA S DE RL DE CV';
+  // PO1 migró a SAP a nombre de NAES; PO2 (sin migrar) toma el cruce
+  const xref = buildVendorXref(
+    [
+      {
+        ponum: 'PO1',
+        vendor_id: 'P0000440',
+        vendor_name: ASOCIACION,
+        card_code: 'P0000219',
+        card_name: NAES,
+      },
+      {
+        ponum: 'PO9',
+        vendor_id: 'P0000440',
+        vendor_name: ASOCIACION,
+        card_code: 'P0000219',
+        card_name: NAES,
+      },
+    ],
+    new Map([['P0000219', NAES]]),
+  );
+  const rows = () => [
+    poRow({
+      id: 'a',
+      ponum: 'PO1',
+      vendor_id: 'P0000440',
+      vendor_name: ASOCIACION,
+    }),
+    poRow({
+      id: 'b',
+      ponum: 'PO2',
+      vendor_id: 'P0000440',
+      vendor_name: ASOCIACION,
+    }),
+    poRow({
+      id: 'c',
+      ponum: 'PO3',
+      vendor_id: 'P0000500',
+      vendor_name: 'LOCAL SA DE CV',
+    }),
+  ];
+
+  it('columna, nota "en Maximo" y filtro por proveedor efectivo (desde el top de Reportes)', async () => {
+    const { service, prisma } = makeService({}, xref);
+    prisma.$queryRaw.mockResolvedValueOnce(rows());
+    const result = await service.listPurchaseOrders({
+      proveedor: 'sap:P0000219',
+    });
+    expect(result.data.map((r) => [r.ponum, r.supplier_source])).toEqual([
+      ['PO1', 'sap_oc'],
+      ['PO2', 'sap_cruce'],
+    ]);
+    expect(result.data[0]).toMatchObject({
+      supplier_key: 'sap:P0000219',
+      supplier_code: 'P0000219',
+      supplier_name: NAES,
+      supplier_note: `en Maximo: ${ASOCIACION} (P0000440)`,
+      vendor_name: ASOCIACION, // lo del maestro de Maximo se conserva
+    });
+    // el filtro por proveedor efectivo va sobre la vista completa (una consulta)
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('la faceta del filtro tipo Excel lista el proveedor efectivo', async () => {
+    const { service, prisma } = makeService({}, xref);
+    prisma.$queryRaw.mockResolvedValueOnce(rows());
+    const facet = await service.purchaseOrderFacets({ column: 'proveedor' });
+    if (!('values' in facet)) throw new Error('faceta de texto esperada');
+    expect(facet.values).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: NAES, count: 2 }),
+        expect.objectContaining({ value: 'LOCAL SA DE CV', count: 1 }),
+      ]),
+    );
+    expect(facet.values.some((v) => v.value === ASOCIACION)).toBe(false);
   });
 });

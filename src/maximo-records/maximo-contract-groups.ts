@@ -1,5 +1,8 @@
 import type { ColumnDefs } from '../common/column-filters/column-filters';
-import type { MaximoContractView } from './maximo-records.types';
+import type {
+  MaximoContractView,
+  SupplierFields,
+} from './maximo-records.types';
 
 /**
  * Pedidos de Ingrid 2026-09-25 (E2, parte independiente de la decisión del
@@ -19,7 +22,7 @@ export interface MaximoContractGroupPr {
   approved_at: Date | null;
 }
 
-export interface MaximoContractGroupView {
+export interface MaximoContractGroupView extends SupplierFields {
   contractnum: string;
   /** Clave para abrir el detalle (la PR de la fila representativa). */
   detail_key: string;
@@ -82,6 +85,11 @@ export function groupContracts(
       status: rep.status,
       vendor_id: rep.vendor_id,
       vendor_name: rep.vendor_name,
+      supplier_key: rep.supplier_key,
+      supplier_code: rep.supplier_code,
+      supplier_name: rep.supplier_name,
+      supplier_source: rep.supplier_source,
+      supplier_note: rep.supplier_note,
       currency: rep.currency,
       contract_value: rep.contract_value,
       consumed_value: rep.consumed_value,
@@ -116,7 +124,7 @@ export const MAXIMO_CONTRACT_GROUP_FILTER_COLUMNS: ColumnDefs<MaximoContractGrou
     contrato: { type: 'text', value: (r) => r.contractnum },
     solicitudes: { type: 'number', value: (r) => r.pr_count },
     estatus: { type: 'text', value: (r) => r.status },
-    proveedor: { type: 'text', value: (r) => r.vendor_name },
+    proveedor: { type: 'text', value: (r) => r.supplier_name },
     valor: { type: 'number', value: (r) => r.contract_value },
     consumido: { type: 'number', value: (r) => r.consumed_value },
     saldo: { type: 'number', value: (r) => r.balance_value },

@@ -28,7 +28,8 @@ export const MAXIMO_PO_FILTER_COLUMNS: ColumnDefs<MaximoPurchaseOrderView> = {
   ponum: { type: 'text', value: (r) => r.ponum },
   descripcion: { type: 'text', value: (r) => r.description },
   estatus: { type: 'text', value: (r) => r.status },
-  proveedor: { type: 'text', value: (r) => r.vendor_name },
+  // G1: el proveedor efectivo (según SAP cuando la OC migró o por cruce)
+  proveedor: { type: 'text', value: (r) => r.supplier_name },
   monto: { type: 'number', value: (r) => r.total_cost },
   moneda: { type: 'text', value: (r) => r.currency },
   solicitante: {
@@ -49,7 +50,7 @@ export const MAXIMO_CONTRACT_FILTER_COLUMNS: ColumnDefs<MaximoContractView> = {
     value: (r) => (r.has_contract ? r.contractnum : null),
   },
   estatus: { type: 'text', value: (r) => r.status },
-  proveedor: { type: 'text', value: (r) => r.vendor_name },
+  proveedor: { type: 'text', value: (r) => r.supplier_name },
   valor: { type: 'number', value: (r) => r.contract_value },
   consumido: { type: 'number', value: (r) => r.consumed_value },
   saldo: { type: 'number', value: (r) => r.balance_value },

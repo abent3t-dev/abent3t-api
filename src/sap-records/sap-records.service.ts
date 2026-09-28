@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { rangeEnd } from '../common/utils/date-range.util';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { andYear } from '../common/sql/erp-views.sql';
@@ -299,7 +300,7 @@ export class SapRecordsService {
         limit,
       );
     }
-    const where = this.buildWhere(query, ['requester_name', 'requester']);
+    const where = await this.prWhere(query);
 
     const [total, rows] = await Promise.all([
       this.prisma.sap_purchase_requests.count({ where }),
@@ -401,7 +402,7 @@ export class SapRecordsService {
   private async loadPurchaseRequests(
     query: SapDocQueryDto,
   ): Promise<{ rows: SapPurchaseRequestRow[]; truncated: boolean }> {
-    const where = this.buildWhere(query, ['requester_name', 'requester']);
+    const where = await this.prWhere(query);
     const rows = await this.prisma.sap_purchase_requests.findMany({
       where,
       select: PR_LIST_SELECT,
@@ -554,11 +555,33 @@ export class SapRecordsService {
         });
       }
     }
-    const where = this.buildWhere(
+    const base = this.buildWhere(
       query,
       ['card_name', 'card_code', 'created_by_name', 'maximo_ponum'],
       extra,
     );
+    // G1: proveedor exacto y "contadas una vez" (clic en el top de Reportes)
+    const g1: Record<string, unknown>[] = [];
+    if (query.card_code) g1.push({ card_code: query.card_code });
+    if (query.counted_once === 'true') {
+      const duplicated = await this.prisma.$queryRaw<Array<{ ponum: string }>>(
+        Prisma.sql`
+          SELECT DISTINCT s.maximo_ponum AS ponum
+          FROM sap_purchase_orders s
+          WHERE s.maximo_ponum IS NOT NULL
+            AND EXISTS (SELECT 1 FROM maximo_purchase_orders m
+                        WHERE m.ponum = s.maximo_ponum)`,
+      );
+      if (duplicated.length > 0) {
+        g1.push({
+          OR: [
+            { maximo_ponum: null },
+            { maximo_ponum: { notIn: duplicated.map((d) => d.ponum) } },
+          ],
+        });
+      }
+    }
+    const where = g1.length ? { AND: [base, ...g1] } : base;
     // D1: origen de la OC (capturada en SAP vs. creada desde Maximo)
     if (query.origin === 'maximo') {
       return { AND: [where, { maximo_ponum: { not: null } }] };
@@ -567,6 +590,30 @@ export class SapRecordsService {
       return { AND: [where, { maximo_ponum: null }] };
     }
     return where;
+  }
+
+  /**
+   * Filtros de solicitudes. G3: `sin_oc` = ninguna OC no cancelada la usa
+   * como base (pendiente de gestionar).
+   */
+  private async prWhere(
+    query: SapDocQueryDto,
+  ): Promise<Record<string, unknown>> {
+    const where = this.buildWhere(query, ['requester_name', 'requester']);
+    if (query.sin_oc !== 'true') return where;
+    const used = await this.prisma.$queryRaw<Array<{ entry: number }>>(
+      Prisma.sql`
+        SELECT DISTINCT unnest(base_request_entries) AS entry
+        FROM sap_purchase_orders WHERE cancelled IS DISTINCT FROM true`,
+    );
+    return used.length === 0
+      ? where
+      : {
+          AND: [
+            where,
+            { doc_entry: { notIn: used.map((u) => Number(u.entry)) } },
+          ],
+        };
   }
 
   /**
@@ -703,7 +750,8 @@ export class SapRecordsService {
       and.push({
         doc_date: {
           ...(query.from ? { gte: new Date(query.from) } : {}),
-          ...(query.to ? { lte: new Date(query.to) } : {}),
+          // G1: un `to` de solo fecha incluye el día (mismo periodo que Reportes)
+          ...(query.to ? { lte: rangeEnd(query.to) } : {}),
         },
       });
     }

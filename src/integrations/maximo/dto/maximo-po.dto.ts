@@ -112,8 +112,14 @@ export interface MaximoPurchaseOrderDto {
   /** Derivados de la primera línea con PR (conveniencia para reportes). */
   prnum: string | null;
   requestedBy: string | null;
+  /**
+   * G2 (2026-09-28): PR.ISSUEDATE de la solicitud MÁS ANTIGUA de la OC (la
+   * gestión empieza ahí; misma regla que SAP D3). null = OC sin solicitud.
+   */
   prIssueDate: string | null;
   prStatusDate: string | null;
+  /** G3 (2026-09-28): PRNUM distintos de todas las líneas, ordenados. */
+  prNums: string[];
 
   lines: MaximoPurchaseOrderLineDto[];
   rowstamp: string | null;

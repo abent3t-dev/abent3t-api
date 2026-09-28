@@ -1204,6 +1204,10 @@ model maximo_purchase_orders {
   waiting_approval_at DateTime? @db.Timestamptz(6)
   approved_by       String?   @db.VarChar(100)
   created_at_source DateTime? @db.Timestamptz(6)
+  /// G2 (0016): PR.ISSUEDATE de la solicitud de la OC (la más antigua).
+  pr_issue_date     DateTime? @db.Timestamptz(6)
+  /// G3 (0016): PRNUM de las líneas de la OC.
+  pr_nums           String[]  @default([])
   rowstamp          String?   @db.VarChar(100)
   raw               Json
   mapper_version    String
@@ -1211,10 +1215,31 @@ model maximo_purchase_orders {
   last_seen_at      DateTime  @default(now()) @db.Timestamptz(6)
   last_changed_at   DateTime? @db.Timestamptz(6)
   last_sync_run_id  String?   @db.Uuid
+  status_history    maximo_po_status_history[]
 
   @@index([status], map: "idx_maximo_po_status")
   @@index([approved_at], map: "idx_maximo_po_approved_at")
   @@index([last_seen_at], map: "idx_maximo_po_last_seen")
+  @@index([pr_nums], map: "idx_maximo_po_pr_nums", type: Gin)
+}
+
+/// G6 (0016): POSTATUS de cada revisión de OC de Maximo (lo reescriben staging y remap).
+model maximo_po_status_history {
+  id          String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  po_id       String                 @db.Uuid
+  ponum       String                 @db.VarChar(50)
+  siteid      String?                @db.VarChar(20)
+  revisionnum Int?
+  seq         Int
+  status      String                 @db.VarChar(30)
+  change_date DateTime?              @db.Timestamptz(6)
+  changed_by  String?                @db.VarChar(100)
+  po          maximo_purchase_orders @relation(fields: [po_id], references: [id], onDelete: Cascade)
+
+  @@unique([po_id, seq], map: "uq_maximo_po_status_history")
+  @@index([ponum], map: "idx_maximo_po_hist_ponum")
+  @@index([status, change_date], map: "idx_maximo_po_hist_status_date")
+  @@index([changed_by], map: "idx_maximo_po_hist_changed_by")
 }
 
 model maximo_contracts {

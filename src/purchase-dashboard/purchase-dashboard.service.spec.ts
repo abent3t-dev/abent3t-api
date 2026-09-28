@@ -9,6 +9,9 @@
  * filtrada; aquí se pinza que el desglose `migradas` viaja y que el total
  * = SAP contadas una vez + Maximo + ABENT); (5) D3 — días de gestión SAP OC
  * = OC − solicitud base, con N visible.
+ *
+ * 2026-09-28: (6) G2 — una definición de gestión por sistema (SAP D3 y
+ * Maximo OC − PR.ISSUEDATE) con mediana; (7) G3 — pendientes = RQ sin OC.
  */
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -34,10 +37,14 @@ describe('PurchaseDashboardService.getSummary', () => {
   it('agrega SAP + Maximo + ABENT, montos por moneda, migradas descontadas y días D3', async () => {
     const { service, queryRaw } = makeService();
     queryRaw
-      // sapPr count
-      .mockResolvedValueOnce([{ total: 309, pendientes: 12 }])
-      // sapPrDias
-      .mockResolvedValueOnce([{ dias: '8.44' }])
+      // G3: ventana de folios de las PR de Maximo (últimos 12 meses)
+      .mockResolvedValueOnce([{ lower: BigInt(104000), upper: null }])
+      // G3: SAP sin OC (12 meses / sin límite)
+      .mockResolvedValueOnce([{ pendientes: 5, sin_limite: 9 }])
+      // G3: Maximo PR sin OC ni contrato (12 meses / sin límite)
+      .mockResolvedValueOnce([{ pendientes: 2, sin_limite: 40 }])
+      // sapPr total
+      .mockResolvedValueOnce([{ total: 309 }])
       // sapPo por moneda (la consulta ya excluye las migradas que existen en Maximo)
       .mockResolvedValueOnce([
         { currency: 'MXN', total: '1000.50', count: 3000 },
@@ -45,10 +52,15 @@ describe('PurchaseDashboardService.getSummary', () => {
       ])
       // sapPoOpen
       .mockResolvedValueOnce([{ currency: 'MXN', total: '100', count: 750 }])
-      // maximoPr
-      .mockResolvedValueOnce([{ total: 6, pendientes: 2 }])
-      // maximoPoDias (sin base)
-      .mockResolvedValueOnce([{ dias: null }])
+      // maximoPr total
+      .mockResolvedValueOnce([{ total: 6 }])
+      // G2: días de gestión Maximo (OC − PR.ISSUEDATE); null = OC sin PR
+      .mockResolvedValueOnce([
+        { dias: '19' },
+        { dias: '21' },
+        { dias: null },
+        { dias: '-2' },
+      ])
       // maximoPo
       .mockResolvedValueOnce([{ currency: 'MXN', total: '50', count: 7 }])
       // maximoPoOpen
@@ -97,11 +109,15 @@ describe('PurchaseDashboardService.getSummary', () => {
 
     expect(summary.solicitudes).toEqual({
       total: 315,
-      pendientes: 14,
+      pendientes: 7,
       por_fuente: {
-        sap: { total: 309, pendientes: 12 },
-        maximo: { total: 6, pendientes: 2 },
+        sap: { total: 309, pendientes: 5, pendientes_sin_limite: 9 },
+        maximo: { total: 6, pendientes: 2, pendientes_sin_limite: 40 },
         abent: { total: 0, pendientes: 0 },
+      },
+      pendientes_periodo: {
+        desde: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) as unknown,
+        hasta: null,
       },
     });
     // Misma moneda se suma entre fuentes; USD queda aparte; ABENT vacío no aparece
@@ -116,15 +132,29 @@ describe('PurchaseDashboardService.getSummary', () => {
     expect(summary.por_recibir.monto_por_moneda).toEqual([
       { currency: 'MXN', total: 110, count: 752 },
     ]);
-    // Días: redondeo a 1 decimal; null cuando no hay base (nunca 0).
+    // G2: una definición por sistema (RQ → OC) con promedio, mediana y N.
     // D3: SAP OC = (10 + 20) / 2 = 15 días, N = 2
-    expect(summary.dias_gestion).toEqual({
-      sap_solicitudes: 8.4,
-      sap_ordenes: 15,
-      maximo_ordenes: null,
-      abent_requisiciones: null,
+    expect(summary.dias_gestion.sap).toMatchObject({
+      promedio_dias: 15,
+      mediana_dias: 15,
+      total: 2,
+      descartadas: 0,
     });
-    expect(summary.dias_gestion_base.sap_ordenes.total).toBe(2);
+    // Maximo: (19 + 21) / 2 = 20; una OC sin PR y una negativa, fuera
+    expect(summary.dias_gestion.maximo).toMatchObject({
+      promedio_dias: 20,
+      mediana_dias: 20,
+      total: 2,
+      descartadas: 1,
+      sin_solicitud: 1,
+    });
+    expect(summary.dias_gestion.abent).toBeNull();
+    // Ya no salen "SAP solicitudes" ni el tiempo de aprobación de Maximo
+    expect(Object.keys(summary.dias_gestion).sort()).toEqual([
+      'abent',
+      'maximo',
+      'sap',
+    ]);
     expect(summary.datos.sap_desde).toBe('2023-12-31T00:00:00.000Z');
     expect(summary.datos.anios).toEqual([2026, 2025]);
     expect(summary.datos.ultima_sync.maximo).toBeNull();
@@ -132,7 +162,7 @@ describe('PurchaseDashboardService.getSummary', () => {
       sap_sync_enabled: true,
       maximo_sync_enabled: false,
     });
-    expect(queryRaw).toHaveBeenCalledTimes(17);
+    expect(queryRaw).toHaveBeenCalledTimes(19);
   });
 
   it('D1: la consulta de OC de SAP descuenta las migradas que existen en Maximo', async () => {
@@ -163,7 +193,9 @@ describe('PurchaseDashboardService.getSummary', () => {
     expect(summary.fuentes.sap_sync_enabled).toBe(true);
     expect(summary.solicitudes.total).toBe(0);
     expect(summary.ordenes.monto_por_moneda).toEqual([]);
-    expect(summary.dias_gestion.sap_ordenes).toBeNull();
+    expect(summary.dias_gestion.sap.promedio_dias).toBeNull();
+    // sin fechas de PR conocidas, los pendientes de Maximo no se inventan
+    expect(summary.solicitudes.por_fuente.maximo.pendientes).toBeNull();
   });
 });
 

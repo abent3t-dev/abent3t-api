@@ -5,8 +5,22 @@ import { ApprovalsService } from '../approvals/approvals.service';
 import { ExpeditingService } from '../expediting/expediting.service';
 import { PurchaseCommitteesService } from '../purchase-committees/purchase-committees.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
-import { andSapPoCountedOnce } from '../common/sql/erp-views.sql';
-import { sapGestionDays } from '../purchase-dashboard/sap-gestion-days';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import { maximoVendorAmounts, rankVendors, VendorAmount } from './vendor-tops';
+import {
+  andMaximoPrInWindow,
+  andSapPoCountedOnce,
+  loadMaximoPrFolioWindow,
+  maximoInApproval,
+  maximoStatusSince,
+  pendingWindowStart,
+} from '../common/sql/erp-views.sql';
+import {
+  maximoGestionDays,
+  sapGestionDays,
+} from '../purchase-dashboard/sap-gestion-days';
+import type { SapGestionResult } from '../purchase-dashboard/sap-gestion-days';
+import { loadPendingRequests } from '../purchase-dashboard/pending-requests';
 import { ReportPeriodDto } from './dto/report-period.dto';
 
 /**
@@ -25,6 +39,10 @@ import { ReportPeriodDto } from './dto/report-period.dto';
  * Maximo se cuentan una vez: fuera de las series/totales de SAP), D3 (días
  * de gestión de OC SAP = OC − solicitud base, en tiempos), D6 (alias de
  * usuarios SAP/Maximo en aprobadores y niveles del flujo propio).
+ *
+ * Reunión con Ingrid 2026-09-28 (G1): tops de proveedores con código; el de
+ * Maximo por proveedor EFECTIVO (según SAP cuando la OC migró o por cruce de
+ * código) y un top SAP + Maximo contado una vez — ver vendor-tops.ts.
  */
 
 const MAX_RANGE_MONTHS = 24;
@@ -55,6 +73,13 @@ export const CURRENT_MAXIMO_CONTRACTS = Prisma.sql`
 function toNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value);
 }
+
+/** G2: lo que viaja de la gestión en el resumen (promedio, mediana y N). */
+const gestionOut = (g: SapGestionResult) => ({
+  promedio_dias: g.promedio_dias,
+  mediana_dias: g.mediana_dias,
+  total: g.total,
+});
 
 /** Días con 1 decimal; null = sin base (nunca 0). */
 function roundDays(value: unknown): number | null {
@@ -124,6 +149,7 @@ export class PurchaseReportsService {
     private readonly expeditingService: ExpeditingService,
     private readonly committeesService: PurchaseCommitteesService,
     private readonly aliases: ErpAliasesService,
+    private readonly vendors: MaximoVendorXrefService,
   ) {}
 
   /** Default: últimos 12 meses. Tope: 24 (regla 5). */
@@ -268,21 +294,31 @@ export class PurchaseReportsService {
       // Sprint 2026-09-22: las tarjetas de cabecera suman SAP + Maximo +
       // propias (antes solo propias → todo en cero).
       todas_las_fuentes: {
+        // G3: pendientes de gestionar = RQ sin OC (al día de hoy, últimos
+        // 12 meses); Maximo null = sin fechas de PR para ubicarlas
         solicitudes: {
           creadas: erp.sap.rq_creadas + erp.maximo.rq_creadas + rqsCreadas,
-          abiertas: erp.sap.rq_abiertas + erp.maximo.rq_abiertas + rqsAbiertas,
+          pendientes:
+            erp.sap.rq_pendientes +
+            (erp.maximo.rq_pendientes ?? 0) +
+            rqsAbiertas,
           por_fuente: {
-            sap: { creadas: erp.sap.rq_creadas, abiertas: erp.sap.rq_abiertas },
+            sap: {
+              creadas: erp.sap.rq_creadas,
+              pendientes: erp.sap.rq_pendientes,
+            },
             maximo: {
               creadas: erp.maximo.rq_creadas,
-              abiertas: erp.maximo.rq_abiertas,
+              pendientes: erp.maximo.rq_pendientes,
             },
-            abent: { creadas: rqsCreadas, abiertas: rqsAbiertas },
+            abent: { creadas: rqsCreadas, pendientes: rqsAbiertas },
           },
+          pendientes_periodo: erp.pendientes_periodo,
         },
+        // G2: una definición por sistema (de la RQ a la OC, OC del periodo)
         dias_gestion: {
-          sap: erp.sap.dias,
-          maximo: erp.maximo.dias,
+          sap: gestionOut(erp.sap.gestion),
+          maximo: gestionOut(erp.maximo.gestion),
           abent: abentDias,
         },
         ordenes: {
@@ -323,50 +359,46 @@ export class PurchaseReportsService {
   }
 
   /**
-   * Parte ERP del resumen: solicitudes (SAP por doc_date, Maximo PR por
-   * created_at_source), días de gestión (misma definición que el dashboard),
-   * OC por moneda y contratos de Maximo que vencen en 30 días.
+   * Parte ERP del resumen: solicitudes creadas (SAP por doc_date; Maximo PR
+   * ubicadas por folio, G3), pendientes de gestionar (G3), días de gestión de
+   * las OC del periodo (G2, misma definición que el dashboard), OC por
+   * moneda y contratos de Maximo que vencen en 30 días.
    */
   private async resumenErp(period: ReportPeriod) {
     type CountsRow = {
       sap_rq_creadas: number;
-      sap_rq_abiertas: number;
-      sap_dias: unknown;
       maximo_rq_creadas: number;
-      maximo_rq_abiertas: number;
-      maximo_dias: unknown;
       maximo_contratos_por_vencer: number;
     };
+    type GestionPoRow = {
+      doc_entry: number;
+      doc_date: Date | null;
+      base_request_entries: number[];
+    };
+    const [prWindow, pending] = await Promise.all([
+      loadMaximoPrFolioWindow(
+        this.prisma,
+        period.from,
+        new Date(period.to.getTime() + 1),
+      ),
+      loadPendingRequests(this.prisma, pendingWindowStart(), null),
+    ]);
     type MontoRow = {
       fuente: 'sap' | 'maximo';
       currency: string | null;
       count: number;
       total: unknown;
     };
-    const [counts, montos] = await Promise.all([
+    const [counts, montos, gestionPos, maximoGestion] = await Promise.all([
       this.prisma.$queryRaw<CountsRow[]>(Prisma.sql`
         WITH current_contracts AS (${CURRENT_MAXIMO_CONTRACTS})
         SELECT
           (SELECT count(*) FROM sap_purchase_requests
             WHERE cancelled IS DISTINCT FROM true
               AND doc_date BETWEEN ${period.from} AND ${period.to})::int AS sap_rq_creadas,
-          (SELECT count(*) FROM sap_purchase_requests
-            WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true)::int AS sap_rq_abiertas,
-          (SELECT avg(extract(epoch FROM (coalesce(closing_date, update_date_source) - doc_date)) / 86400)
-             FROM sap_purchase_requests
-            WHERE document_status = 'bost_Close' AND cancelled IS DISTINCT FROM true
-              AND doc_date BETWEEN ${period.from} AND ${period.to}
-              AND coalesce(closing_date, update_date_source) >= doc_date) AS sap_dias,
-          (SELECT count(*) FROM current_contracts
-            WHERE prnum IS NOT NULL
-              AND created_at_source BETWEEN ${period.from} AND ${period.to})::int AS maximo_rq_creadas,
-          (SELECT count(*) FROM current_contracts
-            WHERE prnum IS NOT NULL AND status IN ('WAPPR', 'PNDREV'))::int AS maximo_rq_abiertas,
-          (SELECT avg(extract(epoch FROM (approved_at - created_at_source)) / 86400)
-             FROM current_contracts
-            WHERE prnum IS NOT NULL AND created_at_source IS NOT NULL
-              AND approved_at BETWEEN ${period.from} AND ${period.to}
-              AND approved_at >= created_at_source) AS maximo_dias,
+          (SELECT count(*) FROM current_contracts c
+            WHERE c.prnum IS NOT NULL
+              ${andMaximoPrInWindow('c', prWindow)})::int AS maximo_rq_creadas,
           (SELECT count(*) FROM current_contracts
             WHERE contractnum IS NOT NULL
               AND coalesce(status, '') NOT IN ('CAN', 'CANCEL', 'CLOSE')
@@ -386,7 +418,33 @@ export class PurchaseReportsService {
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
           AND created_at_source BETWEEN ${period.from} AND ${period.to}
         GROUP BY currency`),
+      // G2: gestión de las OC del periodo (SAP: OC − solicitud base)
+      this.prisma.$queryRaw<GestionPoRow[]>(Prisma.sql`
+        SELECT doc_entry, doc_date, base_request_entries
+        FROM sap_purchase_orders
+        WHERE cancelled IS DISTINCT FROM true
+          AND cardinality(base_request_entries) > 0
+          AND doc_date BETWEEN ${period.from} AND ${period.to}`),
+      // G2: Maximo: fecha de la OC − PR.ISSUEDATE
+      this.prisma.$queryRaw<Array<{ dias: unknown }>>(Prisma.sql`
+        SELECT CASE WHEN pr_issue_date IS NOT NULL
+                    THEN extract(epoch FROM (created_at_source - pr_issue_date)) / 86400
+               END AS dias
+        FROM (${CURRENT_MAXIMO_POS}) current
+        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
+          AND created_at_source BETWEEN ${period.from} AND ${period.to}`),
     ]);
+    const requestEntries = [
+      ...new Set(gestionPos.flatMap((po) => po.base_request_entries)),
+    ];
+    const gestionPrs =
+      requestEntries.length === 0
+        ? []
+        : await this.prisma.$queryRaw<
+            Array<{ doc_entry: number; doc_date: Date | null }>
+          >(Prisma.sql`
+            SELECT doc_entry, doc_date FROM sap_purchase_requests
+            WHERE doc_entry IN (${Prisma.join(requestEntries)})`);
     const row = counts[0];
     const ocDe = (fuente: MontoRow['fuente']) =>
       montos
@@ -395,17 +453,19 @@ export class PurchaseReportsService {
     return {
       sap: {
         rq_creadas: Number(row?.sap_rq_creadas ?? 0),
-        rq_abiertas: Number(row?.sap_rq_abiertas ?? 0),
-        dias: roundDays(row?.sap_dias),
+        rq_pendientes: pending.sap.pendientes,
+        gestion: sapGestionDays(gestionPos, gestionPrs),
         oc: ocDe('sap'),
       },
       maximo: {
-        rq_creadas: Number(row?.maximo_rq_creadas ?? 0),
-        rq_abiertas: Number(row?.maximo_rq_abiertas ?? 0),
-        dias: roundDays(row?.maximo_dias),
+        rq_creadas:
+          prWindow.lower === null ? 0 : Number(row?.maximo_rq_creadas ?? 0),
+        rq_pendientes: pending.maximo.pendientes,
+        gestion: maximoGestionDays(maximoGestion),
         oc: ocDe('maximo'),
         contratos_por_vencer: Number(row?.maximo_contratos_por_vencer ?? 0),
       },
+      pendientes_periodo: { desde: pending.desde, hasta: pending.hasta },
       montos: montos.map((m) => ({
         currency: m.currency,
         count: Number(m.count),
@@ -758,22 +818,31 @@ export class PurchaseReportsService {
       monto: unknown;
     };
     type StatusRow = { status: string | null; count: number };
-    type VendorRow = {
-      proveedor: string | null;
+    type SapVendorRow = {
+      card_code: string | null;
+      card_name: string | null;
       currency: string | null;
       count: number;
       monto: unknown;
+    };
+    type MaximoPoRow = {
+      ponum: string;
+      vendor_id: string | null;
+      vendor_name: string | null;
+      currency: string | null;
+      total_cost: unknown;
     };
     const [
       sapPoSerie,
       sapPrSerie,
       sapPoStatus,
       sapPrStatus,
-      sapTop,
+      sapVendors,
       maximoPoSerie,
       maximoPoStatus,
       maximoContractStatus,
-      maximoTop,
+      maximoPos,
+      xref,
     ] = await Promise.all([
       this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
         SELECT date_trunc('month', doc_date) AS month, currency, count(*)::int AS count,
@@ -808,14 +877,22 @@ export class PurchaseReportsService {
         FROM sap_purchase_requests
         WHERE doc_date BETWEEN ${period.from} AND ${period.to}
         GROUP BY 1 ORDER BY count DESC`),
-      this.prisma.$queryRaw<VendorRow[]>(Prisma.sql`
-        SELECT card_name AS proveedor, currency, count(*)::int AS count,
-               coalesce(sum(doc_total), 0) AS monto
-        FROM sap_purchase_orders
-        WHERE cancelled IS DISTINCT FROM true
-          AND doc_date BETWEEN ${period.from} AND ${period.to}
-          ${andSapPoCountedOnce('sap_purchase_orders')}
-        GROUP BY card_name, currency ORDER BY monto DESC LIMIT 10`),
+      // G1: por código (las variantes de nombre se juntan) con el nombre del
+      // maestro de SAP; sin LIMIT porque también alimenta el top combinado
+      this.prisma.$queryRaw<SapVendorRow[]>(Prisma.sql`
+        SELECT t.card_code, coalesce(bp.card_name, t.card_name) AS card_name,
+               t.currency, t.count, t.monto
+        FROM (
+          SELECT card_code, mode() WITHIN GROUP (ORDER BY card_name) AS card_name,
+                 currency, count(*)::int AS count,
+                 coalesce(sum(doc_total), 0) AS monto
+          FROM sap_purchase_orders
+          WHERE cancelled IS DISTINCT FROM true
+            AND doc_date BETWEEN ${period.from} AND ${period.to}
+            ${andSapPoCountedOnce('sap_purchase_orders')}
+          GROUP BY card_code, currency
+        ) t
+        LEFT JOIN sap_business_partners bp ON bp.card_code = t.card_code`),
       this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT date_trunc('month', created_at_source) AS month, currency, count(*)::int AS count,
@@ -837,14 +914,14 @@ export class PurchaseReportsService {
         FROM current
         WHERE start_date IS NULL OR start_date BETWEEN ${period.from} AND ${period.to}
         GROUP BY 1 ORDER BY count DESC`),
-      this.prisma.$queryRaw<VendorRow[]>(Prisma.sql`
+      // G1: OC del periodo; el proveedor efectivo se resuelve en memoria
+      this.prisma.$queryRaw<MaximoPoRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
-        SELECT vendor_name AS proveedor, currency, count(*)::int AS count,
-               coalesce(sum(total_cost), 0) AS monto
+        SELECT ponum, vendor_id, vendor_name, currency, total_cost
         FROM current
-        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL') AND vendor_name IS NOT NULL
-          AND created_at_source BETWEEN ${period.from} AND ${period.to}
-        GROUP BY vendor_name, currency ORDER BY monto DESC LIMIT 10`),
+        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
+          AND created_at_source BETWEEN ${period.from} AND ${period.to}`),
+      this.vendors.get(),
     ]);
 
     // Serie mensual por moneda, zero-filled dentro del periodo.
@@ -877,13 +954,16 @@ export class PurchaseReportsService {
         })),
       };
     };
-    const vendors = (rows: VendorRow[]) =>
-      rows.map((r) => ({
-        proveedor: r.proveedor ?? 'Sin proveedor',
-        currency: r.currency,
-        count: Number(r.count),
-        monto: toNumber(r.monto) ?? 0,
-      }));
+    const sapAmounts: VendorAmount[] = sapVendors.map((r) => ({
+      key: `sap:${r.card_code ?? '(sin código)'}`,
+      code: r.card_code,
+      name: r.card_name,
+      currency: r.currency,
+      count: Number(r.count),
+      monto: toNumber(r.monto) ?? 0,
+      source: 'sap',
+    }));
+    const maximoAmounts = maximoVendorAmounts(maximoPos, xref);
 
     return {
       periodo: this.periodOut(period),
@@ -893,7 +973,7 @@ export class PurchaseReportsService {
           serie_mensual: serie(sapPrSerie),
           por_estatus: sapPrStatus,
         },
-        top_proveedores: vendors(sapTop),
+        top_proveedores: rankVendors(sapAmounts, new Map()),
       },
       maximo: {
         ordenes: {
@@ -901,7 +981,15 @@ export class PurchaseReportsService {
           por_estatus: maximoPoStatus,
         },
         contratos: { por_estatus: maximoContractStatus },
-        top_proveedores: vendors(maximoTop),
+        // G1: por proveedor efectivo (según SAP si la OC migró o por cruce)
+        top_proveedores: rankVendors(maximoAmounts, xref.bpNames),
+      },
+      // G1: SAP + Maximo contado una vez (D1), por proveedor efectivo
+      combinado: {
+        top_proveedores: rankVendors(
+          [...sapAmounts, ...maximoAmounts],
+          xref.bpNames,
+        ),
       },
       generated_at: new Date().toISOString(),
     };
@@ -1012,15 +1100,18 @@ export class PurchaseReportsService {
                  OR (a->>'stage_code')::int = r.current_stage)
           GROUP BY 1 ORDER BY dias_max DESC, pendientes DESC`),
       // Maximo solo registra al aprobador al aprobar: de las OC en espera se
-      // sabe cuántas y desde cuándo, no quién las tiene.
+      // sabe cuántas y desde cuándo, no quién las tiene. G7: en aprobación =
+      // WAPPR, APPRn y APPRnREV; G6: antigüedad desde su último cambio.
       this.prisma.$queryRaw<PendingRow[]>(Prisma.sql`
-          WITH current AS (${CURRENT_MAXIMO_POS})
+          WITH current AS (${CURRENT_MAXIMO_POS}),
+          pend AS (
+            SELECT ${maximoStatusSince('c')} AS desde
+            FROM current c WHERE ${maximoInApproval('c')}
+          )
           SELECT count(*)::int AS total,
-                 max(current_date - coalesce(waiting_approval_at, created_at_source)::date)::int AS dias_max,
-                 avg(current_date - coalesce(waiting_approval_at, created_at_source)::date) AS dias_promedio
-          FROM current
-          WHERE status = 'WAPPR'
-            AND coalesce(waiting_approval_at, created_at_source) IS NOT NULL`),
+                 max(current_date - desde::date)::int AS dias_max,
+                 avg(current_date - desde::date) AS dias_promedio
+          FROM pend`),
       this.prisma.user_roles.findMany({
         where: {
           is_active: true,

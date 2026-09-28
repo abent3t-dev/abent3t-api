@@ -28,6 +28,11 @@ export interface SapGestionRequest {
 export interface SapGestionResult {
   /** Promedio con 1 decimal; null = sin base. */
   promedio_dias: number | null;
+  /**
+   * G2 (2026-09-28): mediana con 1 decimal. Las OC capturadas meses
+   * después sesgan el promedio; la mediana muestra el caso típico.
+   */
+  mediana_dias: number | null;
   /** OC consideradas (con solicitud base sincronizada y fecha válida). */
   total: number;
   /** OC con solicitud base pero descartadas (sin fecha o negativas). */
@@ -35,6 +40,22 @@ export interface SapGestionResult {
 }
 
 const MS_PER_DAY = 86_400_000;
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+/** Promedio y mediana con 1 decimal; sin valores → null (nunca 0). */
+export function averageAndMedian(values: number[]): {
+  promedio_dias: number | null;
+  mediana_dias: number | null;
+} {
+  if (values.length === 0) return { promedio_dias: null, mediana_dias: null };
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const avg = values.reduce((sum, v) => sum + v, 0) / values.length;
+  return { promedio_dias: round1(avg), mediana_dias: round1(median) };
+}
 
 export function sapGestionDays(
   orders: SapGestionPo[],
@@ -44,8 +65,7 @@ export function sapGestionDays(
   for (const r of requests) {
     if (r.doc_date) requestDate.set(r.doc_entry, r.doc_date);
   }
-  let sum = 0;
-  let total = 0;
+  const days: number[] = [];
   let descartadas = 0;
   for (const po of orders) {
     if (po.base_request_entries.length === 0) continue;
@@ -57,17 +77,54 @@ export function sapGestionDays(
       continue;
     }
     const oldest = Math.min(...dates.map((d) => d.getTime()));
-    const days = (po.doc_date.getTime() - oldest) / MS_PER_DAY;
-    if (days < 0) {
+    const value = (po.doc_date.getTime() - oldest) / MS_PER_DAY;
+    if (value < 0) {
       descartadas += 1;
       continue;
     }
-    sum += days;
-    total += 1;
+    days.push(value);
+  }
+  return { ...averageAndMedian(days), total: days.length, descartadas };
+}
+
+export interface MaximoGestionResult extends SapGestionResult {
+  /** OC sin solicitud (sin PR.ISSUEDATE): fuera del promedio. */
+  sin_solicitud: number;
+}
+
+/**
+ * G2 (2026-09-28) — Días de gestión de Maximo con la misma definición:
+ * fecha de la OC (created_at_source) − fecha de creación de su solicitud
+ * (PR.ISSUEDATE, la más antigua; `pr_issue_date` de la 0016). `dias` null =
+ * OC sin solicitud; negativos (OC fechada antes que su PR) se descartan.
+ */
+export function maximoGestionDays(
+  rows: Array<{ dias: unknown }>,
+): MaximoGestionResult {
+  const days: number[] = [];
+  let descartadas = 0;
+  let sinSolicitud = 0;
+  for (const row of rows) {
+    if (row.dias === null || row.dias === undefined) {
+      sinSolicitud += 1;
+      continue;
+    }
+    const value = Number(row.dias);
+    if (!Number.isFinite(value) || value < 0) {
+      descartadas += 1;
+      continue;
+    }
+    days.push(value);
   }
   return {
-    promedio_dias: total === 0 ? null : Math.round((sum / total) * 10) / 10,
-    total,
+    ...averageAndMedian(days),
+    total: days.length,
     descartadas,
+    sin_solicitud: sinSolicitud,
   };
 }
+
+export const SAP_GESTION_DEFINICION =
+  'De la fecha de la solicitud de pedido (la más antigua) a la fecha de la OC; solo OC que nacieron de una solicitud de pedido en SAP';
+export const MAXIMO_GESTION_DEFINICION =
+  'De la fecha de creación de la solicitud (PR, la más antigua de la OC) a la fecha de la OC en Maximo; solo OC con solicitud';

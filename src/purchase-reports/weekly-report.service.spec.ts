@@ -4,6 +4,11 @@ import { SapRecordsService } from '../sap-records/sap-records.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { PurchaseReportsService } from './purchase-reports.service';
 import { WeeklyReportService } from './weekly-report.service';
+import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
+import {
+  buildVendorXref,
+  effectiveMaximoVendor,
+} from '../erp-vendors/maximo-vendor-xref';
 
 /**
  * Reporte semanal de Compras (2026-09-23): periodo anterior de la misma
@@ -11,18 +16,25 @@ import { WeeklyReportService } from './weekly-report.service';
  * dato ≠ 0, indicadores "al día de hoy" sin columna anterior).
  */
 
+const gestion = (dias: number | null) => ({
+  promedio_dias: dias,
+  mediana_dias: dias,
+  total: dias === null ? 0 : 5,
+});
+
 const resumen = (creadas: number, dias: number | null) => ({
   todas_las_fuentes: {
     solicitudes: {
       creadas,
-      abiertas: 27,
+      pendientes: 27,
       por_fuente: {
-        sap: { creadas, abiertas: 27 },
-        maximo: { creadas: 0, abiertas: 0 },
-        abent: { creadas: 0, abiertas: 0 },
+        sap: { creadas, pendientes: 27 },
+        maximo: { creadas: 0, pendientes: null },
+        abent: { creadas: 0, pendientes: 0 },
       },
+      pendientes_periodo: { desde: '2025-09-28', hasta: null },
     },
-    dias_gestion: { sap: dias, maximo: null, abent: null },
+    dias_gestion: { sap: gestion(dias), maximo: gestion(null), abent: null },
     ordenes: {
       total: 3,
       monto_por_moneda: [
@@ -74,7 +86,27 @@ function makeService() {
   const prisma = {
     $queryRaw: jest
       .fn()
-      .mockResolvedValueOnce([]) // OC Maximo
+      // G3: ventana de folios de las PR de Maximo del periodo
+      .mockResolvedValueOnce([{ lower: BigInt(104000), upper: null }])
+      .mockResolvedValueOnce([
+        {
+          ponum: 'PO104851',
+          description: 'O&M Staff Fee Naes MXN septiembre',
+          status: 'APPR1',
+          vendor_id: 'P0000440',
+          vendor_name: 'ASOCIACION MEXICANA DE ENERGIA',
+          total_cost: '4300000',
+          currency: 'MXN',
+          requested_by: null,
+          purchase_agent: null,
+          purchase_agent_name: null,
+          created_by: null,
+          department: null,
+          created_at_source: new Date('2026-09-15T00:00:00Z'),
+          approved_at: null,
+          approved_by: null,
+        },
+      ]) // OC Maximo
       .mockResolvedValueOnce([]) // solicitudes Maximo
       .mockResolvedValueOnce([
         {
@@ -97,6 +129,31 @@ function makeService() {
       ])
       .mockResolvedValueOnce([{ currency: 'USD', saldo: '5220', count: 1 }]),
   };
+  // G1: P0000440 de Maximo es NAES en SAP (cruce por sus OC migradas)
+  const xref = buildVendorXref(
+    ['PO1', 'PO2'].map((ponum) => ({
+      ponum,
+      vendor_id: 'P0000440',
+      vendor_name: 'ASOCIACION MEXICANA DE ENERGIA',
+      card_code: 'P0000219',
+      card_name: 'NAES ENERGIA S DE RL DE CV',
+    })),
+    new Map(),
+  );
+  const vendors = {
+    resolve: jest.fn(
+      (
+        rows: Array<{
+          ponum: string;
+          vendor_id: string | null;
+          vendor_name: string | null;
+        }>,
+      ) =>
+        Promise.resolve(
+          rows.map((r) => ({ ...r, supplier: effectiveMaximoVendor(r, xref) })),
+        ),
+    ),
+  };
   const service = new WeeklyReportService(
     prisma as unknown as PrismaService,
     reports as unknown as PurchaseReportsService,
@@ -104,6 +161,7 @@ function makeService() {
     {
       resolveMany: jest.fn().mockResolvedValue(new Map<string, string>()),
     } as unknown as ErpAliasesService,
+    vendors as unknown as MaximoVendorXrefService,
   );
   return { service, reports, sap };
 }
@@ -178,6 +236,28 @@ describe('WeeklyReportService', () => {
     const saldo = rows.get('Saldo por recibir de OC SAP abiertas (USD)');
     expect(saldo?.[0]).toBe(5220);
     expect(saldo?.[1]).toBeUndefined();
+
+    // G2: mediana junto al promedio; G3: pendientes = solicitudes sin OC
+    expect(rows.get('Días de gestión SAP (mediana)')?.slice(0, 2)).toEqual([
+      2.6,
+      'Sin datos',
+    ]);
+    expect(rows.get('Pendientes de gestionar (solicitudes sin OC)')?.[0]).toBe(
+      27,
+    );
+
+    // G1 y G7: proveedor efectivo y estatus con etiqueta y código
+    const maximoSheet = book.getWorksheet('OC Maximo')!;
+    const header = (maximoSheet.getRow(1).values as unknown[]).map(String);
+    const po = maximoSheet.getRow(2).values as unknown[];
+    expect(po[header.indexOf('Proveedor')]).toBe('NAES ENERGIA S DE RL DE CV');
+    expect(po[header.indexOf('Código proveedor')]).toBe('P0000219');
+    expect(po[header.indexOf('Proveedor en Maximo')]).toBe(
+      'ASOCIACION MEXICANA DE ENERGIA',
+    );
+    expect(po[header.indexOf('Estatus')]).toBe(
+      'En aprobación · nivel 1 aprobado (APPR1)',
+    );
 
     const approvals = book.getWorksheet('Autorizaciones SAP')!;
     const first = approvals.getRow(2).values as unknown[];

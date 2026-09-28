@@ -8,6 +8,7 @@ import {
   toPurchaseOrder,
 } from '../maximo.mapper';
 import { MaximoSyncTarget } from './maximo-sync.types';
+import { poRequestColumns, replacePoStatusHistory } from './maximo-po-history';
 
 export interface MaximoRemapResult {
   target: MaximoSyncTarget;
@@ -30,6 +31,7 @@ const MAX_ERRORS = 20;
  *
  * NO depende de `MaximoClient`: cero llamadas de red por construcción.
  * No toca `raw`, `first_seen_at`, `last_seen_at` ni `last_sync_run_id`.
+ * G6 (2026-09-28): también reescribe el historial POSTATUS de cada OC.
  */
 @Injectable()
 export class MaximoRemapService {
@@ -77,7 +79,7 @@ export class MaximoRemapService {
         result.scanned += 1;
         try {
           const dto = toPurchaseOrder(row.raw);
-          await this.prisma.maximo_purchase_orders.update({
+          const update = this.prisma.maximo_purchase_orders.update({
             where: { id: row.id },
             data: {
               status: dto.status,
@@ -98,10 +100,15 @@ export class MaximoRemapService {
               approved_by: dto.approvedBy,
               waiting_approval_at: toDate(dto.waitingApprovalDate),
               created_at_source: toDate(dto.orderDate),
+              ...poRequestColumns(dto),
               rowstamp: dto.rowstamp,
               mapper_version: MAXIMO_MAPPER_VERSION,
             },
           });
+          await this.prisma.$transaction([
+            update,
+            ...replacePoStatusHistory(this.prisma, row.id, dto),
+          ]);
           result.remapped += 1;
         } catch (error: unknown) {
           this.recordFailure(result, row.id, error);

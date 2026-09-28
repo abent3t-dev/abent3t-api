@@ -9,7 +9,24 @@
  * PURCHASE_ADMINS (omitirlo ES el control de acceso).
  */
 
-export interface MaximoPurchaseOrderView {
+import type { VendorSource } from '../erp-vendors/maximo-vendor-xref';
+
+/**
+ * G1 (2026-09-28): proveedor EFECTIVO — el de SAP si la OC migró o por el
+ * cruce de su código; si no, el de Maximo (ver erp-vendors/maximo-vendor-xref).
+ * `vendor_id` / `vendor_name` conservan lo que dice el maestro de Maximo.
+ */
+export interface SupplierFields {
+  /** Llave de agrupación/filtro: `sap:P0000219` o `maximo:P0000440`. */
+  supplier_key: string | null;
+  supplier_code: string | null;
+  supplier_name: string | null;
+  supplier_source: VendorSource | null;
+  /** "en Maximo: NOMBRE (CÓDIGO)" cuando el nombre efectivo no es el de Maximo. */
+  supplier_note: string | null;
+}
+
+export interface MaximoPurchaseOrderView extends SupplierFields {
   id: string;
   ponum: string;
   siteid: string | null;
@@ -66,7 +83,7 @@ export interface MaximoPurchaseOrderDetail {
   revisions: MaximoPurchaseOrderRevision[];
 }
 
-export interface MaximoContractView {
+export interface MaximoContractView extends SupplierFields {
   id: string;
   prnum: string | null;
   contractnum: string | null;

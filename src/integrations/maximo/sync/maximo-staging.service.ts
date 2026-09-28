@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -5,6 +6,7 @@ import { MaximoContractDto } from '../dto/maximo-contract.dto';
 import { MaximoPurchaseOrderDto } from '../dto/maximo-po.dto';
 import { MAXIMO_MAPPER_VERSION } from '../maximo.mapper';
 import { MaximoUpsertOutcome } from './maximo-sync.types';
+import { poRequestColumns, replacePoStatusHistory } from './maximo-po-history';
 
 /**
  * Upsert idempotente a staging (Fase INT-3, T3/T4). ÚNICO camino de escritura
@@ -19,6 +21,9 @@ import { MaximoUpsertOutcome } from './maximo-sync.types';
  * Sin-cambio (T4): mismo `rowstamp` (PO) / `contract_rowstamp` (contrato) →
  * solo se toca `last_seen_at`/`last_sync_run_id`. Cambio → se actualizan
  * columnas mapeadas + `raw` + `mapper_version` + `last_changed_at`.
+ *
+ * G6 (2026-09-28): el alta o el cambio de una OC reescribe su historial
+ * POSTATUS (`maximo_po_status_history`) en la MISMA transacción.
  */
 @Injectable()
 export class MaximoStagingService {
@@ -57,6 +62,7 @@ export class MaximoStagingService {
       approved_by: dto.approvedBy,
       waiting_approval_at: toDate(dto.waitingApprovalDate),
       created_at_source: toDate(dto.orderDate),
+      ...poRequestColumns(dto),
       rowstamp: dto.rowstamp,
     };
 
@@ -66,33 +72,47 @@ export class MaximoStagingService {
         select: { id: true, rowstamp: true },
       });
       if (!existing) {
-        await this.prisma.maximo_purchase_orders.create({
-          data: {
-            ...where,
-            ...mapped,
-            raw: raw as Prisma.InputJsonValue,
-            mapper_version: MAXIMO_MAPPER_VERSION,
-            last_sync_run_id: runId,
-          },
-        });
+        // id generado aquí para escribir OC + historial en una transacción
+        const id = randomUUID();
+        await this.prisma.$transaction([
+          this.prisma.maximo_purchase_orders.create({
+            data: {
+              id,
+              ...where,
+              ...mapped,
+              raw: raw as Prisma.InputJsonValue,
+              mapper_version: MAXIMO_MAPPER_VERSION,
+              last_sync_run_id: runId,
+            },
+          }),
+          ...replacePoStatusHistory(this.prisma, id, dto),
+        ]);
         return 'inserted';
       }
       const unchanged =
         existing.rowstamp !== null && existing.rowstamp === dto.rowstamp;
-      await this.prisma.maximo_purchase_orders.update({
-        where: { id: existing.id },
-        data: unchanged
-          ? { last_seen_at: new Date(), last_sync_run_id: runId }
-          : {
-              ...mapped,
-              raw: raw as Prisma.InputJsonValue,
-              mapper_version: MAXIMO_MAPPER_VERSION,
-              last_seen_at: new Date(),
-              last_changed_at: new Date(),
-              last_sync_run_id: runId,
-            },
-      });
-      return unchanged ? 'unchanged' : 'updated';
+      if (unchanged) {
+        await this.prisma.maximo_purchase_orders.update({
+          where: { id: existing.id },
+          data: { last_seen_at: new Date(), last_sync_run_id: runId },
+        });
+        return 'unchanged';
+      }
+      await this.prisma.$transaction([
+        this.prisma.maximo_purchase_orders.update({
+          where: { id: existing.id },
+          data: {
+            ...mapped,
+            raw: raw as Prisma.InputJsonValue,
+            mapper_version: MAXIMO_MAPPER_VERSION,
+            last_seen_at: new Date(),
+            last_changed_at: new Date(),
+            last_sync_run_id: runId,
+          },
+        }),
+        ...replacePoStatusHistory(this.prisma, existing.id, dto),
+      ]);
+      return 'updated';
     };
 
     return this.withUniqueRaceRetry(attempt);
