@@ -129,7 +129,7 @@ interface PendingApprovalRow {
   current_stage: number | null;
   current_stage_name: string | null;
   creation_date: Date | null;
-  /** Días naturales desde la creación (misma cuenta que "por aprobador"). */
+  /** Días naturales desde la creación de la solicitud de autorización. */
   dias: number | null;
   approvers: unknown;
 }
@@ -479,7 +479,7 @@ export class WeeklyReportService {
         'Solicitante de una OC de SAP: el de la solicitud de pedido de SAP de la que nació; si la OC viene de Maximo (columna "Origen"), el solicitante de Maximo; si no hay, queda vacío.',
         'Comprador: en Maximo es el comprador de la OC (PURCHASEAGENT); si no lo trae (casi todas), "Capturó: …" es quien creó la OC en Maximo. SAP no tiene comprador capturado en ninguna OC: las OC de SAP creadas desde Maximo muestran lo de Maximo y las demás "Capturó: …" (el usuario de SAP que la capturó).',
         'Los indicadores marcados "al día de hoy" son una foto al generar el archivo, no del periodo; por eso no tienen columna anterior.',
-        'Estado por aprobador: "Retrasado" cuando su pendiente más antigua ya rebasó su promedio histórico de autorización.',
+        'Estado por aprobador: "Retrasado" cuando su pendiente más antigua ya rebasó su promedio histórico de autorización. Ambos cuentan desde que el documento le llegó a ese aprobador (la aprobación de la etapa anterior o la creación); "Días esperando" de la hoja de autorizaciones cuenta desde la creación.',
         ...(sapPos.truncated || sapPrs.truncated
           ? ['El detalle de SAP excede el tope de filas; acota el periodo.']
           : []),

@@ -3,6 +3,7 @@ import type { Response } from 'express';
 import { sendExcel } from '../common/utils/excel-export.util';
 import { PurchaseReportsService } from './purchase-reports.service';
 import { WeeklyReportService } from './weekly-report.service';
+import { ApprovalChainService } from './approval-chain.service';
 import { ReportPeriodDto } from './dto/report-period.dto';
 
 // Roles de compras (§Roles y Permisos)
@@ -17,7 +18,31 @@ export class PurchaseReportsController {
   constructor(
     private readonly service: PurchaseReportsService,
     private readonly weekly: WeeklyReportService,
+    private readonly chain: ApprovalChainService,
   ) {}
+
+  // G5 (2026-09-28): aprobadas, rechazadas y pendientes por aprobador con
+  // periodo (días desde que le llegó el documento). Lectura abierta.
+  @Get('aprobadores')
+  getAprobadores(@Query() query: ReportPeriodDto) {
+    return this.chain.getAprobadores(query);
+  }
+
+  // G5.3: Excel del histórico por aprobador con el mismo periodo.
+  @Get('aprobadores/export')
+  async exportAprobadores(
+    @Query() query: ReportPeriodDto,
+    @Res() res: Response,
+  ) {
+    const { buffer, filename } = await this.chain.exportAprobadores(query);
+    sendExcel(res, buffer, filename);
+  }
+
+  // G6: OC de Maximo en aprobación hoy, por nivel, con aprobadores habituales.
+  @Get('cadena-maximo')
+  getCadenaMaximo() {
+    return this.chain.getCadenaMaximo();
+  }
 
   // Reporte semanal (Ingrid, 2026-09-23): Excel con resumen contra el
   // periodo anterior y el detalle del periodo. Lectura abierta, sin raw.

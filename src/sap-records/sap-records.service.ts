@@ -3,6 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { rangeEnd } from '../common/utils/date-range.util';
+import {
+  daysBetween,
+  sapLineReachedAt,
+} from '../purchase-reports/approver-stats';
+import type { SapApprovalLine } from '../purchase-reports/approver-stats';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { andYear } from '../common/sql/erp-views.sql';
@@ -444,6 +449,17 @@ export class SapRecordsService {
       }
       where.OR = or;
     }
+    // G5: documentos de un aprobador (clic en su nombre); pendientes = los
+    // de su etapa actual, que se filtran en memoria (JSON por línea)
+    if (query.approver) {
+      return this.listApprovalRequestsOf(
+        query.approver,
+        status,
+        where,
+        page,
+        limit,
+      );
+    }
 
     const [total, rows] = await Promise.all([
       this.prisma.sap_approval_requests.count({ where }),
@@ -462,6 +478,86 @@ export class SapRecordsService {
     return {
       data: rows.map((row) => this.toApprovalRow(row, today)),
       meta: buildMeta(total, page, limit),
+    };
+  }
+
+  private async listApprovalRequestsOf(
+    approver: string,
+    status: string,
+    where: Record<string, unknown>,
+    page: number,
+    limit: number,
+  ): Promise<PaginatedResponse<SapApprovalRequestRow>> {
+    const lineStatus =
+      status === 'pending'
+        ? 'ardPending'
+        : status === 'approved'
+          ? 'ardApproved'
+          : status === 'rejected'
+            ? 'ardNotApproved'
+            : null;
+    const rows = await this.prisma.sap_approval_requests.findMany({
+      where: {
+        ...where,
+        approvers: {
+          array_contains: [
+            lineStatus
+              ? { user_name: approver, status: lineStatus }
+              : { user_name: approver },
+          ],
+        },
+      },
+      select: APPROVAL_LIST_SELECT,
+      orderBy: [
+        { creation_date: { sort: 'asc', nulls: 'last' } },
+        { code: 'asc' },
+      ],
+    });
+    const today = new Date();
+    const mine = rows
+      .map((row): SapApprovalRequestRow | null => {
+        const doc = {
+          code: row.code,
+          status: row.status,
+          current_stage: row.current_stage,
+          creation_date: row.creation_date,
+          approvers: Array.isArray(row.approvers)
+            ? (row.approvers as unknown as SapApprovalLine[])
+            : [],
+        };
+        const line = doc.approvers.find(
+          (a) =>
+            a.user_name === approver &&
+            (lineStatus === null || a.status === lineStatus) &&
+            (a.status !== 'ardPending' ||
+              doc.current_stage === null ||
+              a.stage_code === null ||
+              a.stage_code === undefined ||
+              a.stage_code === doc.current_stage),
+        );
+        if (!line) return null;
+        const reached = sapLineReachedAt(doc, line);
+        const until =
+          line.status === 'ardPending'
+            ? today.getTime()
+            : line.update_date
+              ? Date.parse(line.update_date)
+              : null;
+        const days = daysBetween(reached, until);
+        return {
+          ...this.toApprovalRow(row, today),
+          days_with_approver: days === null ? null : Math.floor(days),
+        };
+      })
+      .filter((row): row is SapApprovalRequestRow => row !== null)
+      // lo que más lleva con el aprobador, primero
+      .sort(
+        (a, b) => (b.days_with_approver ?? -1) - (a.days_with_approver ?? -1),
+      );
+    const start = (page - 1) * limit;
+    return {
+      data: mine.slice(start, start + limit),
+      meta: buildMeta(mine.length, page, limit),
     };
   }
 

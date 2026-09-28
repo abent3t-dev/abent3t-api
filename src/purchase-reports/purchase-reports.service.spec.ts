@@ -45,6 +45,7 @@ function makeService(
       findMany: jest.fn().mockResolvedValue([]),
     },
     suppliers: { count: jest.fn().mockResolvedValue(1) },
+    sap_approval_requests: { findMany: jest.fn().mockResolvedValue([]) },
     user_roles: {
       findMany: jest.fn().mockResolvedValue([
         {
@@ -294,41 +295,112 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
   });
 
   it('tiempos: pendientes por aprobador en SAP, espera de Maximo y niveles ABENT con su asignación', async () => {
-    const { service } = makeService([
+    const DAY = 86_400_000;
+    const ago = (days: number) => new Date(Date.now() - days * DAY);
+    const iso = (d: Date) => d.toISOString();
+    const { service, prisma } = makeService([
       [], // maximo po
-      [], // maximo po por aprobador
-      [], // maximo contratos
-      [], // sap autorizadas
-      [], // sap por aprobador
-      [{ total: 9, dias: '4.2' }],
+      // G6: aprobaciones del historial POSTATUS (le llegó con el cambio anterior)
       [
         {
-          aprobador: 'David Rodríguez',
-          pendientes: 3,
-          dias_max: 6,
-          dias_promedio: '4.33',
+          status: 'APPR1',
+          changed_by: 'DAROJE',
+          change_date: ago(10),
+          prev_date: ago(14),
         },
-        { aprobador: null, pendientes: 1, dias_max: 1, dias_promedio: '1' },
+        {
+          status: 'APPR2',
+          changed_by: 'MAOG1',
+          change_date: ago(8),
+          prev_date: ago(10),
+        },
+        {
+          status: 'APPR',
+          changed_by: 'GMV1',
+          change_date: ago(7),
+          prev_date: ago(8),
+        },
       ],
+      [], // maximo contratos
+      [], // sap autorizadas
+      [{ total: 9, dias: '4.2' }],
       [{ total: 2, dias_max: 12, dias_promedio: '8.5' }],
     ]);
+    // G5: la cola de SAP con sus líneas por etapa
+    prisma.sap_approval_requests.findMany.mockResolvedValue([
+      {
+        code: 1,
+        status: 'arsPending',
+        current_stage: 2,
+        creation_date: ago(20.2),
+        approvers: [
+          // etapa 1 aprobada hace 6.2 días → a David le llegó entonces
+          {
+            stage_code: 1,
+            user_name: 'Jefe',
+            status: 'ardApproved',
+            update_date: iso(ago(6.2)),
+          },
+          {
+            stage_code: 2,
+            user_name: 'David Rodríguez',
+            status: 'ardPending',
+            update_date: iso(ago(6.2)),
+          },
+        ],
+      },
+      {
+        code: 2,
+        status: 'arsPending',
+        current_stage: 5,
+        creation_date: ago(2.5),
+        approvers: [
+          {
+            stage_code: 5,
+            user_name: 'David Rodríguez',
+            status: 'ardPending',
+            update_date: null,
+          },
+          // etapa futura: todavía no le llega a Uriel
+          {
+            stage_code: 6,
+            user_name: 'Uriel LASES',
+            status: 'ardPending',
+            update_date: null,
+          },
+        ],
+      },
+    ]);
     const tiempos = await service.getTiemposAprobacion();
+    // la más antigua cuenta desde que le llegó (6 días), no desde la creación (20)
     expect(tiempos.sap.pendientes_por_aprobador).toEqual([
       {
         aprobador: 'David Rodríguez',
         usuario: 'David Rodríguez',
-        pendientes: 3,
+        pendientes: 2,
+        // días completos con él: 6 y 2
         dias_esperando_max: 6,
-        dias_esperando_promedio: 4.3,
-      },
-      {
-        aprobador: 'Sin nombre en SAP',
-        usuario: null,
-        pendientes: 1,
-        dias_esperando_max: 1,
-        dias_esperando_promedio: 1,
+        dias_esperando_promedio: 4,
       },
     ]);
+    // aprobó "Jefe": le llegó con la creación (14 días antes de decidir)
+    expect(tiempos.sap.por_aprobador).toEqual([
+      { aprobador: 'Jefe', usuario: 'Jefe', promedio_dias: 14, total: 1 },
+    ]);
+    // G6: aparecen todos los niveles de Maximo (Miguel y Gilberto incluidos)
+    expect(
+      tiempos.maximo.ordenes_por_aprobador.map((r) => [
+        r.usuario,
+        r.promedio_dias,
+        r.niveles,
+      ]),
+    ).toEqual(
+      expect.arrayContaining([
+        ['DAROJE', 4, ['Nivel 1']],
+        ['MAOG1', 2, ['Nivel 2']],
+        ['GMV1', 1, ['Aprobación final']],
+      ]),
+    );
     expect(tiempos.maximo_pendientes).toEqual({
       total: 2,
       dias_esperando_max: 12,

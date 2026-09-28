@@ -6,6 +6,7 @@ import { SapRecordsModule } from '../sap-records/sap-records.module';
 import { PurchaseReportsController } from './purchase-reports.controller';
 import { PurchaseReportsService } from './purchase-reports.service';
 import { WeeklyReportService } from './weekly-report.service';
+import { ApprovalChainService } from './approval-chain.service';
 
 /**
  * Fase Reportes — agregación de solo lectura. Importa los módulos cuyos
@@ -20,6 +21,10 @@ import { WeeklyReportService } from './weekly-report.service';
     SapRecordsModule,
   ],
   controllers: [PurchaseReportsController],
-  providers: [PurchaseReportsService, WeeklyReportService],
+  providers: [
+    PurchaseReportsService,
+    WeeklyReportService,
+    ApprovalChainService,
+  ],
 })
 export class PurchaseReportsModule {}

@@ -209,6 +209,11 @@ export interface SapApprovalRequestRow {
   creation_date: Date | null;
   /** Días naturales esperando (solo pendientes); null si no aplica. */
   days_waiting: number | null;
+  /**
+   * G5 (2026-09-28), solo con `approver`: días que el documento lleva (o
+   * llevó, hasta su decisión) con ese aprobador desde que le llegó.
+   */
+  days_with_approver?: number | null;
   doc_num: number | null;
   doc_date: Date | null;
   doc_total: number | null;

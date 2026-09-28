@@ -526,3 +526,91 @@ describe('SapRecordsService — comprador de respaldo de Maximo (F1)', () => {
     });
   });
 });
+
+describe('SapRecordsService — cola de un aprobador (G5, 2026-09-28)', () => {
+  const DAY = 86_400_000;
+  const ago = (days: number) => new Date(Date.now() - days * DAY);
+  const approval = (overrides: Record<string, unknown>) => ({
+    id: 'a',
+    code: 1,
+    approval_template_id: null,
+    template_name: null,
+    object_type: '22',
+    is_draft: false,
+    draft_entry: null,
+    object_entry: null,
+    status: 'arsPending',
+    remarks: null,
+    current_stage: 2,
+    current_stage_name: 'Dirección',
+    originator_id: null,
+    originator_name: null,
+    creation_date: ago(20),
+    doc_num: 100,
+    doc_date: null,
+    doc_total: '1000',
+    currency: 'MXN',
+    card_name: null,
+    requester_name: null,
+    approvers: [],
+    last_changed_at: null,
+    last_seen_at: new Date(),
+    ...overrides,
+  });
+
+  it('pendientes de su etapa actual, con los días que llevan con él (desde que le llegó)', async () => {
+    const { service, prisma } = makeService();
+    prisma.sap_approval_requests.findMany.mockResolvedValue([
+      approval({
+        id: 'a',
+        code: 1,
+        approvers: [
+          {
+            stage_code: 1,
+            user_name: 'Jefe',
+            status: 'ardApproved',
+            update_date: ago(6.5).toISOString(),
+          },
+          {
+            stage_code: 2,
+            user_name: 'David',
+            status: 'ardPending',
+            update_date: null,
+          },
+        ],
+      }),
+      // su línea es de una etapa futura: todavía no le llega
+      approval({
+        id: 'b',
+        code: 2,
+        current_stage: 1,
+        approvers: [
+          {
+            stage_code: 1,
+            user_name: 'Jefe',
+            status: 'ardPending',
+            update_date: null,
+          },
+          {
+            stage_code: 2,
+            user_name: 'David',
+            status: 'ardPending',
+            update_date: null,
+          },
+        ],
+      }),
+    ]);
+    const result = await service.listApprovalRequests({
+      approver: 'David',
+      status: 'pending',
+    });
+    expect(result.meta.total).toBe(1);
+    expect(result.data[0]).toMatchObject({ code: 1, days_with_approver: 6 });
+    // el filtro por línea va a la BD (JSON contiene su línea pendiente)
+    const args = prisma.sap_approval_requests.findMany.mock
+      .calls[0] as unknown as [{ where: { approvers: unknown } }];
+    expect(args[0].where.approvers).toEqual({
+      array_contains: [{ user_name: 'David', status: 'ardPending' }],
+    });
+  });
+});

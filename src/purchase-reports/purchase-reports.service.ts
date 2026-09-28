@@ -21,6 +21,12 @@ import {
 } from '../purchase-dashboard/sap-gestion-days';
 import type { SapGestionResult } from '../purchase-dashboard/sap-gestion-days';
 import { loadPendingRequests } from '../purchase-dashboard/pending-requests';
+import {
+  maximoApproverEvents,
+  sapApproverEvents,
+  summarizeApprovers,
+} from './approver-stats';
+import { loadMaximoApprovals, loadSapApprovalDocs } from './approver-data';
 import { ReportPeriodDto } from './dto/report-period.dto';
 
 /**
@@ -999,20 +1005,18 @@ export class PurchaseReportsService {
 
   /**
    * Maximo: OC = approved_at − waiting_approval_at (primer WAPPR; fallback
-   * created_at_source), por aprobador = CHANGEBY del primer APPR; contratos
-   * = approved_at − created_at_source. SAP: desde la cola de autorización
-   * (B5): solicitudes aprobadas = fecha de la última decisión − creación; por
-   * aprobador = líneas ardApproved. null = sin base (nunca 0).
+   * created_at_source); contratos = approved_at − created_at_source. SAP:
+   * desde la cola de autorización (B5): solicitudes aprobadas = fecha de la
+   * última decisión − creación. null = sin base (nunca 0).
+   *
+   * G5/G6 (2026-09-28): por aprobador = días desde que el documento LE LLEGÓ
+   * (ver approver-stats.ts), acumulado. Maximo por cada aprobación del
+   * historial POSTATUS (todos los niveles: aparecen Miguel y Gilberto); SAP
+   * por línea de la cola; pendientes de SAP con la antigüedad desde que le
+   * llegó. El histórico con periodo vive en /compras/reportes/aprobadores.
    */
   async getTiemposAprobacion() {
     type AvgRow = { dias: unknown; total: number };
-    type ByRow = { aprobador: string | null; dias: unknown; total: number };
-    type PendingByRow = {
-      aprobador: string | null;
-      pendientes: number;
-      dias_max: number | null;
-      dias_promedio: unknown;
-    };
     type PendingRow = {
       total: number;
       dias_max: number | null;
@@ -1025,15 +1029,14 @@ export class PurchaseReportsService {
     };
     const [
       maximoPo,
-      maximoPoBy,
+      maximoApprovals,
       maximoContracts,
       sapAll,
-      sapBy,
       sapPending,
-      sapPendingBy,
       maximoPending,
       abentRoles,
       gestionPos,
+      sapDocs,
     ] = await Promise.all([
       this.prisma.$queryRaw<AvgRow[]>(Prisma.sql`
           WITH current AS (${CURRENT_MAXIMO_POS})
@@ -1043,16 +1046,8 @@ export class PurchaseReportsService {
           WHERE approved_at IS NOT NULL
             AND coalesce(waiting_approval_at, created_at_source) IS NOT NULL
             AND approved_at >= coalesce(waiting_approval_at, created_at_source)`),
-      this.prisma.$queryRaw<ByRow[]>(Prisma.sql`
-          WITH current AS (${CURRENT_MAXIMO_POS})
-          SELECT approved_by AS aprobador,
-                 avg(extract(epoch FROM (approved_at - coalesce(waiting_approval_at, created_at_source))) / 86400) AS dias,
-                 count(*)::int AS total
-          FROM current
-          WHERE approved_at IS NOT NULL AND approved_by IS NOT NULL
-            AND coalesce(waiting_approval_at, created_at_source) IS NOT NULL
-            AND approved_at >= coalesce(waiting_approval_at, created_at_source)
-          GROUP BY approved_by ORDER BY total DESC LIMIT 15`),
+      // G6: todas las aprobaciones del historial POSTATUS (todos los niveles)
+      loadMaximoApprovals(this.prisma),
       this.prisma.$queryRaw<AvgRow[]>(Prisma.sql`
           WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
           SELECT avg(extract(epoch FROM (approved_at - created_at_source)) / 86400) AS dias,
@@ -1071,34 +1066,10 @@ export class PurchaseReportsService {
           ) d ON true
           WHERE r.status = 'arsApproved' AND r.creation_date IS NOT NULL
             AND d.decided_at IS NOT NULL AND d.decided_at >= r.creation_date`),
-      this.prisma.$queryRaw<ByRow[]>(Prisma.sql`
-          SELECT a->>'user_name' AS aprobador,
-                 avg(extract(epoch FROM ((a->>'update_date')::timestamptz - r.creation_date)) / 86400) AS dias,
-                 count(*)::int AS total
-          FROM sap_approval_requests r,
-               jsonb_array_elements(coalesce(r.approvers, '[]'::jsonb)) a
-          WHERE a->>'status' = 'ardApproved' AND r.creation_date IS NOT NULL
-            AND (a->>'update_date') IS NOT NULL
-            AND (a->>'update_date')::timestamptz >= r.creation_date
-          GROUP BY 1 ORDER BY total DESC LIMIT 15`),
       this.prisma.$queryRaw<Array<{ total: number; dias: unknown }>>(Prisma.sql`
           SELECT count(*)::int AS total,
                  avg(extract(epoch FROM (now() - creation_date)) / 86400) AS dias
           FROM sap_approval_requests WHERE status = 'arsPending'`),
-      // Quién tiene la pelota: aprobadores de la etapa actual con su línea
-      // aún pendiente; días naturales desde que se creó la solicitud.
-      this.prisma.$queryRaw<PendingByRow[]>(Prisma.sql`
-          SELECT a->>'user_name' AS aprobador,
-                 count(*)::int AS pendientes,
-                 max(current_date - r.creation_date::date)::int AS dias_max,
-                 avg(current_date - r.creation_date::date) AS dias_promedio
-          FROM sap_approval_requests r,
-               jsonb_array_elements(coalesce(r.approvers, '[]'::jsonb)) a
-          WHERE r.status = 'arsPending' AND a->>'status' = 'ardPending'
-            AND r.creation_date IS NOT NULL
-            AND (r.current_stage IS NULL OR a->>'stage_code' IS NULL
-                 OR (a->>'stage_code')::int = r.current_stage)
-          GROUP BY 1 ORDER BY dias_max DESC, pendientes DESC`),
       // Maximo solo registra al aprobador al aprobar: de las OC en espera se
       // sabe cuántas y desde cuándo, no quién las tiene. G7: en aprobación =
       // WAPPR, APPRn y APPRnREV; G6: antigüedad desde su último cambio.
@@ -1132,6 +1103,8 @@ export class PurchaseReportsService {
           FROM sap_purchase_orders
           WHERE cancelled IS DISTINCT FROM true
             AND cardinality(base_request_entries) > 0`),
+      // G5: cola de autorización con sus líneas por etapa
+      loadSapApprovalDocs(this.prisma),
     ]);
     const requestEntries = [
       ...new Set(gestionPos.flatMap((po) => po.base_request_entries)),
@@ -1146,16 +1119,36 @@ export class PurchaseReportsService {
             WHERE doc_entry IN (${Prisma.join(requestEntries)})`);
     const gestionOc = sapGestionDays(gestionPos, gestionPrs);
 
+    // G5/G6: por aprobador, días desde que le llegó (acumulado)
+    const allTime = { from: new Date(0), to: new Date(8.64e15) };
+    const sapByUser = summarizeApprovers(
+      sapApproverEvents(sapDocs, new Date()),
+      allTime,
+      { withPending: true, withRejected: true },
+    );
+    const maximoByUser = summarizeApprovers(
+      maximoApproverEvents(maximoApprovals),
+      allTime,
+      { withPending: false, withRejected: false },
+    );
+    const topApproved = <T extends { aprobadas: { total: number } }>(
+      rows: T[],
+    ) =>
+      rows
+        .filter((r) => r.aprobadas.total > 0)
+        .sort((a, b) => b.aprobadas.total - a.aprobadas.total)
+        .slice(0, 15);
+
     // D6: alias de usuarios (Maximo: CHANGEBY; SAP: user_name de la cola)
     const [maximoNames, sapNames, levelAliases] = await Promise.all([
       this.aliases.resolveMany(
         'maximo',
-        maximoPoBy.map((r) => r.aprobador),
+        maximoByUser.map((r) => r.usuario),
       ),
-      this.aliases.resolveMany('sap', [
-        ...sapBy.map((r) => r.aprobador),
-        ...sapPendingBy.map((r) => r.aprobador),
-      ]),
+      this.aliases.resolveMany(
+        'sap',
+        sapByUser.map((r) => r.usuario),
+      ),
       this.aliases.forProfiles(
         abentRoles.map((r) => r.profiles_user_roles_profile_idToprofiles.id),
       ),
@@ -1171,17 +1164,35 @@ export class PurchaseReportsService {
         total: Number(rows[0]?.total ?? 0),
       };
     };
-    const by = (rows: ByRow[], system: 'sap' | 'maximo') =>
-      rows.map((r) => ({
-        aprobador: named(system, r.aprobador) ?? 'Sin nombre',
-        usuario: r.aprobador,
-        promedio_dias: Math.round((toNumber(r.dias) ?? 0) * 10) / 10,
-        total: Number(r.total),
-      }));
+    const sapPendingBy = sapByUser
+      .filter((r) => (r.pendientes?.total ?? 0) > 0)
+      .map((r) => ({
+        aprobador: named('sap', r.usuario) ?? r.usuario,
+        usuario: r.usuario,
+        pendientes: r.pendientes?.total ?? 0,
+        // días completos con el aprobador
+        dias_esperando_max:
+          r.pendientes?.dias_max === null || r.pendientes === null
+            ? null
+            : Math.floor(r.pendientes.dias_max),
+        dias_esperando_promedio: r.pendientes?.dias_promedio ?? null,
+      }))
+      .sort(
+        (a, b) =>
+          (b.dias_esperando_max ?? -1) - (a.dias_esperando_max ?? -1) ||
+          b.pendientes - a.pendientes,
+      );
     return {
       maximo: {
         ordenes: avg(maximoPo),
-        ordenes_por_aprobador: by(maximoPoBy, 'maximo'),
+        // G6: por cada aprobación del historial (todos los niveles)
+        ordenes_por_aprobador: topApproved(maximoByUser).map((r) => ({
+          aprobador: named('maximo', r.usuario) ?? r.usuario,
+          usuario: r.usuario,
+          promedio_dias: r.aprobadas.dias_promedio ?? 0,
+          total: r.aprobadas.total,
+          niveles: r.niveles ?? [],
+        })),
         contratos: avg(maximoContracts),
       },
       sap: {
@@ -1194,7 +1205,13 @@ export class PurchaseReportsService {
             'De la fecha de la solicitud de pedido (la más antigua) a la fecha de la OC; solo OC con solicitud de pedido en SAP',
         },
         solicitudes_autorizadas: avg(sapAll),
-        por_aprobador: by(sapBy, 'sap'),
+        // G5: días desde que le llegó (última decisión de otra etapa)
+        por_aprobador: topApproved(sapByUser).map((r) => ({
+          aprobador: named('sap', r.usuario) ?? r.usuario,
+          usuario: r.usuario,
+          promedio_dias: r.aprobadas.dias_promedio ?? 0,
+          total: r.aprobadas.total,
+        })),
         pendientes: {
           total: Number(sapPending[0]?.total ?? 0),
           dias_esperando_promedio:
@@ -1202,13 +1219,7 @@ export class PurchaseReportsService {
               ? null
               : Math.round(Number(sapPending[0]?.dias) * 10) / 10,
         },
-        pendientes_por_aprobador: sapPendingBy.map((r) => ({
-          aprobador: named('sap', r.aprobador) ?? 'Sin nombre en SAP',
-          usuario: r.aprobador,
-          pendientes: Number(r.pendientes),
-          dias_esperando_max: r.dias_max === null ? null : Number(r.dias_max),
-          dias_esperando_promedio: roundDays(r.dias_promedio),
-        })),
+        pendientes_por_aprobador: sapPendingBy,
       },
       maximo_pendientes: {
         total: Number(maximoPending[0]?.total ?? 0),
@@ -1237,12 +1248,8 @@ export class PurchaseReportsService {
             .map((a) => a.code.trim().toLowerCase()),
         );
         const sapPendientes = sapPendingBy
-          .filter(
-            (r) =>
-              r.aprobador !== null &&
-              sapCodes.has(r.aprobador.trim().toLowerCase()),
-          )
-          .reduce((sum, r) => sum + Number(r.pendientes), 0);
+          .filter((r) => sapCodes.has(r.usuario.trim().toLowerCase()))
+          .reduce((sum, r) => sum + r.pendientes, 0);
         return {
           level,
           role,

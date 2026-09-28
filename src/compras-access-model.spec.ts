@@ -112,6 +112,10 @@ const OPEN_READS = [
   // 2026-09-28 (G1): proveedores con nombre distinto en Maximo y SAP
   '/maximo/vendor-xref',
   '/maximo/vendor-xref/export',
+  // 2026-09-28 (G5/G6): histórico por aprobador y cadena de Maximo
+  '/compras/reportes/aprobadores',
+  '/compras/reportes/aprobadores/export',
+  '/compras/reportes/cadena-maximo',
   '/approvals/requisition/:rqId',
   '/approvals/stats',
   '/requisitions',

@@ -1,4 +1,12 @@
-import { IsIn, IsInt, IsOptional, Max, MaxLength, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 /**
@@ -31,4 +39,13 @@ export class SapApprovalQueryDto {
   @IsOptional()
   @IsIn(['purchase_order', 'purchase_request'])
   kind?: 'purchase_order' | 'purchase_request';
+
+  /**
+   * G5 (2026-09-28): documentos de este aprobador (user_name de la cola de
+   * SAP). Con `status=pending`, solo los que tiene en su etapa actual.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(150)
+  approver?: string;
 }
