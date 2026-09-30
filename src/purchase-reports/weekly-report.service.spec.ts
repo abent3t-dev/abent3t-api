@@ -9,6 +9,8 @@ import {
   buildVendorXref,
   effectiveMaximoVendor,
 } from '../erp-vendors/maximo-vendor-xref';
+import type { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
+import type { AvanceData } from './avance-semanal/avance-semanal.engine';
 
 /**
  * Reporte semanal de Compras (2026-09-23): periodo anterior de la misma
@@ -154,6 +156,32 @@ function makeService() {
         ),
     ),
   };
+  // H1: datos del avance semanal (una solicitud de SAP cerrada en la semana)
+  const avanceData: AvanceData = {
+    gestiones: [
+      {
+        sistema: 'sap',
+        folio: '324',
+        recibida: new Date('2026-09-14T00:00:00Z'),
+        fecha_origen: 'exacta',
+        primera_oc: new Date('2026-09-18T00:00:00Z'),
+        cierre_sin_oc: null,
+        cancelada: null,
+      },
+    ],
+    ordenes: [
+      {
+        sistema: 'sap',
+        fecha: new Date('2026-09-18T00:00:00Z'),
+        moneda: 'MXN',
+        monto: 1500.5,
+        contada_en_maximo: false,
+      },
+    ],
+    maximo_sin_fecha: 0,
+    sap_desde: new Date('2026-01-12T00:00:00Z'),
+  };
+  const avance = { loadData: jest.fn().mockResolvedValue(avanceData) };
   const service = new WeeklyReportService(
     prisma as unknown as PrismaService,
     reports as unknown as PurchaseReportsService,
@@ -162,6 +190,7 @@ function makeService() {
       resolveMany: jest.fn().mockResolvedValue(new Map<string, string>()),
     } as unknown as ErpAliasesService,
     vendors as unknown as MaximoVendorXrefService,
+    avance as unknown as AvanceSemanalService,
   );
   return { service, reports, sap };
 }
@@ -204,6 +233,7 @@ describe('WeeklyReportService', () => {
     const book = await readBook(buffer);
     expect(book.worksheets.map((w) => w.name)).toEqual([
       'Resumen',
+      'Avance semanal',
       'OC SAP',
       'Solicitudes SAP',
       'OC Maximo',
@@ -267,5 +297,20 @@ describe('WeeklyReportService', () => {
 
     const byApprover = book.getWorksheet('Pendientes por aprobador')!;
     expect(byApprover.getRow(2).getCell(5).value).toBe('Retrasado');
+
+    // H1: la semana del periodo con los mismos KPIs que el PDF
+    const avance = new Map<string, unknown>();
+    book.getWorksheet('Avance semanal')!.eachRow((row) => {
+      const values = row.values as unknown[];
+      avance.set(String(values[1]), values[2]);
+    });
+    expect(avance.get('Semana')).toBe(
+      'Semana del 14 al 18 de septiembre de 2026',
+    );
+    expect(avance.get('Fuente')).toBe('Maximo + SAP');
+    expect(avance.get('Gestiones recibidas en 2026')).toBe(1);
+    expect(avance.get('Cerradas en la semana')).toBe(1);
+    expect(avance.get('Días de cierre 2026 (promedio)')).toBe(4);
+    expect(avance.get('Monto adjudicado Septiembre 2026 (MXN)')).toBe(1500.5);
   });
 });

@@ -57,6 +57,17 @@ export function averageAndMedian(values: number[]): {
   return { promedio_dias: round1(avg), mediana_dias: round1(median) };
 }
 
+/**
+ * Días de gestión de una solicitud: de su fecha a la de su OC (o al evento
+ * que la cierra). Negativo (OC fechada antes que la solicitud: captura
+ * retroactiva) → null, fuera del promedio. Misma cuenta para la tarjeta del
+ * dashboard (G2, por OC) y el reporte de avance semanal (H1, por solicitud).
+ */
+export function gestionDays(from: Date, to: Date): number | null {
+  const value = (to.getTime() - from.getTime()) / MS_PER_DAY;
+  return value < 0 ? null : value;
+}
+
 export function sapGestionDays(
   orders: SapGestionPo[],
   requests: SapGestionRequest[],
@@ -77,8 +88,8 @@ export function sapGestionDays(
       continue;
     }
     const oldest = Math.min(...dates.map((d) => d.getTime()));
-    const value = (po.doc_date.getTime() - oldest) / MS_PER_DAY;
-    if (value < 0) {
+    const value = gestionDays(new Date(oldest), po.doc_date);
+    if (value === null) {
       descartadas += 1;
       continue;
     }

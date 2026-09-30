@@ -1,5 +1,6 @@
 import {
   averageAndMedian,
+  gestionDays,
   maximoGestionDays,
   sapGestionDays,
 } from './sap-gestion-days';
@@ -148,5 +149,15 @@ describe('mediana y gestión de Maximo (G2, 2026-09-28)', () => {
       descartadas: 1,
       sin_solicitud: 1,
     });
+  });
+});
+
+describe('gestionDays (H1: la misma cuenta por solicitud)', () => {
+  it('días entre la solicitud y su OC; negativo (captura retroactiva) → null', () => {
+    expect(gestionDays(d('2026-09-01'), d('2026-09-12'))).toBe(11);
+    expect(gestionDays(new Date('2026-09-01T12:00:00Z'), d('2026-09-02'))).toBe(
+      0.5,
+    );
+    expect(gestionDays(d('2026-09-12'), d('2026-09-01'))).toBeNull();
   });
 });

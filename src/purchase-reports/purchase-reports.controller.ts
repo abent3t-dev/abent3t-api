@@ -4,7 +4,10 @@ import { sendExcel } from '../common/utils/excel-export.util';
 import { PurchaseReportsService } from './purchase-reports.service';
 import { WeeklyReportService } from './weekly-report.service';
 import { ApprovalChainService } from './approval-chain.service';
+import { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
+import { sendPdf } from './avance-semanal/avance-semanal.pdf';
 import { ReportPeriodDto } from './dto/report-period.dto';
+import { AvanceSemanalDto } from './dto/avance-semanal.dto';
 
 // Roles de compras (§Roles y Permisos)
 
@@ -19,7 +22,26 @@ export class PurchaseReportsController {
     private readonly service: PurchaseReportsService,
     private readonly weekly: WeeklyReportService,
     private readonly chain: ApprovalChainService,
+    private readonly avance: AvanceSemanalService,
   ) {}
+
+  // H1 (2026-09-29): reporte de avance semanal (el de Jorge) — JSON de la
+  // página de una semana. Lectura abierta.
+  @Get('avance-semanal')
+  getAvanceSemanal(@Query() query: AvanceSemanalDto) {
+    return this.avance.getSemana(query);
+  }
+
+  // H1: el mismo reporte en PDF: `semana` = una página; `desde`/`hasta` =
+  // una página por semana (acumulado).
+  @Get('avance-semanal/pdf')
+  async getAvanceSemanalPdf(
+    @Query() query: AvanceSemanalDto,
+    @Res() res: Response,
+  ) {
+    const { buffer, filename } = await this.avance.buildPdf(query);
+    sendPdf(res, buffer, filename);
+  }
 
   // G5 (2026-09-28): aprobadas, rechazadas y pendientes por aprobador con
   // periodo (días desde que le llegó el documento). Lectura abierta.

@@ -116,6 +116,9 @@ const OPEN_READS = [
   '/compras/reportes/aprobadores',
   '/compras/reportes/aprobadores/export',
   '/compras/reportes/cadena-maximo',
+  // 2026-09-29 (H1): reporte de avance semanal (JSON y PDF)
+  '/compras/reportes/avance-semanal',
+  '/compras/reportes/avance-semanal/pdf',
   '/approvals/requisition/:rqId',
   '/approvals/stats',
   '/requisitions',

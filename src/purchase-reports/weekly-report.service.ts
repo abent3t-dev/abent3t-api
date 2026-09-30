@@ -32,6 +32,12 @@ import {
   CURRENT_MAXIMO_POS,
   PurchaseReportsService,
 } from './purchase-reports.service';
+import { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
+import {
+  type AvancePage,
+  buildAvancePage,
+  lastCompleteWeek,
+} from './avance-semanal/avance-semanal.engine';
 
 /**
  * Reporte semanal de Compras (Ingrid, 2026-09-23): un Excel con el resumen
@@ -46,6 +52,9 @@ import {
  * 2026-09-28: G1 proveedor efectivo en las OC de Maximo; G2 días de gestión
  * RQ → OC por sistema (promedio y mediana); G3 pendientes = RQ sin OC; las
  * PR de Maximo del periodo se ubican por folio; G7 etiquetas de estatus.
+ *
+ * 2026-09-29 (H1): hoja "Avance semanal" con los KPIs del PDF del reporte de
+ * avance semanal (mismo motor), de la última semana completa del periodo.
  */
 
 const DAY_MS = 86_400_000;
@@ -82,6 +91,13 @@ interface SummaryRow {
   indicador: string;
   actual: number | string | null;
   anterior: number | string | null;
+  nota?: string;
+  money?: boolean;
+}
+
+interface AvanceRow {
+  indicador: string;
+  valor: number | string | null;
   nota?: string;
   money?: boolean;
 }
@@ -163,6 +179,7 @@ export class WeeklyReportService {
     private readonly sap: SapRecordsService,
     private readonly aliases: ErpAliasesService,
     private readonly vendors: MaximoVendorXrefService,
+    private readonly avance: AvanceSemanalService,
   ) {}
 
   /** Periodo anterior: mismos días, justo antes de `from`. */
@@ -184,6 +201,8 @@ export class WeeklyReportService {
     const to = period.to.toISOString().slice(0, 10);
     const prev = this.previousPeriod(from, to);
     const periodTo = period.to;
+    // H1: datos del avance semanal (se cargan en paralelo con lo demás)
+    const avanceData = this.avance.loadData();
     // G3: las PR de Maximo del periodo se ubican por folio (sin fecha propia)
     const prWindow = await loadMaximoPrFolioWindow(
       this.prisma,
@@ -253,6 +272,13 @@ export class WeeklyReportService {
     const maximoPoRows = await this.vendors.resolve(maximoPos);
 
     const summary = this.summaryRows(actual, anterior, tiempos, openBalance);
+    // H1: última semana completa hasta el fin del periodo
+    const avancePage = buildAvancePage(
+      await avanceData,
+      lastCompleteWeek(new Date(periodTo.getTime() + 1)),
+      'todas',
+      new Date(),
+    );
     const periodLabel = `${dmy(from)} al ${dmy(to)}`;
     const prevLabel = `${dmy(prev.from)} al ${dmy(prev.to)}`;
     const summaryColumns: ExcelColumn<SummaryRow>[] = [
@@ -285,6 +311,20 @@ export class WeeklyReportService {
     const buffer = await buildWorkbook(
       [
         excelSheet('Resumen', summaryColumns, summary),
+        excelSheet<AvanceRow>(
+          'Avance semanal',
+          [
+            { header: 'Indicador', value: (r) => r.indicador, width: 46 },
+            {
+              header: 'Valor',
+              value: (r) => r.valor,
+              width: 30,
+              cellFormat: (r) => (r.money ? '#,##0.00' : undefined),
+            },
+            { header: 'Nota', value: (r) => r.nota, width: 70 },
+          ],
+          this.avanceRows(avancePage),
+        ),
         excelSheet(
           'OC SAP',
           pick(SAP_PO_EXPORT_COLUMNS, SAP_PO_HEADERS),
@@ -480,6 +520,8 @@ export class WeeklyReportService {
         'Comprador: en Maximo es el comprador de la OC (PURCHASEAGENT); si no lo trae (casi todas), "Capturó: …" es quien creó la OC en Maximo. SAP no tiene comprador capturado en ninguna OC: las OC de SAP creadas desde Maximo muestran lo de Maximo y las demás "Capturó: …" (el usuario de SAP que la capturó).',
         'Los indicadores marcados "al día de hoy" son una foto al generar el archivo, no del periodo; por eso no tienen columna anterior.',
         'Estado por aprobador: "Retrasado" cuando su pendiente más antigua ya rebasó su promedio histórico de autorización. Ambos cuentan desde que el documento le llegó a ese aprobador (la aprobación de la etapa anterior o la creación); "Días esperando" de la hoja de autorizaciones cuenta desde la creación.',
+        `Avance semanal (${avancePage.semana.etiqueta}): los mismos KPIs que el PDF "Reporte de avance semanal" de Reportes (Maximo + SAP, por cohorte del año).`,
+        ...avancePage.notas.map((nota) => `Avance semanal: ${nota}`),
         ...(sapPos.truncated || sapPrs.truncated
           ? ['El detalle de SAP excede el tope de filas; acota el periodo.']
           : []),
@@ -646,6 +688,136 @@ export class WeeklyReportService {
         nota: 'Al día de hoy · bloqueados en ABENT por desempeño',
       },
     );
+    return rows;
+  }
+
+  /** H1: KPIs de la página del avance semanal, uno por renglón. */
+  private avanceRows(p: AvancePage): AvanceRow[] {
+    const anio = p.semana.anio;
+    const dias = (v: number | null) => (v === null ? 'Sin datos' : v);
+    const { sap, maximo } = p.por_sistema;
+    const split = (pick: (s: NonNullable<typeof sap>) => number) =>
+      sap && maximo ? `SAP ${pick(sap)} · Maximo ${pick(maximo)}` : undefined;
+    const join = (...parts: Array<string | undefined>) =>
+      parts.filter(Boolean).join(' · ') || undefined;
+    const rows: AvanceRow[] = [
+      {
+        indicador: 'Semana',
+        valor: p.semana.etiqueta,
+        nota: `Datos al domingo ${p.semana.corte}`,
+      },
+      { indicador: 'Fuente', valor: p.fuente.etiqueta },
+      {
+        indicador: `Gestiones recibidas en ${anio}`,
+        valor: p.avance.recibidas_anio,
+        nota: split((s) => s.recibidas_anio),
+      },
+      {
+        indicador: 'Nuevas en la semana',
+        valor: p.avance.nuevas_semana,
+        nota: join(
+          split((s) => s.nuevas_semana),
+          p.avance.nuevas_aproximadas > 0
+            ? `${p.avance.nuevas_aproximadas} PR de Maximo con fecha aproximada`
+            : undefined,
+        ),
+      },
+      {
+        indicador: `Cerradas de las recibidas en ${anio}`,
+        valor: p.avance.cerradas_anio,
+        nota: split((s) => s.cerradas_anio),
+      },
+      {
+        indicador: 'Cerradas en la semana',
+        valor: p.avance.cerradas_semana,
+        nota: join(
+          split((s) => s.cerradas_semana),
+          p.avance.cerradas_semana_anteriores > 0
+            ? `${p.avance.cerradas_semana_anteriores} recibidas antes de ${anio}`
+            : undefined,
+        ),
+      },
+      {
+        indicador: `Días de cierre ${anio} (promedio)`,
+        valor: dias(p.cierre.anio.promedio_dias),
+        nota: `De la solicitud a su primera OC · mediana ${p.cierre.anio.mediana_dias ?? 'sin datos'} · sobre ${p.cierre.anio.total} cerradas con OC`,
+      },
+      ...p.cierre.semanas.map((s) => ({
+        indicador: `Días de cierre, semana ${s.etiqueta} (promedio)`,
+        valor: dias(s.dias.promedio_dias),
+        nota: `Mediana ${s.dias.mediana_dias ?? 'sin datos'} · ${s.cerradas} cerradas en la semana`,
+      })),
+    ];
+    if (!p.cancelacion.disponible || !p.cancelacion.anio) {
+      rows.push({
+        indicador: `Días de cancelación ${anio} (promedio)`,
+        valor: NO_DISPONIBLE,
+        nota: p.cancelacion.nota ?? undefined,
+      });
+    } else {
+      rows.push(
+        {
+          indicador: `Días de cancelación ${anio} (promedio)`,
+          valor: dias(p.cancelacion.anio.promedio_dias),
+          nota: join(
+            p.cancelacion.nota ?? undefined,
+            `mediana ${p.cancelacion.anio.mediana_dias ?? 'sin datos'} · sobre ${p.cancelacion.anio.total} canceladas`,
+          ),
+        },
+        ...p.cancelacion.semanas.map((s) => ({
+          indicador: `Días de cancelación, semana ${s.etiqueta} (promedio)`,
+          valor: dias(s.dias.promedio_dias),
+          nota: `Mediana ${s.dias.mediana_dias ?? 'sin datos'} · ${s.canceladas} canceladas en la semana`,
+        })),
+      );
+    }
+    const e = p.estado_anio;
+    rows.push(
+      {
+        indicador: `Canceladas de las recibidas en ${anio}`,
+        valor: p.fuente.clave === 'maximo' ? NO_DISPONIBLE : e.canceladas,
+        nota: 'Solo SAP: Maximo no envía el estatus de las solicitudes',
+      },
+      {
+        indicador: `Abiertas de las recibidas en ${anio} (SAP)`,
+        valor: e.abiertas,
+      },
+      {
+        indicador: `Sin OC de las recibidas en ${anio} (Maximo)`,
+        valor: e.sin_oc,
+        nota: 'Maximo no envía el estatus de las PR: pueden seguir abiertas o estar canceladas',
+      },
+      {
+        indicador: `% atendidas de las recibidas en ${anio}`,
+        valor: e.atendidas_pct ?? 'Sin datos',
+        nota: 'Cerradas + canceladas entre recibidas',
+      },
+    );
+    for (const c of p.anual) {
+      rows.push(
+        { indicador: `Recibidas en ${c.anio}`, valor: c.recibidas },
+        {
+          indicador: `Atendidas de ${c.anio}`,
+          valor: c.atendidas,
+          nota: `${c.atendidas_pct ?? 'sin datos'}% · ${c.cerradas} cerradas · ${c.canceladas} canceladas · ${c.abiertas} abiertas · ${c.sin_oc} sin OC`,
+        },
+      );
+    }
+    for (const moneda of p.montos.monedas) {
+      for (const mes of p.montos.meses) {
+        rows.push({
+          indicador: `Monto adjudicado ${mes.etiqueta} ${p.montos.anio} (${moneda})`,
+          valor: mes.montos[moneda] ?? 0,
+          money: true,
+        });
+      }
+      rows.push({
+        indicador: `Monto adjudicado total ${p.montos.anio} (${moneda})`,
+        valor: p.montos.total[moneda] ?? 0,
+        nota: 'OC no canceladas, con IVA, por mes de la OC',
+        money: true,
+      });
+    }
     return rows;
   }
 

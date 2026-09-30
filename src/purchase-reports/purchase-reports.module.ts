@@ -7,6 +7,7 @@ import { PurchaseReportsController } from './purchase-reports.controller';
 import { PurchaseReportsService } from './purchase-reports.service';
 import { WeeklyReportService } from './weekly-report.service';
 import { ApprovalChainService } from './approval-chain.service';
+import { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
 
 /**
  * Fase Reportes — agregación de solo lectura. Importa los módulos cuyos
@@ -25,6 +26,7 @@ import { ApprovalChainService } from './approval-chain.service';
     PurchaseReportsService,
     WeeklyReportService,
     ApprovalChainService,
+    AvanceSemanalService,
   ],
 })
 export class PurchaseReportsModule {}
