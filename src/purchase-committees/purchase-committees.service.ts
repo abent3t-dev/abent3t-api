@@ -18,6 +18,8 @@ import { CreateCommitteeDto } from './dto/create-committee.dto';
 import { RejectCommitteeDto } from './dto/reject-committee.dto';
 import { UpdateApprovalLevelDto } from './dto/update-approval-level.dto';
 import { UpdateCommitteeDto } from './dto/update-committee.dto';
+import { CreateApprovalLevelDto } from './dto/create-approval-level.dto';
+import { COMMITTEE_SIGNER_ROLES } from './committee-roles';
 
 /**
  * Fase §16 — Comité de Compras: workflow de aprobación SECUENCIAL leído de
@@ -33,6 +35,13 @@ import { UpdateCommitteeDto } from './dto/update-committee.dto';
  * Correos best-effort DESPUÉS del commit (§16); sin sockets (pendiente global
  * de compras, regla 6 de la fase). Sin FKs hacia el staging de integraciones
  * ni hacia contracts (regla 2).
+ *
+ * H3 (2026-09-29): editor de la cadena (alta de nivel, reordenar, persona o
+ * rol, activo y confirmado). Candados: con comités en aprobación no se
+ * reordena ni se desactiva el nivel que tiene uno esperando (el comité guarda
+ * el número de su nivel); la cadena conserva al menos un nivel activo; y
+ * quien ocupa un nivel por persona necesita un rol de aprobador de compras,
+ * o el guard de aprobar no lo deja firmar.
  */
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30 MB (§16)
@@ -63,6 +72,19 @@ const VERSION_SELECT = {
 const APPROVAL_INCLUDE = {
   profiles: { select: { id: true, full_name: true } },
 } as const;
+
+const LEVEL_INCLUDE = {
+  profiles: { select: { id: true, full_name: true, email: true } },
+} as const;
+
+type LevelWithProfile = Prisma.committee_approval_levelsGetPayload<{
+  include: typeof LEVEL_INCLUDE;
+}>;
+
+/** Nivel para el editor: `profile` = la persona que firma (null = por rol). */
+function mapLevel({ profiles, ...level }: LevelWithProfile) {
+  return { ...level, profile: profiles };
+}
 
 type CommitteeRow = Prisma.purchase_committeesGetPayload<{
   include: typeof COMMITTEE_INCLUDE;
@@ -132,10 +154,12 @@ export class PurchaseCommitteesService {
     return hasAnyRole(user, level.role);
   }
 
-  getLevels() {
-    return this.prisma.committee_approval_levels.findMany({
+  async getLevels() {
+    const rows = await this.prisma.committee_approval_levels.findMany({
       orderBy: { orden: 'asc' },
+      include: LEVEL_INCLUDE,
     });
+    return rows.map(mapLevel);
   }
 
   async updateLevel(id: string, dto: UpdateApprovalLevelDto, user: AuthUser) {
@@ -143,27 +167,142 @@ export class PurchaseCommitteesService {
       where: { id },
     });
     if (!existing) throw new NotFoundException('Nivel no encontrado');
-    if (dto.profile_id) {
-      const profile = await this.prisma.profiles.findFirst({
-        where: { id: dto.profile_id, is_active: true },
-        select: { id: true },
+    if (dto.profile_id) await this.assertSigner(dto.profile_id);
+    if (dto.orden !== undefined && dto.orden !== existing.orden) {
+      await this.assertNoCommitteeInFlight('cambiar el orden de la cadena');
+    }
+    if (dto.is_active === false && existing.is_active) {
+      const waiting = await this.prisma.purchase_committees.count({
+        where: {
+          is_active: true,
+          status: 'en_aprobacion',
+          current_approver_level: existing.orden,
+        },
       });
-      if (!profile) throw new NotFoundException('Perfil no encontrado');
+      if (waiting > 0) {
+        throw new BadRequestException(
+          `El nivel ${existing.orden} tiene ${waiting} comité(s) esperando su firma: cámbialo de persona en lugar de desactivarlo, o espera a que lo firme.`,
+        );
+      }
+      const active = await this.prisma.committee_approval_levels.count({
+        where: { is_active: true },
+      });
+      if (active <= 1) {
+        throw new BadRequestException(
+          'La cadena necesita al menos un nivel activo',
+        );
+      }
     }
     try {
       const updated = await this.prisma.committee_approval_levels.update({
         where: { id },
         data: dto,
+        include: LEVEL_INCLUDE,
       });
       this.logger.log(
         `Nivel ${existing.orden} del comité actualizado por ${user.id} (confirmed=${String(updated.confirmed)})`,
       );
-      return updated;
+      return mapLevel(updated);
     } catch (err: unknown) {
       if ((err as { code?: string }).code === 'P2002') {
         throw new BadRequestException('Ya existe un nivel con ese orden');
       }
       throw err;
+    }
+  }
+
+  /** H3: nuevo nivel al final de la cadena (nace sin confirmar). */
+  async createLevel(dto: CreateApprovalLevelDto, user: AuthUser) {
+    if (dto.profile_id) await this.assertSigner(dto.profile_id);
+    const last = await this.prisma.committee_approval_levels.aggregate({
+      _max: { orden: true },
+    });
+    const created = await this.prisma.committee_approval_levels.create({
+      data: {
+        orden: (last._max.orden ?? 0) + 1,
+        role: dto.role,
+        profile_id: dto.profile_id ?? null,
+        confirmed: dto.confirmed ?? false,
+        notes: dto.notes ?? null,
+      },
+      include: LEVEL_INCLUDE,
+    });
+    this.logger.log(
+      `Nivel ${created.orden} agregado a la cadena del comité por ${user.id}`,
+    );
+    return mapLevel(created);
+  }
+
+  /**
+   * H3: nuevo orden de TODA la cadena en una transacción. `orden` es único:
+   * primero se mueven fuera de rango y luego a 1..N.
+   */
+  async reorderLevels(ids: string[], user: AuthUser) {
+    const levels = await this.prisma.committee_approval_levels.findMany({
+      select: { id: true, orden: true },
+    });
+    const known = new Set(levels.map((l) => l.id));
+    if (ids.length !== levels.length || ids.some((id) => !known.has(id))) {
+      throw new BadRequestException(
+        'El nuevo orden debe traer todos los niveles de la cadena, una vez cada uno',
+      );
+    }
+    await this.assertNoCommitteeInFlight('reordenar la cadena');
+    const offset = Math.max(0, ...levels.map((l) => l.orden)) + ids.length;
+    await this.prisma.$transaction(async (tx) => {
+      for (const [i, id] of ids.entries()) {
+        await tx.committee_approval_levels.update({
+          where: { id },
+          data: { orden: offset + i + 1 },
+        });
+      }
+      for (const [i, id] of ids.entries()) {
+        await tx.committee_approval_levels.update({
+          where: { id },
+          data: { orden: i + 1 },
+        });
+      }
+    });
+    this.logger.log(`Cadena del comité reordenada por ${user.id}`);
+    return this.getLevels();
+  }
+
+  /** El comité guarda el número de su nivel: no mover la cadena a medio flujo. */
+  private async assertNoCommitteeInFlight(action: string) {
+    const inFlight = await this.prisma.purchase_committees.count({
+      where: { is_active: true, status: 'en_aprobacion' },
+    });
+    if (inFlight > 0) {
+      throw new BadRequestException(
+        `Hay ${inFlight} comité(s) en aprobación: no se puede ${action} hasta que terminen o se rechacen.`,
+      );
+    }
+  }
+
+  /** Quien firma por persona debe pasar el guard de aprobar (rol de aprobador). */
+  private async assertSigner(profileId: string) {
+    const profile = await this.prisma.profiles.findFirst({
+      where: { id: profileId, is_active: true },
+      select: {
+        id: true,
+        full_name: true,
+        email: true,
+        role: true,
+        user_roles_user_roles_profile_idToprofiles: {
+          where: { is_active: true },
+          select: { role: true },
+        },
+      },
+    });
+    if (!profile) throw new NotFoundException('Perfil no encontrado');
+    const roles = [
+      profile.role,
+      ...profile.user_roles_user_roles_profile_idToprofiles.map((r) => r.role),
+    ];
+    if (!roles.some((r) => r !== null && COMMITTEE_SIGNER_ROLES.includes(r))) {
+      throw new BadRequestException(
+        `${profile.full_name ?? profile.email} no tiene un rol de aprobador de compras (líder de procura, aprobador nivel 1, 2 o 3 o director general): asígnaselo en Compras → Roles para que pueda firmar.`,
+      );
     }
   }
 

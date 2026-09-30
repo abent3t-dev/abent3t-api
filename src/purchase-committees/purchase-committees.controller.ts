@@ -23,18 +23,13 @@ import { CreateCommitteeDto } from './dto/create-committee.dto';
 import { RejectCommitteeDto } from './dto/reject-committee.dto';
 import { UpdateApprovalLevelDto } from './dto/update-approval-level.dto';
 import { UpdateCommitteeDto } from './dto/update-committee.dto';
-
-// Roles de compras (§Roles y Permisos + §17)
-const PURCHASE_TEAM = ['lider_procura', 'coordinador_compras', 'comprador'];
-const APPROVERS = [
-  'aprobador_nivel_1',
-  'aprobador_nivel_2',
-  'aprobador_nivel_3',
-  'director_general',
-];
-// APPROVERS_COMITE (§17): lider_procura es el nivel 1 de la cadena
-const APPROVERS_COMITE = ['lider_procura', ...APPROVERS];
-const PURCHASE_ADMINS = ['super_admin', 'lider_procura'];
+import { CreateApprovalLevelDto } from './dto/create-approval-level.dto';
+import { ReorderApprovalLevelsDto } from './dto/reorder-approval-levels.dto';
+import {
+  APPROVERS_COMITE,
+  PURCHASE_ADMINS,
+  PURCHASE_TEAM,
+} from './committee-roles';
 
 /**
  * Fase §16 — Comité de Compras. El turno de aprobación se valida en el
@@ -68,6 +63,26 @@ export class PurchaseCommitteesController {
   @Get('niveles')
   getLevels() {
     return this.service.getLevels();
+  }
+
+  // H3: editor de la cadena — agregar un nivel al final
+  @Roles(...PURCHASE_ADMINS)
+  @Post('niveles')
+  createLevel(
+    @Body() dto: CreateApprovalLevelDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.createLevel(dto, user);
+  }
+
+  // H3: nuevo orden de toda la cadena (antes de 'niveles/:id')
+  @Roles(...PURCHASE_ADMINS)
+  @Put('niveles/orden')
+  reorderLevels(
+    @Body() dto: ReorderApprovalLevelsDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.reorderLevels(dto.ids, user);
   }
 
   @Roles(...PURCHASE_ADMINS)

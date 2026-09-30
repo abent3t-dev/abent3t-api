@@ -108,7 +108,16 @@ function makeHarness(levels: Row[] = defaultLevels()) {
   });
 
   const committeeTable = {
-    count: jest.fn(() => Promise.resolve(committees.length)),
+    count: jest.fn(({ where }: { where?: Record<string, unknown> } = {}) =>
+      Promise.resolve(
+        committees.filter(
+          (c) =>
+            (where?.status === undefined || c.status === where.status) &&
+            (where?.current_approver_level === undefined ||
+              c.current_approver_level === where.current_approver_level),
+        ).length,
+      ),
+    ),
     findMany: jest.fn(({ where }: { where?: Record<string, unknown> } = {}) =>
       Promise.resolve(
         committees
@@ -254,6 +263,28 @@ function makeHarness(levels: Row[] = defaultLevels()) {
       findUnique: jest.fn(({ where }: { where: { id: string } }) =>
         Promise.resolve(levels.find((l) => l.id === where.id) ?? null),
       ),
+      count: jest.fn(({ where }: { where?: { is_active?: boolean } } = {}) =>
+        Promise.resolve(
+          levels.filter(
+            (l) =>
+              where?.is_active === undefined || l.is_active === where.is_active,
+          ).length,
+        ),
+      ),
+      aggregate: jest.fn(() =>
+        Promise.resolve({
+          _max: {
+            orden: levels.length
+              ? Math.max(...levels.map((l) => l.orden as number))
+              : null,
+          },
+        }),
+      ),
+      create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+        const row: Row = { id: nextId(), is_active: true, ...data };
+        levels.push(row);
+        return Promise.resolve(row);
+      }),
       update: jest.fn(
         ({
           where,
@@ -287,7 +318,23 @@ function makeHarness(levels: Row[] = defaultLevels()) {
             .map((u) => ({ email: u.email, full_name: u.full_name })),
         );
       }),
-      findFirst: jest.fn(() => Promise.resolve({ id: 'p-1' })),
+      // H3: quién puede ocupar un nivel por persona (sus roles de compras)
+      findFirst: jest.fn(({ where }: { where: { id: string } }) => {
+        const u = [AUTHOR, ...CHAIN_USERS].find((x) => x.id === where.id);
+        return Promise.resolve(
+          u
+            ? {
+                id: u.id,
+                full_name: u.full_name,
+                email: u.email,
+                role: null,
+                user_roles_user_roles_profile_idToprofiles: u.roles.map(
+                  (role) => ({ role }),
+                ),
+              }
+            : null,
+        );
+      }),
     },
     $transaction: jest.fn(),
   };
@@ -594,6 +641,88 @@ describe('PurchaseCommitteesService — motor de aprobación (§16)', () => {
     await h.service.approve(committee.id, INGRID, {});
     expect(await h.service.pendingForMe(INGRID)).toHaveLength(0);
     expect(await h.service.pendingForMe(GILBERTO)).toHaveLength(1);
+  });
+});
+
+describe('PurchaseCommitteesService — editor de la cadena (H3)', () => {
+  it('agrega un nivel al final, sin confirmar', async () => {
+    const h = makeHarness();
+    const level = await h.service.createLevel(
+      { role: 'director_general', notes: 'Félix' },
+      INGRID,
+    );
+    expect(level).toMatchObject({
+      orden: 6,
+      role: 'director_general',
+      profile_id: null,
+      confirmed: false,
+    });
+  });
+
+  it('reordena la cadena completa; exige todos los niveles una vez', async () => {
+    const h = makeHarness();
+    const ids = h.levels.map((l) => l.id);
+    await h.service.reorderLevels([...ids].reverse(), INGRID);
+    const byId = new Map(h.levels.map((l) => [l.id, l.orden]));
+    expect(ids.map((id) => byId.get(id))).toEqual([5, 4, 3, 2, 1]);
+
+    await expect(h.service.reorderLevels(ids.slice(1), INGRID)).rejects.toThrow(
+      'todos los niveles',
+    );
+  });
+
+  it('con comités en aprobación: no reordena ni desactiva el nivel que espera firma', async () => {
+    const h = makeHarness();
+    const committee = await draftWithDocument(h);
+    await h.service.submit(committee.id, AUTHOR); // espera en el nivel 1
+    const ids = h.levels.map((l) => l.id);
+
+    await expect(
+      h.service.reorderLevels([...ids].reverse(), INGRID),
+    ).rejects.toThrow('Hay 1 comité(s) en aprobación');
+    await expect(
+      h.service.updateLevel(ids[0], { orden: 9 }, INGRID),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      h.service.updateLevel(ids[0], { is_active: false }, INGRID),
+    ).rejects.toThrow('esperando su firma');
+
+    // un nivel que todavía no le toca sí se puede quitar, y cambiar de persona
+    await h.service.updateLevel(ids[4], { is_active: false }, INGRID);
+    await h.service.updateLevel(ids[0], { profile_id: FELIX.id }, INGRID);
+    expect(h.levels[4].is_active).toBe(false);
+    expect(h.levels[0].profile_id).toBe(FELIX.id);
+  });
+
+  it('la cadena conserva al menos un nivel activo', async () => {
+    const h = makeHarness();
+    const ids = h.levels.map((l) => l.id);
+    for (const id of ids.slice(1)) {
+      await h.service.updateLevel(id, { is_active: false }, INGRID);
+    }
+    await expect(
+      h.service.updateLevel(ids[0], { is_active: false }, INGRID),
+    ).rejects.toThrow('al menos un nivel activo');
+  });
+
+  it('por persona: solo quien tiene rol de aprobador de compras (si no, no podría firmar)', async () => {
+    const h = makeHarness();
+    const [first] = h.levels;
+    await expect(
+      h.service.updateLevel(first.id, { profile_id: AUTHOR.id }, INGRID),
+    ).rejects.toThrow('no tiene un rol de aprobador de compras');
+    await expect(
+      h.service.createLevel(
+        { role: 'director_general', profile_id: AUTHOR.id },
+        INGRID,
+      ),
+    ).rejects.toThrow(BadRequestException);
+    const updated = await h.service.updateLevel(
+      first.id,
+      { profile_id: GILBERTO.id, confirmed: true },
+      INGRID,
+    );
+    expect(updated).toMatchObject({ profile_id: GILBERTO.id, confirmed: true });
   });
 });
 
