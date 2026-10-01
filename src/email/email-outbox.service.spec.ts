@@ -487,16 +487,24 @@ describe('cola de correo (J1)', () => {
       }
     });
 
-    it('ALLOWED_EMAIL_DOMAIN acepta una lista', async () => {
-      const h = makeHarness({
-        ALLOWED_EMAIL_DOMAIN: 'abent3t.com, @ciisa.com',
-      });
+    it('ALLOWED_EMAIL_DOMAIN es un solo dominio, el mismo del login', async () => {
+      const h = makeHarness({ ALLOWED_EMAIL_DOMAIN: ' CIISA.com ' });
       expect((await h.service.enqueue(aviso('ingrid@ciisa.com'))).status).toBe(
         'pendiente',
       );
-      expect((await h.service.enqueue(aviso('alguien@gmail.com'))).status).toBe(
+      expect((await h.service.enqueue(aviso('diana@abent3t.com'))).status).toBe(
         'rechazado',
       );
+      expect((await h.service.status(at(0))).allowed_domains).toEqual([
+        'ciisa.com',
+      ]);
+    });
+
+    it('una dirección mal formada no pasa', async () => {
+      const h = makeHarness();
+      for (const to of ['@abent3t.com', 'a@b@abent3t.com', 'abent3t.com']) {
+        expect((await h.service.enqueue(aviso(to))).status).toBe('rechazado');
+      }
     });
 
     it('si cambia el dominio permitido, lo pendiente se revisa otra vez al enviar', async () => {

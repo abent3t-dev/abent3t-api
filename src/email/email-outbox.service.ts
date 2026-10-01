@@ -13,8 +13,9 @@ import { EmailTransportService } from './email-transport.service';
  *
  *  - Idempotencia: llave plantilla + entidad + destinatario + día (CDMX),
  *    UNIQUE. El mismo aviso dos veces el mismo día es un solo registro.
- *  - Solo destinatarios internos: dominio de `ALLOWED_EMAIL_DOMAIN` (default
- *    abent3t.com). Lo demás queda registrado como "rechazado" y no sale.
+ *  - Solo destinatarios internos: el dominio de `ALLOWED_EMAIL_DOMAIN` (el
+ *    mismo del login; default abent3t.com). Lo demás queda registrado como
+ *    "rechazado" y no sale.
  *  - Ritmo: un correo cada `EMAIL_MIN_INTERVAL_SECONDS` (default 120, lo que
  *    pidió César).
  *  - Tope diario `EMAIL_DAILY_CAP` (default 100): al llegar, el envío se
@@ -167,19 +168,23 @@ export class EmailOutboxService {
     return this.positive('EMAIL_DAILY_CAP', DEFAULT_DAILY_CAP);
   }
 
-  /** `ALLOWED_EMAIL_DOMAIN` (el mismo del login); acepta lista con comas. */
+  /**
+   * `ALLOWED_EMAIL_DOMAIN`: el MISMO dominio único del login (OIDC compara
+   * `@dominio` exacto), así que no admite lista: una lista rompería el login.
+   */
   get allowedDomains(): string[] {
-    const raw = this.config.get<string>('ALLOWED_EMAIL_DOMAIN') ?? '';
-    const list = raw
-      .split(',')
-      .map((d) => d.trim().toLowerCase().replace(/^@/, ''))
-      .filter(Boolean);
-    return list.length > 0 ? list : [DEFAULT_ALLOWED_DOMAIN];
+    const domain = (this.config.get<string>('ALLOWED_EMAIL_DOMAIN') ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/^@/, '');
+    return [domain || DEFAULT_ALLOWED_DOMAIN];
   }
 
+  /** Dirección con un solo `@` y exactamente el dominio permitido. */
   isAllowedRecipient(email: string): boolean {
-    const domain = email.trim().toLowerCase().split('@')[1] ?? '';
-    return this.allowedDomains.includes(domain);
+    const parts = email.trim().toLowerCase().split('@');
+    if (parts.length !== 2 || !parts[0]) return false;
+    return this.allowedDomains.includes(parts[1]);
   }
 
   private positive(name: string, fallback: number): number {
