@@ -77,12 +77,21 @@ export interface ExcelSheet {
   fill: (workbook: ExcelJS.Workbook) => void;
 }
 
+/** Opciones de una hoja: renglones de sección (título de bloque en negritas). */
+export interface ExcelSheetOptions<T> {
+  section?: (row: T) => boolean;
+}
+
 export function excelSheet<T>(
   name: string,
   columns: ExcelColumn<T>[],
   rows: T[],
+  options: ExcelSheetOptions<T> = {},
 ): ExcelSheet {
-  return { name, fill: (workbook) => addSheet(workbook, name, columns, rows) };
+  return {
+    name,
+    fill: (workbook) => addSheet(workbook, name, columns, rows, options),
+  };
 }
 
 /**
@@ -111,6 +120,7 @@ function addSheet<T>(
   sheetName: string,
   columns: ExcelColumn<T>[],
   rows: T[],
+  options: ExcelSheetOptions<T> = {},
 ): void {
   const sheet = workbook.addWorksheet(sheetName.slice(0, 31), {
     views: [{ state: 'frozen', xSplit: 0, ySplit: 1 }],
@@ -139,6 +149,14 @@ function addSheet<T>(
       const fmt = c.cellFormat?.(row);
       if (fmt) added.getCell(i + 1).numFmt = fmt;
     });
+    if (options.section?.(row)) {
+      added.font = { bold: true, color: { argb: 'FF2E7D1F' } };
+      added.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFEEF6EA' },
+      };
+    }
   }
   columns.forEach((c, i) => {
     const col = sheet.getColumn(`c${i}`);

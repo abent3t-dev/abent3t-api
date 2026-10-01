@@ -64,13 +64,57 @@ describe('AvanceSemanalService.resolveWeeks', () => {
 });
 
 describe('PDF del reporte de avance semanal', () => {
-  it('una semana: una página y el nombre con su lunes', async () => {
-    const { buffer, filename } = await makeService().buildPdf({
+  it('I3: una semana = dos páginas (Maximo y luego SAP) y el nombre con su lunes', async () => {
+    const service = makeService();
+    const pages = await service.getPaginas({ semana: '2026-09-21' });
+    expect(pages.map((p) => [p.fuente.clave, p.semana.lunes])).toEqual([
+      ['maximo', '2026-09-21'],
+      ['sap', '2026-09-21'],
+    ]);
+    const { buffer, filename } = await service.buildPdf({
       semana: '2026-09-21',
     });
     expect(buffer.subarray(0, 5).toString()).toBe('%PDF-');
-    expect(pageCount(buffer)).toBe(1);
+    expect(pageCount(buffer)).toBe(2);
     expect(filename).toBe('reporte_avance_semanal_2026-09-21.pdf');
+    // el índice: marcadores por sistema
+    const raw = buffer.toString('latin1');
+    expect(raw).toContain('/Outlines');
+    expect(raw).toContain('(Maximo)');
+    expect(raw).toContain('(SAP)');
+  });
+
+  it('I3: el acumulado va por sección — todas las semanas de Maximo y luego las de SAP', async () => {
+    const pages = await makeService().getPaginas({
+      desde: '2026-09-07',
+      hasta: '2026-09-21',
+    });
+    expect(pages.map((p) => `${p.fuente.clave} ${p.semana.lunes}`)).toEqual([
+      'maximo 2026-09-21',
+      'maximo 2026-09-14',
+      'maximo 2026-09-07',
+      'sap 2026-09-21',
+      'sap 2026-09-14',
+      'sap 2026-09-07',
+    ]);
+  });
+
+  it('I3: el JSON por defecto trae las dos páginas, cada una con sus definiciones', async () => {
+    const both = (await makeService().getSemana({ semana: '2026-09-21' })) as {
+      paginas: Array<{
+        fuente: { clave: string };
+        definiciones: Record<string, string>;
+      }>;
+    };
+    expect(both.paginas.map((p) => p.fuente.clave)).toEqual(['maximo', 'sap']);
+    expect(both.paginas[1].definiciones.gestion).toBe(
+      'Gestión = solicitud de pedido de SAP.',
+    );
+    const one = (await makeService().getSemana({
+      semana: '2026-09-21',
+      fuente: 'todas',
+    })) as { fuente: { clave: string } };
+    expect(one.fuente.clave).toBe('todas');
   });
 
   it('acumulado: una página por semana; la fuente va en el nombre', async () => {

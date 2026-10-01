@@ -298,19 +298,43 @@ describe('WeeklyReportService', () => {
     const byApprover = book.getWorksheet('Pendientes por aprobador')!;
     expect(byApprover.getRow(2).getCell(5).value).toBe('Retrasado');
 
-    // H1: la semana del periodo con los mismos KPIs que el PDF
-    const avance = new Map<string, unknown>();
-    book.getWorksheet('Avance semanal')!.eachRow((row) => {
+    // H1: la semana del periodo con los mismos KPIs que el PDF; I3: un
+    // bloque de Maximo y uno de SAP (homologados), no el combinado
+    const blocks = new Map<string, Map<string, unknown>>();
+    let block: Map<string, unknown> | null = null;
+    book.getWorksheet('Avance semanal')!.eachRow((row, n) => {
+      if (n === 1) return;
       const values = row.values as unknown[];
-      avance.set(String(values[1]), values[2]);
+      const valor = values[2];
+      if (
+        typeof valor === 'string' &&
+        valor.startsWith('Reporte de avance semanal de')
+      ) {
+        block = new Map();
+        blocks.set(String(values[1]), block);
+        expect(row.font?.bold).toBe(true);
+        return;
+      }
+      block?.set(String(values[1]), valor);
     });
-    expect(avance.get('Semana')).toBe(
-      'Semana del 14 al 18 de septiembre de 2026',
+    expect([...blocks.keys()]).toEqual(['Maximo', 'SAP']);
+    const maximo = blocks.get('Maximo')!;
+    const sapBlock = blocks.get('SAP')!;
+    for (const b of [maximo, sapBlock]) {
+      expect(b.get('Semana')).toBe('Semana del 14 al 18 de septiembre de 2026');
+    }
+    expect(maximo.get('Fuente')).toBe('Maximo');
+    expect(maximo.get('Gestiones recibidas en 2026')).toBe(0);
+    expect(maximo.get('Canceladas de las recibidas en 2026')).toBe(
+      'No disponible',
     );
-    expect(avance.get('Fuente')).toBe('Maximo + SAP');
-    expect(avance.get('Gestiones recibidas en 2026')).toBe(1);
-    expect(avance.get('Cerradas en la semana')).toBe(1);
-    expect(avance.get('Días de cierre 2026 (promedio)')).toBe(4);
-    expect(avance.get('Monto adjudicado Septiembre 2026 (MXN)')).toBe(1500.5);
+    expect(maximo.has('Sin OC de las recibidas en 2026')).toBe(true);
+    expect(sapBlock.get('Fuente')).toBe('SAP');
+    expect(sapBlock.get('Gestiones recibidas en 2026')).toBe(1);
+    expect(sapBlock.get('Cerradas en la semana')).toBe(1);
+    expect(sapBlock.get('Días de cierre 2026 (promedio)')).toBe(4);
+    expect(sapBlock.get('Monto adjudicado Septiembre 2026 (MXN)')).toBe(1500.5);
+    expect(sapBlock.has('Sin OC de las recibidas en 2026')).toBe(false);
+    expect(sapBlock.has('Abiertas de las recibidas en 2026')).toBe(true);
   });
 });

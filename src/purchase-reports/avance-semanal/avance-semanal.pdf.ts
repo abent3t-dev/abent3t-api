@@ -13,6 +13,10 @@ import {
  * semana con las 9 secciones del reporte de Jorge y el look de la plataforma
  * (tarjetas blancas, verde de marca). Todo vectorial con pdfkit (JS puro):
  * sin Chromium ni LibreOffice en la imagen del api.
+ *
+ * I3 (2026-09-30): el sistema de la página va junto al título (Maximo / SAP)
+ * y los marcadores del PDF agrupan las semanas por sistema (el índice del
+ * acumulado, sin páginas extra).
  */
 
 type Doc = PDFKit.PDFDocument;
@@ -202,10 +206,24 @@ function header(doc: Doc, page: AvancePage) {
   const grad = doc.linearGradient(0, 0, W, 0);
   grad.stop(0, C.verde).stop(0.65, '#3F9A2A').stop(1, C.verdeOscuro);
   doc.rect(0, 0, W, 74).fill(grad);
-  text(doc, 'Reporte de avance semanal', M, 11, {
+  const titulo = 'Reporte de avance semanal';
+  text(doc, titulo, M, 11, {
     font: F.b,
     size: 24,
     color: C.blanco,
+  });
+  // I3: cada página dice de qué sistema es
+  doc.font(F.b).fontSize(24);
+  const pillX = M + doc.widthOfString(titulo) + 12;
+  doc.font(F.b).fontSize(14);
+  const pillW = doc.widthOfString(page.fuente.etiqueta) + 22;
+  doc.roundedRect(pillX, 15, pillW, 26, 13).fill(C.blanco);
+  text(doc, page.fuente.etiqueta, pillX, 19.5, {
+    font: F.b,
+    size: 14,
+    color: C.verdeOscuro,
+    width: pillW,
+    align: 'center',
   });
   text(doc, page.semana.etiqueta, M, 45, {
     size: 12.5,
@@ -892,6 +910,8 @@ export function renderAvancePdf(pages: AvancePage[]): Promise<Buffer> {
   const { regular, semibold, bold } = loadFonts();
   return new Promise((resolve, reject) => {
     const first = pages[0];
+    const semanas = new Set(pages.map((p) => p.semana.lunes)).size;
+    const fuentes = [...new Set(pages.map((p) => p.fuente.etiqueta))];
     const doc = new PDFDocument({
       autoFirstPage: false,
       size: 'LETTER',
@@ -899,9 +919,9 @@ export function renderAvancePdf(pages: AvancePage[]): Promise<Buffer> {
       margin: 0,
       info: {
         Title:
-          pages.length === 1 && first
-            ? `Reporte de avance semanal — ${first.semana.etiqueta}`
-            : 'Reporte de avance semanal — acumulado',
+          semanas === 1 && first
+            ? `Reporte de avance semanal (${fuentes.join(' y ')}) — ${first.semana.etiqueta}`
+            : `Reporte de avance semanal (${fuentes.join(' y ')}) — acumulado`,
         Author: 'Abent 3T · Compras',
         Creator: 'Plataforma Abent 3T',
       },
@@ -913,8 +933,17 @@ export function renderAvancePdf(pages: AvancePage[]): Promise<Buffer> {
     doc.registerFont(F.r, regular);
     doc.registerFont(F.s, semibold);
     doc.registerFont(F.b, bold);
+    // I3: marcadores = índice por sistema y semana
+    let seccion: { clave: string; item: PDFKit.PDFOutline } | null = null;
     pages.forEach((page, i) => {
       doc.addPage({ size: 'LETTER', layout: 'landscape', margin: 0 });
+      if (seccion?.clave !== page.fuente.clave) {
+        seccion = {
+          clave: page.fuente.clave,
+          item: doc.outline.addItem(page.fuente.etiqueta, { expanded: true }),
+        };
+      }
+      seccion.item.addItem(page.semana.etiqueta);
       drawPage(doc, page, i, pages.length);
     });
     doc.end();

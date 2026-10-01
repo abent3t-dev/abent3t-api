@@ -12,8 +12,11 @@ import {
  *
  * Definiciones PROVISIONALES (TAREAS_COMPRAS_2026-09-29 § H1; las confirman
  * Ingrid y Jorge). Cualquier cambio de regla va en este archivo:
- *  - Gestión = solicitud de compra: solicitud de pedido de SAP y/o PR de
- *    Maximo, según la fuente (`todas` por defecto: Ingrid, 29-sep 19:15).
+ *  - Gestión = solicitud de compra: solicitud de pedido de SAP o PR de
+ *    Maximo. I3 (go-live 2026-09-30, Ingrid): "uno de Maximo, uno de SAP y
+ *    esté homologado" — el reporte por defecto (`ambos`) trae una página de
+ *    Maximo y una de SAP por semana, con el mismo formato; `todas` (las dos
+ *    sumadas) queda solo en la API.
  *  - Recibida = fecha de la solicitud (SAP DocDate; Maximo ISSUEDATE, que
  *    solo llega con la OC: las demás se ubican aproximadas, ver data.ts).
  *  - Por año = por COHORTE: las recibidas en el año y, de esas, cuántas están
@@ -25,17 +28,37 @@ import {
  *    las PR: las que no tienen OC son "sin OC", ni canceladas ni abiertas.
  *  - Días = `gestionDays` (la misma cuenta que G2) con promedio y mediana.
  *  - Montos adjudicados = OC no canceladas, con IVA, por mes de la OC y por
- *    moneda (USD aparte, sin convertir); con `todas`, las OC de SAP creadas
- *    desde Maximo se cuentan una vez (D1, igual que el tablero).
+ *    moneda (USD aparte, sin convertir). Las OC de SAP creadas desde Maximo
+ *    son de la gestión de Maximo: cuentan en su página y no en la de SAP
+ *    (I3; con `todas`, una vez, D1), para no comprar dos veces lo migrado.
  *  - Semana de lunes a domingo en UTC (como el resto de Reportes); la
  *    etiqueta va de lunes a viernes como la de Jorge. El año de la semana es
  *    el de su lunes (la del 29-dic-2025 es de 2025, como en su archivo).
  */
 
+/** Fuente de UNA página. */
 export type AvanceFuente = 'todas' | 'maximo' | 'sap';
 export type AvanceSistema = 'sap' | 'maximo';
 
 export const AVANCE_FUENTES: AvanceFuente[] = ['todas', 'maximo', 'sap'];
+
+/**
+ * I3: lo que se pide al generar el reporte. `ambos` (default) = una página
+ * de Maximo y una de SAP por semana; las demás, una página de esa fuente.
+ */
+export type AvanceReporte = 'ambos' | AvanceFuente;
+
+export const AVANCE_REPORTES: AvanceReporte[] = [
+  'ambos',
+  'maximo',
+  'sap',
+  'todas',
+];
+
+/** Fuentes de las páginas de cada semana, en orden (Maximo primero). */
+export function fuentesDelReporte(reporte: AvanceReporte): AvanceFuente[] {
+  return reporte === 'ambos' ? ['maximo', 'sap'] : [reporte];
+}
 
 export const FUENTE_ETIQUETA: Record<AvanceFuente, string> = {
   todas: 'Maximo + SAP',
@@ -134,6 +157,8 @@ export interface MontosAnio {
   }>;
   total: Record<string, number>;
   ordenes: number;
+  /** I3: OC de SAP del año creadas desde Maximo que esta página no suma. */
+  migradas_excluidas: number;
 }
 
 export interface ResumenSistema {
@@ -201,23 +226,56 @@ export interface AvancePage {
 export const MAXIMO_NOTA_ESTANDAR =
   'Maximo no envía el estatus ni la fecha de las solicitudes que no tienen OC: las recibidas se ubican por folio (aproximado) y las canceladas no están disponibles hasta que CIISA exponga esos campos.';
 
-export const AVANCE_DEFINICIONES = {
-  gestion:
-    'Gestión = solicitud de compra: solicitud de pedido de SAP y PR de Maximo, según la fuente.',
-  recibida:
-    'Recibida = fecha de la solicitud. Maximo solo da la fecha (ISSUEDATE) de las PR que ya tienen OC; las demás son aproximadas: la fecha en que la plataforma vio la PR por primera vez (desde que la integración está activa) o, antes, su folio (Maximo numera las PR en orden).',
-  cohorte:
-    'Por año = por cohorte: de las recibidas en el año, cuántas están cerradas, canceladas o abiertas al cierre de la semana.',
-  cerrada:
-    'Cerrada = tiene su primera OC no cancelada; la fecha de cierre es la de esa OC. También cierran, sin días, las solicitudes de SAP cerradas a mano sin OC y las PR de Maximo que se volvieron contrato.',
-  cancelada:
-    'Cancelada = solo SAP (fecha = última actualización de la solicitud). Maximo no envía el estatus de las PR: las que no tienen OC salen como "sin OC".',
-  dias: 'Días de cierre = de la solicitud a su primera OC, con promedio y mediana (la misma cuenta que los días de gestión del tablero).',
-  montos:
-    'Montos adjudicados = OC no canceladas (estatus actual), con IVA, por mes de creación de la OC y por moneda; USD aparte, sin convertir. Las OC de SAP creadas desde Maximo se cuentan una vez.',
-  semana:
-    'Semana de lunes a domingo; la etiqueta va de lunes a viernes, como el reporte de Jorge.',
-};
+/**
+ * Definiciones de la página (JSON y Excel). I3: cada página habla solo de su
+ * sistema; `todas` conserva el texto de las dos.
+ */
+export function avanceDefiniciones(
+  fuente: AvanceFuente,
+): Record<string, string> {
+  const por = (textos: Record<AvanceFuente, string>) => textos[fuente];
+  return {
+    gestion: por({
+      maximo: 'Gestión = PR de Maximo (solicitud de compra).',
+      sap: 'Gestión = solicitud de pedido de SAP.',
+      todas:
+        'Gestión = solicitud de compra: solicitud de pedido de SAP y PR de Maximo.',
+    }),
+    recibida: por({
+      maximo:
+        'Recibida = fecha de la PR. Maximo solo da la fecha (ISSUEDATE) de las PR que ya tienen OC; las demás son aproximadas: la fecha en que la plataforma vio la PR por primera vez (desde que la integración está activa) o, antes, su folio (Maximo numera las PR en orden).',
+      sap: 'Recibida = fecha de la solicitud de pedido en SAP.',
+      todas:
+        'Recibida = fecha de la solicitud. Maximo solo da la fecha (ISSUEDATE) de las PR que ya tienen OC; las demás son aproximadas: la fecha en que la plataforma vio la PR por primera vez (desde que la integración está activa) o, antes, su folio (Maximo numera las PR en orden).',
+    }),
+    cohorte:
+      'Por año = por cohorte: de las recibidas en el año, cuántas están cerradas, canceladas o abiertas al cierre de la semana.',
+    cerrada: por({
+      maximo:
+        'Cerrada = la PR tiene su primera OC no cancelada; la fecha de cierre es la de esa OC. También cierran, sin días, las PR que se volvieron contrato.',
+      sap: 'Cerrada = la solicitud tiene su primera OC no cancelada; la fecha de cierre es la de esa OC. También cierran, sin días, las solicitudes cerradas a mano sin OC.',
+      todas:
+        'Cerrada = tiene su primera OC no cancelada; la fecha de cierre es la de esa OC. También cierran, sin días, las solicitudes de SAP cerradas a mano sin OC y las PR de Maximo que se volvieron contrato.',
+    }),
+    cancelada: por({
+      maximo:
+        'Cancelada = no disponible: Maximo no envía el estatus de las PR; las que no tienen OC salen como "sin OC".',
+      sap: 'Cancelada = solicitud cancelada en SAP (fecha = última actualización de la solicitud).',
+      todas:
+        'Cancelada = solo SAP (fecha = última actualización de la solicitud). Maximo no envía el estatus de las PR: las que no tienen OC salen como "sin OC".',
+    }),
+    dias: 'Días de cierre = de la solicitud a su primera OC, con promedio y mediana (la misma cuenta que los días de gestión del tablero).',
+    montos: por({
+      maximo:
+        'Montos adjudicados = OC de Maximo no canceladas (estatus actual), con IVA, por mes de creación de la OC y por moneda; USD aparte, sin convertir. Incluye las que la integración pasó a SAP.',
+      sap: 'Montos adjudicados = OC de SAP no canceladas (estatus actual), con IVA, por mes de creación de la OC y por moneda; USD aparte, sin convertir. Sin las OC que la integración creó desde Maximo: se cuentan en la página de Maximo.',
+      todas:
+        'Montos adjudicados = OC no canceladas (estatus actual), con IVA, por mes de creación de la OC y por moneda; USD aparte, sin convertir. Las OC de SAP creadas desde Maximo se cuentan una vez.',
+    }),
+    semana:
+      'Semana de lunes a domingo; la etiqueta va de lunes a viernes, como el reporte de Jorge.',
+  };
+}
 
 // ── Fechas ──────────────────────────────────────────────────────────────
 
@@ -516,10 +574,15 @@ export function montosAdjudicados(
   }));
   const total: Record<string, number> = {};
   let count = 0;
+  let migradas = 0;
   for (const o of ordenes) {
     if (!enFuente(o.sistema, fuente)) continue;
-    if (fuente === 'todas' && o.contada_en_maximo) continue;
     if (o.fecha.getUTCFullYear() !== anio || o.fecha.getTime() > asOf) continue;
+    // I3: la OC de SAP creada desde Maximo es de la gestión de Maximo
+    if (o.contada_en_maximo) {
+      if (fuente === 'sap') migradas += 1;
+      continue;
+    }
     const mes = meses[o.fecha.getUTCMonth()];
     if (!mes) continue;
     const moneda = o.moneda ?? SIN_MONEDA;
@@ -534,6 +597,7 @@ export function montosAdjudicados(
     meses,
     total,
     ordenes: count,
+    migradas_excluidas: migradas,
   };
 }
 
@@ -620,6 +684,16 @@ export function buildAvancePage(
       'Las OC de SAP creadas desde Maximo se cuentan una vez (en Maximo), igual que en el tablero.',
     );
   }
+  const montos = montosAdjudicados(data.ordenes, fuente, anio, asOf);
+  if (montos.migradas_excluidas === 1) {
+    notas.push(
+      `1 OC de SAP creada desde Maximo en ${anio} no se suma aquí: es de la gestión de Maximo y se cuenta en su página.`,
+    );
+  } else if (montos.migradas_excluidas > 1) {
+    notas.push(
+      `${fmtCount(montos.migradas_excluidas)} OC de SAP creadas desde Maximo en ${anio} no se suman aquí: son de la gestión de Maximo y se cuentan en su página.`,
+    );
+  }
   if (actual.cerradas_sin_oc > 0) {
     // desglose por sistema: SAP cerrada a mano / PR de Maximo hecha contrato
     const sinOc = { sap: 0, maximo: 0 };
@@ -641,7 +715,9 @@ export function buildAvancePage(
   }
   if (conSap && data.sap_desde && data.sap_desde.getUTCFullYear() > anios[0]) {
     notas.push(
-      `SAP tiene solicitudes desde el ${fechaLarga(data.sap_desde)}; los años anteriores son solo de Maximo.`,
+      fuente === 'sap'
+        ? `SAP tiene solicitudes desde el ${fechaLarga(data.sap_desde)}; los años anteriores salen en cero.`
+        : `SAP tiene solicitudes desde el ${fechaLarga(data.sap_desde)}; los años anteriores son solo de Maximo.`,
     );
   }
   if (semana.cerradas_anteriores > 0) {
@@ -722,7 +798,7 @@ export function buildAvancePage(
       atendidas_pct: actual.atendidas_pct,
     },
     anual,
-    montos: montosAdjudicados(data.ordenes, fuente, anio, asOf),
+    montos,
     por_sistema: porSistema,
     no_disponible: noDisponible,
     notas,

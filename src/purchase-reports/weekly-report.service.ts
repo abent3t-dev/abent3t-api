@@ -36,6 +36,7 @@ import { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
 import {
   type AvancePage,
   buildAvancePage,
+  fuentesDelReporte,
   lastCompleteWeek,
 } from './avance-semanal/avance-semanal.engine';
 
@@ -55,6 +56,7 @@ import {
  *
  * 2026-09-29 (H1): hoja "Avance semanal" con los KPIs del PDF del reporte de
  * avance semanal (mismo motor), de la última semana completa del periodo.
+ * I3 (2026-09-30): un bloque de Maximo y uno de SAP, como las dos páginas.
  */
 
 const DAY_MS = 86_400_000;
@@ -100,6 +102,8 @@ interface AvanceRow {
   valor: number | string | null;
   nota?: string;
   money?: boolean;
+  /** I3: título del bloque (Maximo / SAP). */
+  seccion?: boolean;
 }
 
 interface MaximoPoRow {
@@ -272,13 +276,15 @@ export class WeeklyReportService {
     const maximoPoRows = await this.vendors.resolve(maximoPos);
 
     const summary = this.summaryRows(actual, anterior, tiempos, openBalance);
-    // H1: última semana completa hasta el fin del periodo
-    const avancePage = buildAvancePage(
-      await avanceData,
-      lastCompleteWeek(new Date(periodTo.getTime() + 1)),
-      'todas',
-      new Date(),
+    // H1: última semana completa hasta el fin del periodo. I3: un bloque
+    // por sistema (Maximo y SAP), homologados, en lugar del combinado.
+    const avanceLunes = lastCompleteWeek(new Date(periodTo.getTime() + 1));
+    const avanceGenerado = new Date();
+    const avanceDatos = await avanceData;
+    const avancePages = fuentesDelReporte('ambos').map((fuente) =>
+      buildAvancePage(avanceDatos, avanceLunes, fuente, avanceGenerado),
     );
+    const avanceSemana = avancePages[0].semana.etiqueta;
     const periodLabel = `${dmy(from)} al ${dmy(to)}`;
     const prevLabel = `${dmy(prev.from)} al ${dmy(prev.to)}`;
     const summaryColumns: ExcelColumn<SummaryRow>[] = [
@@ -323,7 +329,16 @@ export class WeeklyReportService {
             },
             { header: 'Nota', value: (r) => r.nota, width: 70 },
           ],
-          this.avanceRows(avancePage),
+          avancePages.flatMap((page, i) => [
+            ...(i > 0 ? [{ indicador: '', valor: null }] : []),
+            {
+              indicador: page.fuente.etiqueta,
+              valor: `Reporte de avance semanal de ${page.fuente.etiqueta}`,
+              seccion: true,
+            },
+            ...this.avanceRows(page),
+          ]),
+          { section: (r) => r.seccion === true },
         ),
         excelSheet(
           'OC SAP',
@@ -520,8 +535,12 @@ export class WeeklyReportService {
         'Comprador: en Maximo es el comprador de la OC (PURCHASEAGENT); si no lo trae (casi todas), "Capturó: …" es quien creó la OC en Maximo. SAP no tiene comprador capturado en ninguna OC: las OC de SAP creadas desde Maximo muestran lo de Maximo y las demás "Capturó: …" (el usuario de SAP que la capturó).',
         'Los indicadores marcados "al día de hoy" son una foto al generar el archivo, no del periodo; por eso no tienen columna anterior.',
         'Estado por aprobador: "Retrasado" cuando su pendiente más antigua ya rebasó su promedio histórico de autorización. Ambos cuentan desde que el documento le llegó a ese aprobador (la aprobación de la etapa anterior o la creación); "Días esperando" de la hoja de autorizaciones cuenta desde la creación.',
-        `Avance semanal (${avancePage.semana.etiqueta}): los mismos KPIs que el PDF "Reporte de avance semanal" de Reportes (Maximo + SAP, por cohorte del año).`,
-        ...avancePage.notas.map((nota) => `Avance semanal: ${nota}`),
+        `Avance semanal (${avanceSemana}): los mismos KPIs que el PDF "Reporte de avance semanal" de Reportes, un bloque por sistema (Maximo y SAP, homologados, por cohorte del año).`,
+        ...avancePages.flatMap((page) =>
+          page.notas.map(
+            (nota) => `Avance semanal (${page.fuente.etiqueta}): ${nota}`,
+          ),
+        ),
         ...(sapPos.truncated || sapPrs.truncated
           ? ['El detalle de SAP excede el tope de filas; acota el periodo.']
           : []),
@@ -772,27 +791,35 @@ export class WeeklyReportService {
       );
     }
     const e = p.estado_anio;
-    rows.push(
-      {
-        indicador: `Canceladas de las recibidas en ${anio}`,
-        valor: p.fuente.clave === 'maximo' ? NO_DISPONIBLE : e.canceladas,
-        nota: 'Solo SAP: Maximo no envía el estatus de las solicitudes',
-      },
-      {
-        indicador: `Abiertas de las recibidas en ${anio} (SAP)`,
+    const conSap = p.fuente.clave !== 'maximo';
+    const conMaximo = p.fuente.clave !== 'sap';
+    rows.push({
+      indicador: `Canceladas de las recibidas en ${anio}`,
+      valor: conSap ? e.canceladas : NO_DISPONIBLE,
+      nota: conMaximo
+        ? conSap
+          ? 'Solo SAP: Maximo no envía el estatus de las solicitudes'
+          : 'Maximo no envía el estatus de las PR'
+        : undefined,
+    });
+    if (conSap) {
+      rows.push({
+        indicador: `Abiertas de las recibidas en ${anio}${conMaximo ? ' (SAP)' : ''}`,
         valor: e.abiertas,
-      },
-      {
-        indicador: `Sin OC de las recibidas en ${anio} (Maximo)`,
+      });
+    }
+    if (conMaximo) {
+      rows.push({
+        indicador: `Sin OC de las recibidas en ${anio}${conSap ? ' (Maximo)' : ''}`,
         valor: e.sin_oc,
         nota: 'Maximo no envía el estatus de las PR: pueden seguir abiertas o estar canceladas',
-      },
-      {
-        indicador: `% atendidas de las recibidas en ${anio}`,
-        valor: e.atendidas_pct ?? 'Sin datos',
-        nota: 'Cerradas + canceladas entre recibidas',
-      },
-    );
+      });
+    }
+    rows.push({
+      indicador: `% atendidas de las recibidas en ${anio}`,
+      valor: e.atendidas_pct ?? 'Sin datos',
+      nota: 'Cerradas + canceladas entre recibidas',
+    });
     for (const c of p.anual) {
       rows.push(
         { indicador: `Recibidas en ${c.anio}`, valor: c.recibidas },

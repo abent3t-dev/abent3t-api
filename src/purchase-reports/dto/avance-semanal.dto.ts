@@ -1,13 +1,15 @@
 import { IsIn, IsISO8601, IsOptional } from 'class-validator';
 import {
-  AVANCE_FUENTES,
-  type AvanceFuente,
+  AVANCE_REPORTES,
+  type AvanceReporte,
 } from '../avance-semanal/avance-semanal.engine';
 
 /**
  * H1 — Reporte de avance semanal. `semana` = cualquier día de la semana (se
  * toma su lunes; default: la última semana completa). `desde`/`hasta` = una
- * página por semana (el "acumulado"). `fuente` default `todas`.
+ * página por semana (el "acumulado"). I3: `fuente` default `ambos` (una
+ * página de Maximo y una de SAP por semana); `maximo`, `sap` o `todas` (las
+ * dos sumadas, solo API) dan una página por semana.
  */
 export class AvanceSemanalDto {
   @IsISO8601()
@@ -22,7 +24,7 @@ export class AvanceSemanalDto {
   @IsOptional()
   hasta?: string;
 
-  @IsIn(AVANCE_FUENTES)
+  @IsIn(AVANCE_REPORTES)
   @IsOptional()
-  fuente?: AvanceFuente;
+  fuente?: AvanceReporte;
 }

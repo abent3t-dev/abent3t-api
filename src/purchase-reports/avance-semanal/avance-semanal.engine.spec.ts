@@ -1,10 +1,12 @@
 import {
   type AvanceData,
+  avanceDefiniciones,
   buildAvancePage,
   cohortes,
   estadoAl,
   etiquetaSemana,
   firstMondayOfYear,
+  fuentesDelReporte,
   type Gestion,
   isoDay,
   lastCompleteWeek,
@@ -220,9 +222,17 @@ describe('montos adjudicados', () => {
     expect(m.ordenes).toBe(3);
   });
 
-  it('solo SAP incluye sus OC creadas desde Maximo', () => {
+  it('I3: la página de SAP no suma sus OC creadas desde Maximo (se cuentan en la de Maximo)', () => {
     const m = montosAdjudicados(ordenes, 'sap', 2026, asOf);
-    expect(m.total).toEqual({ MXN: 1049.56, USD: 10 });
+    expect(m.total).toEqual({ MXN: 50.56, USD: 10 });
+    expect(m.ordenes).toBe(2);
+    expect(m.migradas_excluidas).toBe(1);
+    expect(montosAdjudicados(ordenes, 'maximo', 2026, asOf).total).toEqual({
+      MXN: 100,
+    });
+    expect(
+      montosAdjudicados(ordenes, 'todas', 2026, asOf).migradas_excluidas,
+    ).toBe(0);
   });
 
   it('un año cerrado muestra sus 12 meses', () => {
@@ -318,6 +328,40 @@ describe('página de la semana', () => {
     expect(page.no_disponible).toEqual([]);
   });
 
+  it('I3: la página de SAP avisa cuántas OC migradas de Maximo no suma', () => {
+    const conMigradas: AvanceData = {
+      ...data(gestiones),
+      ordenes: [
+        {
+          sistema: 'sap',
+          fecha: D('2026-09-02'),
+          moneda: 'MXN',
+          monto: 10,
+          contada_en_maximo: true,
+        },
+        {
+          sistema: 'sap',
+          fecha: D('2026-09-03'),
+          moneda: 'MXN',
+          monto: 20,
+          contada_en_maximo: true,
+        },
+      ],
+    };
+    const sapPage = buildAvancePage(conMigradas, D('2026-09-21'), 'sap', now);
+    expect(sapPage.montos.total).toEqual({});
+    expect(sapPage.notas).toContain(
+      '2 OC de SAP creadas desde Maximo en 2026 no se suman aquí: son de la gestión de Maximo y se cuentan en su página.',
+    );
+    const maximoPage = buildAvancePage(
+      conMigradas,
+      D('2026-09-21'),
+      'maximo',
+      now,
+    );
+    expect(maximoPage.notas.join(' ')).not.toContain('no se suman aquí');
+  });
+
   it('en enero muestra lo que sigue sin atender del año anterior', () => {
     const page = buildAvancePage(
       data(gestiones),
@@ -342,5 +386,27 @@ describe('página de la semana', () => {
     expect(page.semana.anio).toBe(2025);
     expect(page.avance.recibidas_anio).toBe(2);
     expect(page.montos.meses).toHaveLength(12);
+  });
+});
+
+describe('I3: un reporte por sistema, homologados', () => {
+  it('ambos = Maximo y luego SAP; las demás, una fuente', () => {
+    expect(fuentesDelReporte('ambos')).toEqual(['maximo', 'sap']);
+    expect(fuentesDelReporte('sap')).toEqual(['sap']);
+    expect(fuentesDelReporte('todas')).toEqual(['todas']);
+  });
+
+  it('las definiciones de cada página hablan solo de su sistema', () => {
+    const sinMontos = (fuente: 'maximo' | 'sap') =>
+      Object.entries(avanceDefiniciones(fuente))
+        .filter(([clave]) => clave !== 'montos')
+        .map(([, texto]) => texto)
+        .join(' ');
+    expect(sinMontos('maximo')).not.toContain('SAP');
+    expect(sinMontos('sap')).not.toContain('Maximo');
+    expect(avanceDefiniciones('sap').montos).toContain(
+      'se cuentan en la página de Maximo',
+    );
+    expect(avanceDefiniciones('todas').gestion).toContain('SAP y PR de Maximo');
   });
 });

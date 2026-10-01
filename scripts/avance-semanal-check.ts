@@ -9,6 +9,9 @@
  *   npm run avance:check -- --serie               (las 39 semanas de Jorge, fuente maximo y todas)
  *   npm run avance:check -- --pdf=avance.pdf      (guarda el PDF de la semana)
  *   npm run avance:check -- --acumulado=acum.pdf  (PDF del año y cuánto tarda)
+ *
+ * I3 (2026-09-30): los PDF salen como en Reportes — `--fuente=ambos` (default:
+ * Maximo y luego SAP), `maximo`, `sap` o `todas`.
  */
 import { writeFileSync } from 'fs';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -20,8 +23,10 @@ import {
   AVANCE_FUENTES,
   type AvanceData,
   type AvancePage,
+  type AvanceReporte,
   buildAvancePage,
   firstMondayOfYear,
+  fuentesDelReporte,
   isoDay,
   lastCompleteWeek,
   mondayOf,
@@ -204,15 +209,18 @@ async function main(): Promise<void> {
     const lunes = semana ? mondayOf(parseDay(semana)) : lastCompleteWeek();
     weekTable(data, lunes);
     if (arg('serie') !== undefined) serie(data);
+    const reporte = (arg('fuente') as AvanceReporte | undefined) ?? 'ambos';
+    const fuentes = fuentesDelReporte(reporte);
     const pdf = arg('pdf');
     if (pdf) {
-      const fuente =
-        (arg('fuente') as (typeof AVANCE_FUENTES)[number]) ?? 'todas';
-      const buffer = await renderAvancePdf([
-        buildAvancePage(data, lunes, fuente, new Date()),
-      ]);
+      const now = new Date();
+      const buffer = await renderAvancePdf(
+        fuentes.map((f) => buildAvancePage(data, lunes, f, now)),
+      );
       writeFileSync(pdf, buffer);
-      console.log(`\nPDF de la semana: ${pdf} (${buffer.length} bytes)`);
+      console.log(
+        `\nPDF de la semana: ${pdf} · ${fuentes.length} páginas (${reporte}) · ${buffer.length} bytes`,
+      );
     }
     const acumulado = arg('acumulado');
     if (acumulado) {
@@ -223,12 +231,13 @@ async function main(): Promise<void> {
         lunes,
       );
       const now = new Date();
-      const buffer = await renderAvancePdf(
-        weeks.map((w) => buildAvancePage(again, w, 'todas', now)),
+      const pages = fuentes.flatMap((f) =>
+        weeks.map((w) => buildAvancePage(again, w, f, now)),
       );
+      const buffer = await renderAvancePdf(pages);
       writeFileSync(acumulado, buffer);
       console.log(
-        `PDF acumulado: ${acumulado} · ${weeks.length} páginas · ${buffer.length} bytes · ${Date.now() - t1} ms (con la carga de datos)`,
+        `PDF acumulado: ${acumulado} · ${pages.length} páginas (${weeks.length} semanas × ${fuentes.length}, ${reporte}) · ${buffer.length} bytes · ${Date.now() - t1} ms (con la carga de datos)`,
       );
     }
   } finally {
