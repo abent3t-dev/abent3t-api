@@ -42,6 +42,11 @@ function makeService(
         _count: { _all: 5 },
         _sum: { total_amount: '1000000.00' },
       }),
+      // I6: valor de los vigentes por moneda
+      groupBy: jest.fn().mockResolvedValue([
+        { currency: 'USD', _sum: { total_amount: '20000.00' } },
+        { currency: 'MXN', _sum: { total_amount: '1000000.00' } },
+      ]),
       findMany: jest.fn().mockResolvedValue([]),
     },
     suppliers: { count: jest.fn().mockResolvedValue(1) },
@@ -227,7 +232,11 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
     expect(resumen.ordenes.monto_total).toBe(900);
     expect(resumen.entregas.pendientes).toBe(6); // en_tiempo+en_riesgo+sin_fecha
     expect(resumen.entregas.vencidas).toBe(4);
-    expect(resumen.contratos.valor_vigentes).toBe(1000000);
+    // I6: por moneda, nunca sumados (MXN primero)
+    expect(resumen.contratos.valor_vigentes_por_moneda).toEqual([
+      { currency: 'MXN', total: 1000000 },
+      { currency: 'USD', total: 20000 },
+    ]);
     expect(resumen.proveedores.bloqueados).toBe(1);
     // Sin staging ERP: los totales de todas las fuentes = los propios
     expect(resumen.todas_las_fuentes.solicitudes.creadas).toBe(4);

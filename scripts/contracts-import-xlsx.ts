@@ -22,9 +22,23 @@
  *  - `--moneda=MXN`: moneda para montos que vengan sin moneda (si no, esos
  *    montos no se importan: nunca se inventa la moneda).
  *
- * Reglas de siempre: proveedor por nombre (exacto y prefijo único; si no
- * existe, alta manual con RFC placeholder SIN-RFC-…), estatus por fecha de
- * fin, "Disp." no se importa, PDFs no se cargan aquí.
+ * I6 (go-live 2026-09-30) — la base REAL (Control_de_contratos_A3T.xlsx):
+ *  - la hoja es la que trae los encabezados ("Hoja2" son los catálogos y va
+ *    primero); las fechas se leen como seriales (no dependen de la zona
+ *    horaria de la máquina) o texto `dd/mm/aaaa`;
+ *  - número = carpeta + tipo (A3T-0003, A3T-0003-CI, A3T-0003-E1…);
+ *  - un proveedor nuevo cuyo `SIN-RFC-…` ya existe inactivo (los del Excel
+ *    de ejemplo) se REACTIVA en lugar de crearse (tax_id es UNIQUE);
+ *  - con `--deactivate-missing`, además de los contratos faltantes se dan de
+ *    baja los proveedores `SIN-RFC-…` que se queden sin contratos activos ni
+ *    OC, y se reportan;
+ *  - al final, el reporte para Diana (proveedores sin match, filas
+ *    saltadas, montos sin moneda, fechas ilegibles, sin fecha de fin y
+ *    estatus del Excel que contradicen la fecha).
+ *
+ * Reglas de siempre: proveedor por nombre (exacto, sin forma jurídica y
+ * prefijo único; si no existe, alta manual con RFC placeholder SIN-RFC-…),
+ * estatus por fecha de fin, "Disp." no se importa, PDFs no se cargan aquí.
  *
  * USO (default = DRY-RUN, no escribe nada):
  *   npm run contracts:import-excel -- <ruta.xlsx>
@@ -44,9 +58,12 @@ import {
   compact,
   type ContractImportPlan,
   type ExistingContract,
+  type NormalizeResult,
   normalizeContractRows,
+  pickContractSheet,
   placeholderTaxId,
   planContractImport,
+  supplierNormKey,
 } from '../src/contracts/contracts-import.plan';
 
 const FIELD_LABELS: Record<string, string> = {
@@ -64,30 +81,63 @@ const FIELD_LABELS: Record<string, string> = {
   tomo: 'tomo',
   document_type: 'tipo',
   notes: 'notas',
+  carpeta: 'carpeta',
+  document_label: 'documento',
+  user_area: 'área usuaria',
+  buyer_profile_id: 'comprador',
 };
 
-const isoDay = (d: Date) => d.toISOString().slice(0, 10);
+const isoDay = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : '—');
 
-function readRecords(filePath: string): Array<Record<string, unknown>> {
+function readRecords(filePath: string): {
+  sheet: string;
+  records: Array<Record<string, unknown>>;
+} {
+  // Sin cellDates: los seriales no dependen de la zona horaria de la máquina
   const workbook = XLSX.read(readFileSync(filePath), {
     type: 'buffer',
-    cellDates: true,
+    cellDates: false,
   });
-  const sheetName =
+  const sheets = workbook.SheetNames.map((name) => ({
+    name,
+    headers:
+      XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[name], {
+        header: 1,
+        blankrows: false,
+      })[0] ?? [],
+  }));
+  const sheet =
     workbook.SheetNames.find((n) => compact(n) === 'CONTROLDECONTRATOS') ??
-    workbook.SheetNames[0];
-  return XLSX.utils.sheet_to_json<Record<string, unknown>>(
-    workbook.Sheets[sheetName],
-    { defval: undefined, blankrows: false },
-  );
+    pickContractSheet(sheets);
+  if (!sheet) {
+    throw new Error(
+      `Ninguna hoja trae los encabezados de contratos (Proveedor y Carpeta o Contrato): ${workbook.SheetNames.join(', ')}`,
+    );
+  }
+  return {
+    sheet,
+    records: XLSX.utils.sheet_to_json<Record<string, unknown>>(
+      workbook.Sheets[sheet],
+      { defval: undefined, blankrows: false },
+    ),
+  };
 }
 
-function printReport(plan: ContractImportPlan, mode: string) {
+function printReport(
+  plan: ContractImportPlan,
+  normalized: NormalizeResult,
+  mode: string,
+  extras: {
+    reactivates: Map<string, string>;
+    suppliersToDeactivate: Array<{ legal_name: string; tax_id: string }>;
+    deactivate: boolean;
+  },
+) {
   console.log(`\n=== Importación de contratos (${mode}) ===`);
   console.log(`\nNuevos (${plan.create.length}):`);
   for (const c of plan.create) {
     console.log(
-      `  ${c.data.status.toUpperCase().padEnd(8)} | ${c.data.contract_number} | ${isoDay(c.data.start_date)} → ${isoDay(c.data.end_date)} | ${c.row.supplierName} (${c.supplierNote})`,
+      `  ${c.data.status.toUpperCase().padEnd(8)} | ${c.data.contract_number.padEnd(14)} | ${isoDay(c.data.start_date)} → ${isoDay(c.data.end_date)} | ${c.row.supplierName} (${c.supplierNote})`,
     );
   }
   console.log(`\nPor actualizar (${plan.update.length}):`);
@@ -118,9 +168,71 @@ function printReport(plan: ContractImportPlan, mode: string) {
       );
     }
   }
+  if (extras.deactivate) {
+    console.log(
+      `\nProveedores SIN-RFC que se quedan sin contratos activos ni OC (${extras.suppliersToDeactivate.length}) — se dan de baja:`,
+    );
+    for (const s of extras.suppliersToDeactivate) {
+      console.log(`  ${s.legal_name} (${s.tax_id})`);
+    }
+  }
   if (plan.warnings.length > 0) {
     console.log(`\nAdvertencias (${plan.warnings.length}):`);
     for (const w of plan.warnings) console.log('  - ' + w);
+  }
+
+  // ── I6: reporte para Diana ──
+  const r = plan.report;
+  console.log('\n=== Reporte para Diana ===');
+  console.log(
+    `\nProveedores sin match en el catálogo (${r.newSuppliers.length}) — se dan de alta manuales:`,
+  );
+  for (const s of r.newSuppliers) {
+    const variants =
+      s.variants.length > 1 ? ` · variantes: ${s.variants.join(' / ')}` : '';
+    const reactivated = extras.reactivates.get(s.name);
+    console.log(
+      `  ${s.name} (${s.rows.length} doc.: ${s.rows.join(', ')})${variants}${reactivated ? ` · se REACTIVA ${reactivated} (estaba inactivo)` : ''}`,
+    );
+  }
+  console.log(
+    `\nFilas saltadas (${normalized.skipped.length}) — sin proveedor ni servicio:`,
+  );
+  for (const s of normalized.skipped) {
+    console.log(`  Fila ${s.rowNumber}: ${s.ref}`);
+  }
+  console.log(
+    `\nMontos sin moneda (${r.amountWithoutCurrency.length}) — no se importan:`,
+  );
+  for (const a of r.amountWithoutCurrency) console.log(`  ${a}`);
+  console.log(
+    `\nFechas que no se pudieron leer (${normalized.unreadableDates.length}) — se importan vacías:`,
+  );
+  for (const d of normalized.unreadableDates) {
+    console.log(`  Fila ${d.rowNumber} (${d.ref}) · ${d.field}: "${d.value}"`);
+  }
+  if (normalized.unknownAreas.length > 0) {
+    console.log(
+      `\nÁreas fuera del catálogo (${normalized.unknownAreas.length}) — se guardan tal cual:`,
+    );
+    for (const a of normalized.unknownAreas) {
+      console.log(`  Fila ${a.rowNumber} (${a.ref}): "${a.value}"`);
+    }
+  }
+  console.log(
+    `\nDocumentos sin fecha de fin (${r.noEndDate.length}) — sin alertas de vencimiento: ${r.noEndDate.join(', ')}`,
+  );
+  console.log(
+    `\nEstatus del Excel que contradice la fecha de fin (${r.statusContradictions.length}) — manda la fecha:`,
+  );
+  for (const s of r.statusContradictions) {
+    console.log(`  ${s.ref}: Excel "${s.excel}", fin ${s.end} → ${s.byDate}`);
+  }
+  if (r.unmatchedBuyers.length > 0) {
+    console.log(
+      `\nCompradores sin usuario en la plataforma (${r.unmatchedBuyers.length}):`,
+    );
+    for (const b of r.unmatchedBuyers) console.log(`  ${b.ref}: "${b.name}"`);
   }
 }
 
@@ -147,21 +259,34 @@ async function main(): Promise<void> {
     );
   }
 
-  const { rows, warnings } = normalizeContractRows(readRecords(filePath));
+  const { sheet, records } = readRecords(filePath);
+  const normalized = normalizeContractRows(records);
+  console.log(
+    `Hoja "${sheet}": ${records.length} filas, ${normalized.rows.length} documentos importables`,
+  );
   const today = new Date();
   const prisma = new PrismaService();
   await prisma.$connect();
   try {
-    const [contracts, suppliers] = await Promise.all([
-      prisma.contracts.findMany({
-        where: { is_active: true },
-        include: { suppliers: { select: { legal_name: true } } },
-      }),
-      prisma.suppliers.findMany({
-        where: { is_active: true },
-        select: { id: true, legal_name: true },
-      }),
-    ]);
+    const [contracts, suppliers, inactivePlaceholders, profiles] =
+      await Promise.all([
+        prisma.contracts.findMany({
+          where: { is_active: true },
+          include: { suppliers: { select: { legal_name: true } } },
+        }),
+        prisma.suppliers.findMany({
+          where: { is_active: true },
+          select: { id: true, legal_name: true },
+        }),
+        prisma.suppliers.findMany({
+          where: { is_active: false, tax_id: { startsWith: 'SIN-RFC-' } },
+          select: { tax_id: true },
+        }),
+        prisma.profiles.findMany({
+          where: { is_active: true },
+          select: { id: true, full_name: true },
+        }),
+      ]);
     const existing: ExistingContract[] = contracts.map((c) => ({
       id: c.id,
       contract_number: c.contract_number,
@@ -182,16 +307,24 @@ async function main(): Promise<void> {
       status: c.status,
       notes: c.notes,
       created_by: c.created_by,
+      carpeta: c.carpeta,
+      document_label: c.document_label,
+      user_area: c.user_area,
+      buyer_profile_id: c.buyer_profile_id,
     }));
     const label = `Importado del Excel ${basename(filePath, extname(filePath))} (${isoDay(today)}).`;
     const plan = planContractImport({
-      rows,
+      rows: normalized.rows,
       existing,
       suppliers: suppliers.map((s) => ({
         id: s.id,
         legal_name: s.legal_name,
         key: compact(s.legal_name),
+        norm: supplierNormKey(s.legal_name),
       })),
+      buyers: profiles
+        .filter((p) => p.full_name)
+        .map((p) => ({ id: p.id, full_name: p.full_name as string })),
       options: {
         today,
         update,
@@ -201,10 +334,52 @@ async function main(): Promise<void> {
         importLabel: label,
       },
     });
-    plan.warnings.unshift(...warnings);
+    plan.warnings.unshift(...normalized.warnings);
+
+    // Proveedores nuevos que reactivan un SIN-RFC inactivo (misma llave)
+    const inactive = new Set(inactivePlaceholders.map((s) => s.tax_id));
+    const reactivates = new Map<string, string>();
+    for (const s of plan.report.newSuppliers) {
+      const taxId = placeholderTaxId(s.name);
+      if (inactive.has(taxId)) reactivates.set(s.name, taxId);
+    }
+
+    const toDeactivate = deactivate
+      ? plan.missing.filter((m) => !m.fromPlatform)
+      : [];
+
+    // SIN-RFC que se quedan sin contratos activos ni OC (después de la baja)
+    const supplierUsedByPlan = new Set(
+      [...plan.create, ...plan.update]
+        .map((c) => c.data.supplier_id)
+        .filter((id): id is string => !!id),
+    );
+    const leavingIds = new Set(toDeactivate.map((m) => m.id));
+    const placeholderSuppliers = deactivate
+      ? await prisma.suppliers.findMany({
+          where: { is_active: true, tax_id: { startsWith: 'SIN-RFC-' } },
+          select: {
+            id: true,
+            legal_name: true,
+            tax_id: true,
+            contracts: { where: { is_active: true }, select: { id: true } },
+            _count: { select: { purchase_orders: true } },
+          },
+        })
+      : [];
+    const suppliersToDeactivate = placeholderSuppliers.filter(
+      (s) =>
+        s._count.purchase_orders === 0 &&
+        !supplierUsedByPlan.has(s.id) &&
+        s.contracts.every((c) => leavingIds.has(c.id)),
+    );
 
     const mode = `${commit ? 'COMMIT' : 'DRY-RUN — nada escrito; agrega --commit'}${update ? ' · update' : ''}${deactivate ? ' · deactivate-missing' : ''}`;
-    printReport(plan, mode);
+    printReport(plan, normalized, mode, {
+      reactivates,
+      suppliersToDeactivate,
+      deactivate,
+    });
     if (plan.errors.length > 0) {
       console.error(
         `\nErrores (${plan.errors.length}) — esas filas no se tocan:`,
@@ -213,10 +388,8 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
 
-    const toDeactivate = deactivate
-      ? plan.missing.filter((m) => !m.fromPlatform)
-      : [];
     let suppliersCreated = 0;
+    let suppliersReactivated = 0;
     if (commit) {
       await prisma.$transaction(
         async (tx) => {
@@ -230,12 +403,25 @@ async function main(): Promise<void> {
             const name = data.new_supplier_name as string;
             const known = newSupplier.get(name);
             if (known) return known;
+            const taxId = placeholderTaxId(name);
+            // I6: el SIN-RFC del ejemplo (inactivo) se reactiva, no se duplica
+            const previous = await tx.suppliers.findUnique({
+              where: { tax_id: taxId },
+              select: { id: true, is_active: true },
+            });
+            if (previous) {
+              if (!previous.is_active) {
+                await tx.suppliers.update({
+                  where: { id: previous.id },
+                  data: { is_active: true },
+                });
+                suppliersReactivated += 1;
+              }
+              newSupplier.set(name, previous.id);
+              return previous.id;
+            }
             const created = await tx.suppliers.create({
-              data: {
-                legal_name: name,
-                tax_id: placeholderTaxId(name),
-                source: 'manual',
-              },
+              data: { legal_name: name, tax_id: taxId, source: 'manual' },
               select: { id: true },
             });
             newSupplier.set(name, created.id);
@@ -277,6 +463,14 @@ async function main(): Promise<void> {
               data: { is_active: false, deleted_at: new Date() },
             });
           }
+          for (const s of suppliersToDeactivate) {
+            // por si una fila del archivo lo reactivó en esta misma corrida
+            if ([...newSupplier.values()].includes(s.id)) continue;
+            await tx.suppliers.update({
+              where: { id: s.id },
+              data: { is_active: false },
+            });
+          }
         },
         { timeout: 120_000 },
       );
@@ -285,9 +479,12 @@ async function main(): Promise<void> {
     console.log(
       `\nResumen: ${plan.create.length} ${commit ? 'creados' : 'por crear'} · ${plan.update.length} ${commit ? 'actualizados' : 'por actualizar'} · ${plan.unchanged.length} sin cambios · ${plan.missing.length} faltantes` +
         (deactivate
-          ? ` (${toDeactivate.length} ${commit ? 'dados de baja' : 'se darían de baja'})`
+          ? ` (${toDeactivate.length} ${commit ? 'dados de baja' : 'se darían de baja'}; proveedores SIN-RFC: ${suppliersToDeactivate.length})`
           : '') +
-        (commit ? ` · proveedores dados de alta: ${suppliersCreated}` : ''),
+        ` · proveedores nuevos: ${plan.report.newSuppliers.length} (${reactivates.size} reactivan un SIN-RFC inactivo)` +
+        (commit
+          ? ` · dados de alta: ${suppliersCreated} · reactivados: ${suppliersReactivated}`
+          : ''),
     );
   } finally {
     await prisma.$disconnect();

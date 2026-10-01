@@ -26,6 +26,9 @@ const CONTRACT_ROW = {
   responsible_user_name: 'Resp',
   status: 'vigente',
   notes: null,
+  carpeta: null as string | null,
+  document_label: null as string | null,
+  user_area: null as string | null,
   is_active: true,
   created_by: 'p-9',
   created_at: new Date(),
@@ -276,5 +279,149 @@ describe('ContractsService', () => {
     expect(args.data.is_active).toBe(false);
     expect(args.data.deleted_by).toBe('u-1');
     expect(args.data.deleted_at).toBeInstanceOf(Date);
+  });
+
+  describe('I6: carpeta + tipo, fechas opcionales y agrupado por carpeta', () => {
+    const base = {
+      document_type: undefined,
+      service_description: 'Servicio de facturación',
+      supplier_id: 's-1',
+    };
+    const createdData = (prisma: ReturnType<typeof makeService>['prisma']) =>
+      firstCallArg<{ data: Record<string, unknown> }>(prisma.contracts.create)
+        .data;
+
+    it('el número sale de la carpeta y el tipo; el segundo contrato lleva -2', async () => {
+      const { service, prisma } = makeService();
+      prisma.contracts.findMany.mockResolvedValueOnce([
+        { contract_number: 'A3T-0010' },
+      ]);
+      prisma.contracts.findFirst.mockResolvedValueOnce(null);
+      prisma.contracts.create.mockResolvedValueOnce(CONTRACT_ROW);
+      await service.create(
+        { ...base, carpeta: 'a3t-10', doc_kind: 'contrato' },
+        'u-1',
+      );
+      expect(createdData(prisma)).toMatchObject({
+        contract_number: 'A3T-0010-2',
+        carpeta: 'A3T-0010',
+        document_label: 'Contrato',
+        document_type: 'contrato',
+      });
+      expect(prisma.contracts.findMany).toHaveBeenCalledWith({
+        where: { contract_number: { startsWith: 'A3T-0010' } },
+        select: { contract_number: true },
+      });
+    });
+
+    it('la enmienda sin número es la siguiente de la carpeta', async () => {
+      const { service, prisma } = makeService();
+      prisma.contracts.findMany
+        .mockResolvedValueOnce([
+          { document_label: 'Enmienda 1' },
+          { document_label: 'Enmienda 2' },
+        ])
+        .mockResolvedValueOnce([]);
+      prisma.contracts.findFirst.mockResolvedValueOnce(null);
+      prisma.contracts.create.mockResolvedValueOnce(CONTRACT_ROW);
+      await service.create(
+        { ...base, carpeta: 'A3T-0022', doc_kind: 'enmienda' },
+        'u-1',
+      );
+      expect(createdData(prisma)).toMatchObject({
+        contract_number: 'A3T-0022-E3',
+        document_label: 'Enmienda 3',
+        document_type: 'addenda',
+      });
+    });
+
+    it('sin fecha de fin: se guarda vacía con el estatus pedido o vigente; con fin vencido manda la fecha', async () => {
+      const { service, prisma } = makeService();
+      prisma.contracts.findMany.mockResolvedValue([]);
+      prisma.contracts.findFirst.mockResolvedValue(null);
+      prisma.contracts.create.mockResolvedValue(CONTRACT_ROW);
+      await service.create(
+        { ...base, carpeta: 'A3T-0167', doc_kind: 'carta_intencion' },
+        'u-1',
+      );
+      expect(createdData(prisma)).toMatchObject({
+        contract_number: 'A3T-0167-CI',
+        start_date: null,
+        end_date: null,
+        status: 'vigente',
+      });
+      await service.create(
+        {
+          ...base,
+          carpeta: 'A3T-0168',
+          doc_kind: 'contrato',
+          end_date: '2025-01-31',
+          status: 'vigente',
+        },
+        'u-1',
+      );
+      const second = (
+        prisma.contracts.create.mock.calls[1] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(second.status).toBe('vencido');
+    });
+
+    it('sin carpeta ni número, o con una carpeta mal escrita → 400', async () => {
+      const { service } = makeService();
+      await expect(service.create({ ...base }, 'u-1')).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(
+        service.create({ ...base, carpeta: 'Carpeta 3' }, 'u-1'),
+      ).rejects.toThrow('A3T-0000');
+    });
+
+    it('group=carpeta: una fila por carpeta, el contrato primero y sus documentos en orden', async () => {
+      const { service, prisma } = makeService();
+      const doc = (
+        id: string,
+        number: string,
+        carpeta: string | null,
+        label: string | null,
+        type: string,
+      ) => ({
+        ...CONTRACT_ROW,
+        id,
+        contract_number: number,
+        carpeta,
+        document_label: label,
+        document_type: type,
+      });
+      prisma.contracts.findMany.mockResolvedValueOnce([
+        doc('5', 'A3T-0022-E2', 'A3T-0022', 'Enmienda 2', 'addenda'),
+        doc(
+          '4',
+          'A3T-0022-CI',
+          'A3T-0022',
+          'Carta de intención',
+          'carta_compromiso',
+        ),
+        doc('3', 'A3T-0022', 'A3T-0022', 'Contrato', 'contrato'),
+        doc('6', 'A3T-0022-E1', 'A3T-0022', 'Enmienda 1', 'addenda'),
+        doc('2', 'A3T-0003', 'A3T-0003', 'Contrato', 'contrato'),
+        doc('1', '7400016518', null, null, 'contrato'),
+      ]);
+      const { data, meta } = await service.findGroups({ page: 1, limit: 20 });
+      expect(meta.total).toBe(3);
+      expect(data.map((g) => [g.key, g.head.contract_number])).toEqual([
+        ['A3T-0003', 'A3T-0003'],
+        ['A3T-0022', 'A3T-0022'],
+        ['#7400016518', '7400016518'],
+      ]);
+      expect(data[1].documents.map((d) => d.contract_number)).toEqual([
+        'A3T-0022',
+        'A3T-0022-CI',
+        'A3T-0022-E1',
+        'A3T-0022-E2',
+      ]);
+      expect(data[1].documents[1].doc_kind).toBe('carta_intencion');
+    });
   });
 });

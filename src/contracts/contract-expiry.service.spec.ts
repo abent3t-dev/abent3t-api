@@ -253,6 +253,23 @@ describe('ContractExpiryService (reloj inyectado, umbral 45 días, diaria)', () 
     expect(prisma.contracts.update).not.toHaveBeenCalled();
   });
 
+  it('I6: sin fecha de fin (permanente, "por servicio") no hay vencimiento ni alertas', async () => {
+    const { service, prisma, notifications } = makeHarness([
+      contractAt(0, { id: 'sin-fin', end_date: null }),
+    ]);
+    const result = await service.runCheck(NOW);
+    const args = (
+      prisma.contracts.findMany.mock.calls[0] as unknown as [
+        { where: Record<string, unknown> },
+      ]
+    )[0];
+    expect(args.where.end_date).toEqual({ not: null });
+    // aunque la consulta lo dejara pasar, el job lo salta sin tocarlo
+    expect(result.notificationsSent).toBe(0);
+    expect(notifications).toHaveLength(0);
+    expect(prisma.contracts.update).not.toHaveBeenCalled();
+  });
+
   it('correo fallido → rollback del log (se reintenta en la siguiente corrida)', async () => {
     const harness = makeHarness([contractAt(30)]);
     harness.setFailEmails(true);

@@ -75,9 +75,14 @@ export class ContractExpiryService {
     const threshold = this.alertDaysBefore;
 
     // Vigentes (por vencer) y vencidos (siguen alertando a diario hasta que
-    // Compras los renueve o cierre). Renovado/cancelado quedan fuera.
+    // Compras los renueve o cierre). Renovado/cancelado quedan fuera. I6: sin
+    // fecha de fin (permanentes, "por servicio") no hay vencimiento.
     const contracts = await this.prisma.contracts.findMany({
-      where: { status: { in: ['vigente', 'vencido'] }, is_active: true },
+      where: {
+        status: { in: ['vigente', 'vencido'] },
+        is_active: true,
+        end_date: { not: null },
+      },
       include: {
         suppliers: { select: { legal_name: true } },
         profiles_contracts_buyer_profile_idToprofiles: {
@@ -89,7 +94,9 @@ export class ContractExpiryService {
     const admins = await this.contractAdmins();
 
     for (const contract of contracts) {
-      const daysLeft = daysUntil(contract.end_date, today);
+      const endDate = contract.end_date;
+      if (!endDate) continue;
+      const daysLeft = daysUntil(endDate, today);
       if (contract.status === 'vigente' && daysLeft > threshold) continue;
 
       // <= 0 (no === 0): si el job no corrió justo el día 0 (server caído),
@@ -149,7 +156,7 @@ export class ContractExpiryService {
                 contractNumber: contract.contract_number,
                 serviceDescription: contract.service_description,
                 supplierName: contract.suppliers.legal_name,
-                endDate: contract.end_date.toISOString().slice(0, 10),
+                endDate: endDate.toISOString().slice(0, 10),
                 totalAmount:
                   contract.total_amount === null
                     ? null

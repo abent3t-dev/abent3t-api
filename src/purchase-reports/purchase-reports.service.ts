@@ -251,10 +251,8 @@ export class PurchaseReportsService {
           },
         },
       }),
-      this.prisma.contracts.aggregate({
-        where: { is_active: true, status: 'vigente' },
-        _sum: { total_amount: true },
-      }),
+      // I6: por moneda (la base real trae MXN, USD y EUR; nunca se suman)
+      this.vigentesPorMoneda(),
       this.prisma.suppliers.count({
         where: { is_active: true, is_blocked: true },
       }),
@@ -357,7 +355,7 @@ export class PurchaseReportsService {
       },
       contratos: {
         por_vencer_30_dias: contratosPorVencer,
-        valor_vigentes: toNumber(valorVigentes._sum.total_amount) ?? 0,
+        valor_vigentes_por_moneda: valorVigentes,
       },
       proveedores: { bloqueados: proveedoresBloqueados },
       generated_at: new Date().toISOString(),
@@ -700,36 +698,66 @@ export class PurchaseReportsService {
 
   // ── Contratos ───────────────────────────────────────────────────────────
 
+  /**
+   * I6 (2026-09-30): valor de los contratos vigentes POR MONEDA. Antes se
+   * sumaba todo (y el resumen lo mostraba como MXN); la base real de Diana
+   * trae contratos en USD y EUR.
+   */
+  private async vigentesPorMoneda(): Promise<
+    Array<{ currency: string; total: number }>
+  > {
+    const groups = await this.prisma.contracts.groupBy({
+      by: ['currency'],
+      where: {
+        is_active: true,
+        status: 'vigente',
+        total_amount: { not: null },
+      },
+      _sum: { total_amount: true },
+    });
+    const rank = (c: string) => (c === 'MXN' ? 0 : c === 'USD' ? 1 : 2);
+    return groups
+      .map((g) => ({
+        currency: g.currency ?? 'Sin moneda',
+        total: toNumber(g._sum.total_amount) ?? 0,
+      }))
+      .sort(
+        (a, b) =>
+          rank(a.currency) - rank(b.currency) ||
+          a.currency.localeCompare(b.currency),
+      );
+  }
+
   async getContratos() {
     const today = new Date();
-    const [porVencer, vigentes, consumo] = await Promise.all([
-      this.prisma.contracts.findMany({
-        where: {
-          is_active: true,
-          status: 'vigente',
-          end_date: {
-            gte: today,
-            lte: new Date(today.getTime() + 30 * 86_400_000),
+    const [porVencer, vigentes, vigentesPorMoneda, consumo] = await Promise.all(
+      [
+        this.prisma.contracts.findMany({
+          where: {
+            is_active: true,
+            status: 'vigente',
+            end_date: {
+              gte: today,
+              lte: new Date(today.getTime() + 30 * 86_400_000),
+            },
           },
-        },
-        select: {
-          id: true,
-          contract_number: true,
-          end_date: true,
-          total_amount: true,
-          suppliers: { select: { legal_name: true } },
-        },
-        orderBy: { end_date: 'asc' },
-        take: 10,
-      }),
-      this.prisma.contracts.aggregate({
-        where: { is_active: true, status: 'vigente' },
-        _count: { _all: true },
-        _sum: { total_amount: true },
-      }),
-      // Consumo = POs vinculadas (contract_id, §15/A3) vs monto del contrato
-      this.prisma.$queryRaw<Array<{ promedio_consumo_pct: unknown }>>(
-        Prisma.sql`
+          select: {
+            id: true,
+            contract_number: true,
+            end_date: true,
+            total_amount: true,
+            suppliers: { select: { legal_name: true } },
+          },
+          orderBy: { end_date: 'asc' },
+          take: 10,
+        }),
+        this.prisma.contracts.count({
+          where: { is_active: true, status: 'vigente' },
+        }),
+        this.vigentesPorMoneda(),
+        // Consumo = POs vinculadas (contract_id, §15/A3) vs monto del contrato
+        this.prisma.$queryRaw<Array<{ promedio_consumo_pct: unknown }>>(
+          Prisma.sql`
         SELECT avg(least(consumido / total, 1)) * 100 AS promedio_consumo_pct
         FROM (
           SELECT c.total_amount AS total,
@@ -742,8 +770,9 @@ export class PurchaseReportsService {
             AND c.total_amount IS NOT NULL AND c.total_amount > 0
           GROUP BY c.id, c.total_amount
         ) t`,
-      ),
-    ]);
+        ),
+      ],
+    );
 
     return {
       por_vencer_30_dias: porVencer.map((contract) => ({
@@ -754,8 +783,9 @@ export class PurchaseReportsService {
         total_amount: toNumber(contract.total_amount),
       })),
       vigentes: {
-        total: vigentes._count._all,
-        valor_total: toNumber(vigentes._sum.total_amount) ?? 0,
+        total: vigentes,
+        // I6: montos por moneda, nunca sumados
+        por_moneda: vigentesPorMoneda,
       },
       promedio_consumo_pct:
         toNumber(consumo[0]?.promedio_consumo_pct) === null

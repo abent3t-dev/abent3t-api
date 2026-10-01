@@ -24,6 +24,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ContractsService } from './contracts.service';
+import { docKindName } from './contract-catalog';
 import { ContractQueryDto } from './dto/contract-query.dto';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
@@ -42,11 +43,18 @@ const STATUS_LABEL: Record<string, string> = {
   cancelado: 'Cancelado',
 };
 
-/** Columnas del export = tabla de /compras/contratos (B1 + B4). */
+/** Columnas del export = tabla de /compras/contratos (B1 + B4; I6). */
 const CONTRACT_COLUMNS: ExcelColumn<ContractExportRow>[] = [
   { header: 'Número', value: (r) => r.contract_number, width: 16 },
+  // I6: carpeta, documento y área usuaria del control de contratos
+  { header: 'Carpeta', value: (r) => r.carpeta, width: 12 },
   { header: 'Tomo', value: (r) => r.tomo, width: 10 },
-  { header: 'Tipo', value: (r) => r.document_type, width: 14 },
+  {
+    header: 'Documento',
+    value: (r) => r.document_label ?? docKindName(r.doc_kind),
+    width: 22,
+  },
+  { header: 'Área usuaria', value: (r) => r.user_area, width: 22 },
   { header: 'Servicio', value: (r) => r.service_description, width: 44 },
   { header: 'Proveedor', value: (r) => r.supplier?.legal_name, width: 36 },
   {
@@ -55,7 +63,12 @@ const CONTRACT_COLUMNS: ExcelColumn<ContractExportRow>[] = [
     kind: 'date',
     width: 14,
   },
-  { header: 'Fin vigencia', value: (r) => r.end_date, kind: 'date', width: 14 },
+  {
+    header: 'Fin vigencia',
+    value: (r) => r.end_date ?? 'Sin fecha de fin',
+    kind: 'date',
+    width: 16,
+  },
   { header: 'Monto', value: (r) => r.total_amount ?? NO_DISPONIBLE, width: 16 },
   {
     header: 'Consumido',
@@ -95,7 +108,10 @@ export class ContractsController {
   // Lectura — cualquier usuario autenticado (sin @Roles, ver nota de clase)
   @Get()
   findAll(@Query() query: ContractQueryDto) {
-    return this.service.findAll(query);
+    // I6: `group=carpeta` → una fila por carpeta con sus documentos
+    return query.group === 'carpeta'
+      ? this.service.findGroups(query)
+      : this.service.findAll(query);
   }
 
   // E1: valores de una columna para el filtro "tipo Excel"; antes de ':id'.

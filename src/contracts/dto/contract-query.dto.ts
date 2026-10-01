@@ -9,6 +9,8 @@ import { CONTRACT_STATUSES } from './create-contract.dto';
  * PaginationDto. `vence_en_dias` acota a contratos cuyo fin cae entre hoy
  * (CDMX) y hoy + N días. E1 (2026-09-25): filtros por columna
  * (`filters`/`sort`/`order`, y `column`/`facet_search` en /facets).
+ * I6 (2026-09-30): `sin_fin=true` = documentos sin fecha de fin;
+ * `group=carpeta` = una fila por carpeta con sus documentos.
  */
 export class ContractQueryDto extends ColumnFilterablePaginationDto {
   @IsIn(CONTRACT_STATUSES)
@@ -25,4 +27,12 @@ export class ContractQueryDto extends ColumnFilterablePaginationDto {
   @Min(0)
   @Max(365)
   vence_en_dias?: number;
+
+  @IsIn(['true', 'false'])
+  @IsOptional()
+  sin_fin?: 'true' | 'false';
+
+  @IsIn(['carpeta'])
+  @IsOptional()
+  group?: 'carpeta';
 }

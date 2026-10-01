@@ -2,6 +2,7 @@ import {
   IsDateString,
   IsEmail,
   IsIn,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -12,6 +13,11 @@ import {
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import {
+  CONTRACT_DOC_KINDS,
+  CONTRACT_USER_AREAS,
+  type ContractDocKind,
+} from '../contract-catalog';
 
 export const CONTRACT_DOCUMENT_TYPES = [
   'contrato',
@@ -28,20 +34,52 @@ export const CONTRACT_STATUSES = [
   'cancelado',
 ] as const;
 
-/** Fase §15 — Alta de contrato (metadata; el PDF se sube por separado). */
+/**
+ * Fase §15 — Alta de contrato (metadata; el PDF se sube por separado).
+ *
+ * I6 (2026-09-30): el número se arma con la carpeta y el tipo (A3T-0003,
+ * A3T-0003-CI, A3T-0003-E2…), igual que la carga del control de contratos;
+ * `contract_number` explícito sigue aceptándose. Las fechas son opcionales
+ * (permanentes, "por servicio"): sin fecha de fin no hay alertas.
+ */
 export class CreateContractDto {
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @MaxLength(50)
-  contract_number: string;
+  contract_number?: string;
+
+  /** I6: carpeta del control de contratos (A3T-0003). */
+  @IsString()
+  @IsOptional()
+  @MaxLength(20)
+  carpeta?: string;
+
+  /** I6: tipo del documento dentro de la carpeta. */
+  @IsIn(CONTRACT_DOC_KINDS)
+  @IsOptional()
+  doc_kind?: ContractDocKind;
+
+  /** I6: número de la enmienda (sin él, la siguiente de la carpeta). */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  doc_number?: number;
+
+  /** I6: área usuaria responsable (catálogo de Compras). */
+  @IsIn(CONTRACT_USER_AREAS)
+  @IsOptional()
+  user_area?: string;
 
   @IsString()
   @IsOptional()
   @MaxLength(50)
   tomo?: string;
 
+  /** Tipo genérico; con `doc_kind` se deduce de él. */
   @IsIn(CONTRACT_DOCUMENT_TYPES)
-  document_type: (typeof CONTRACT_DOCUMENT_TYPES)[number];
+  @IsOptional()
+  document_type?: (typeof CONTRACT_DOCUMENT_TYPES)[number];
 
   @IsString()
   @IsNotEmpty()
@@ -52,13 +90,15 @@ export class CreateContractDto {
   @IsNotEmpty()
   supplier_id: string;
 
+  /** null o ausente = sin fecha (I6). */
   @IsDateString()
-  @IsNotEmpty()
-  start_date: string;
+  @IsOptional()
+  start_date?: string | null;
 
+  /** null o ausente = "Sin fecha de fin": sin alertas de vencimiento (I6). */
   @IsDateString()
-  @IsNotEmpty()
-  end_date: string;
+  @IsOptional()
+  end_date?: string | null;
 
   @IsOptional()
   @Type(() => Number)

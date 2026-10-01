@@ -1,10 +1,14 @@
 import {
   compact,
   type ExistingContract,
+  matchSupplier,
   normalizeContractRows,
   parseAmount,
   parseCurrency,
+  parseExcelDate,
+  pickContractSheet,
   planContractImport,
+  readExcelDate,
 } from './contracts-import.plan';
 
 /**
@@ -43,6 +47,10 @@ const existing = (overrides: Partial<ExistingContract>): ExistingContract => ({
   notes:
     'Importado del Excel CONTROL_DE_CONTRATOS (2026-09-21). Fecha real de fin (Excel): 2024-11-15. Adm. de contrato: Mendez Perez Diana. Documento (SharePoint): 7400016518.',
   created_by: null,
+  carpeta: null,
+  document_label: null,
+  user_area: null,
+  buyer_profile_id: null,
   ...overrides,
 });
 
@@ -137,7 +145,7 @@ describe('altas', () => {
     });
   });
 
-  it('proveedor ambiguo, vigencia incompleta o contrato repetido → error y la fila no se toca', () => {
+  it('proveedor ambiguo o contrato repetido → error y la fila no se toca; sin fecha de fin sí se importa (I6)', () => {
     const p = plan(
       [
         record({ Contrato: 1, Proveedor: 'Honeywell Mexico SA' }),
@@ -147,8 +155,13 @@ describe('altas', () => {
       ],
       [],
     );
-    expect(p.errors).toHaveLength(3);
-    expect(p.create.map((c) => c.data.contract_number)).toEqual(['3']);
+    expect(p.errors).toHaveLength(2);
+    expect(p.create.map((c) => c.data.contract_number)).toEqual(['2', '3']);
+    expect(p.create[0].data).toMatchObject({
+      end_date: null,
+      status: 'vigente',
+    });
+    expect(p.report.noEndDate).toEqual(['2']);
   });
 
   it('sin --update, los que ya existen se saltan (como antes)', () => {
@@ -279,5 +292,324 @@ describe('--update: faltantes (candidatos a baja)', () => {
       ['7400012527', false],
       ['7400099999', true],
     ]);
+  });
+});
+
+// ── I6 (go-live 2026-09-30): la base real de Diana ─────────────────────
+
+/** Fila de Control_de_contratos_A3T.xlsx ("Hoja1"), como la da SheetJS sin cellDates. */
+const real = (overrides: Record<string, unknown> = {}) => ({
+  'Num. Tomo': 'Tomo 1',
+  'Núm. Carpeta': 'A3T-0003',
+  'Tipo de documento': 'Contrato',
+  'Área usuaria': 'Medición',
+  Comprador: null,
+  Servicio: 'Servicio de facturación',
+  Proveedor: 'NXTVIEW S.A DE C.V.',
+  Estatus: 'Vigente',
+  'Fecha inicio': 45314, // 2024-01-23
+  Plazo: '12 meses ',
+  'Fecha Fin': 45679.2, // I3+(12*30.6): 2025-01-22 con horas
+  'Monto Adjudicado': 455000,
+  Moneda: 'MXN ',
+  'Nombre del archivo': 'A3T-0003 Servicios de facturación - NXTVIEW - CONT',
+  ...overrides,
+});
+
+const realPlan = (
+  records: Array<Record<string, unknown>>,
+  current: ExistingContract[] = [],
+  extra: {
+    suppliers?: typeof suppliers;
+    buyers?: Array<{ id: string; full_name: string }>;
+  } = {},
+) => {
+  const normalized = normalizeContractRows(records);
+  return {
+    normalized,
+    plan: planContractImport({
+      rows: normalized.rows,
+      existing: current,
+      suppliers: extra.suppliers ?? suppliers,
+      buyers: extra.buyers,
+      options: { today: TODAY, update: true },
+    }),
+  };
+};
+
+describe('I6: hoja, columnas y número por carpeta + tipo', () => {
+  it('elige la hoja con los encabezados (Hoja2 son los catálogos y va primero)', () => {
+    expect(
+      pickContractSheet([
+        {
+          name: 'Hoja2',
+          headers: ['Contrato', 'USD', 'Vigente', 'Operaciones'],
+        },
+        { name: 'Hoja1', headers: Object.keys(real()) },
+      ]),
+    ).toBe('Hoja1');
+    expect(
+      pickContractSheet([{ name: 'X', headers: ['Algo', 'Otra'] }]),
+    ).toBeNull();
+  });
+
+  it('lee los alias de la base real: carpeta, tomo, tipo, área, plazo, estatus y archivo', () => {
+    const { rows } = normalizeContractRows([real()]);
+    expect(rows[0]).toMatchObject({
+      number: 'A3T-0003',
+      carpeta: 'A3T-0003',
+      documentLabel: 'Contrato',
+      documentType: 'contrato',
+      tomo: 'Tomo 1',
+      userArea: 'Medición',
+      term: '12 meses',
+      excelStatus: 'vigente',
+      amount: 455000,
+      currency: 'MXN',
+      documentRef: 'A3T-0003 Servicios de facturación - NXTVIEW - CONT',
+    });
+  });
+
+  it('carpeta + tipo → número; el segundo contrato de la carpeta lleva -2', () => {
+    const tipos = [
+      ['A3T-0003', 'Carta de Intencion'],
+      ['A3T-0003', 'Contrato'],
+      ['A3T-0022', 'Enmienda 3'],
+      ['A3T-0022', 'Convenio Modificatorio'],
+      ['A3T-0010', 'Contrato'],
+      ['A3T-0010', 'Contrato'],
+      ['A3T-0050', 'Terminación'],
+      ['A3T-0051', 'Acta recepción'],
+      ['A3T-0052', 'Cesion de derechos'],
+      ['A3T-0053', 'Otro'],
+    ];
+    const { rows } = normalizeContractRows(
+      tipos.map(([carpeta, tipo]) =>
+        real({ 'Núm. Carpeta': carpeta, 'Tipo de documento': tipo }),
+      ),
+    );
+    expect(
+      rows.map((r) => [r.number, r.documentLabel, r.documentType]),
+    ).toEqual([
+      ['A3T-0003-CI', 'Carta de intención', 'carta_compromiso'],
+      ['A3T-0003', 'Contrato', 'contrato'],
+      ['A3T-0022-E3', 'Enmienda 3', 'addenda'],
+      ['A3T-0022-CM', 'Convenio modificatorio', 'convenio'],
+      ['A3T-0010', 'Contrato', 'contrato'],
+      ['A3T-0010-2', 'Contrato', 'contrato'],
+      ['A3T-0050-TER', 'Terminación', 'otro'],
+      ['A3T-0051-AR', 'Acta de recepción', 'otro'],
+      ['A3T-0052-CD', 'Cesión de derechos', 'otro'],
+      ['A3T-0053-OT', 'Otro', 'otro'],
+    ]);
+  });
+
+  it('las filas vacías (solo carpeta y tomo) se saltan y se reportan', () => {
+    const empty = {
+      'Num. Tomo': 'Tomo 16',
+      'Núm. Carpeta': 'A3T-0160',
+      'Tipo de documento': 'Contrato',
+    };
+    const { rows, skipped } = normalizeContractRows([real(), empty]);
+    expect(rows).toHaveLength(1);
+    expect(skipped).toEqual([{ rowNumber: 3, ref: 'A3T-0160 · Tomo 16' }]);
+  });
+});
+
+describe('I6: fechas', () => {
+  it('texto dd/mm/aaaa con el DÍA primero; "NA" o "." = vacío', () => {
+    expect(parseExcelDate('25/04/2024')).toEqual(D('2024-04-25'));
+    expect(parseExcelDate('05/11/2025')).toEqual(D('2025-11-05'));
+    expect(parseExcelDate('NA')).toBeNull();
+    expect(parseExcelDate('.')).toBeNull();
+    expect(readExcelDate('31/02/2025')).toEqual({
+      date: null,
+      unreadable: '31/02/2025',
+    });
+  });
+
+  it('serial de Excel sin la fracción del día (la fórmula de Fecha Fin trae horas)', () => {
+    expect(parseExcelDate(45314)).toEqual(D('2024-01-23'));
+    expect(parseExcelDate(45414.2)).toEqual(D('2024-05-02'));
+    expect(parseExcelDate(45413.99)).toEqual(D('2024-05-01'));
+  });
+
+  it('las ilegibles se reportan y la fila se importa con la fecha vacía', () => {
+    const { rows, unreadableDates } = normalizeContractRows([
+      real({ 'Fecha inicio': 'a definir', 'Fecha Fin': 'NA' }),
+    ]);
+    expect(rows[0]).toMatchObject({ startDate: null, endDate: null });
+    expect(unreadableDates).toEqual([
+      { rowNumber: 2, ref: 'A3T-0003', field: 'inicio', value: 'a definir' },
+    ]);
+  });
+});
+
+describe('I6: plan con la base real', () => {
+  it('sin fecha de fin: estatus del Excel normalizado o vigente, y al reporte', () => {
+    const { plan: p } = realPlan([
+      real({ 'Fecha Fin': 'NA', Plazo: 'PERMANENTE', Estatus: 'VENCIDO' }),
+      real({ 'Núm. Carpeta': 'A3T-0004', 'Fecha Fin': null, Estatus: null }),
+    ]);
+    expect(
+      p.create.map((c) => [
+        c.data.contract_number,
+        c.data.end_date,
+        c.data.status,
+      ]),
+    ).toEqual([
+      ['A3T-0003', null, 'vencido'],
+      ['A3T-0004', null, 'vigente'],
+    ]);
+    expect(p.report.noEndDate).toEqual(['A3T-0003', 'A3T-0004']);
+    expect(p.create[0].data.notes).toContain('Plazo: permanente.');
+  });
+
+  it('con fecha de fin manda la fecha; el estatus del Excel que la contradice se reporta', () => {
+    const { plan: p } = realPlan([real({ Estatus: 'Vigente' })]);
+    expect(p.create[0].data).toMatchObject({
+      contract_number: 'A3T-0003',
+      carpeta: 'A3T-0003',
+      document_label: 'Contrato',
+      user_area: 'Medición',
+      start_date: D('2024-01-23'),
+      end_date: D('2025-01-22'),
+      status: 'vencido',
+      total_amount: 455000,
+      currency: 'MXN',
+    });
+    expect(p.create[0].data.notes).toContain(
+      'Documento (SharePoint): A3T-0003 Servicios de facturación - NXTVIEW - CONT.',
+    );
+    expect(p.report.statusContradictions).toEqual([
+      {
+        ref: 'A3T-0003',
+        excel: 'vigente',
+        byDate: 'vencido',
+        end: '2025-01-22',
+      },
+    ]);
+  });
+
+  it('monto sin moneda: no se importa y va al reporte (nunca se inventa la moneda)', () => {
+    const { plan: p } = realPlan([
+      real({ Moneda: null, 'Monto Adjudicado': 400144.37 }),
+    ]);
+    expect(p.create[0].data).toMatchObject({
+      total_amount: null,
+      currency: null,
+    });
+    expect(p.report.amountWithoutCurrency).toEqual(['A3T-0003: 400144.37']);
+  });
+
+  it('"NA", "." y monedas con variantes ("MXN ", "usd", "EUROS")', () => {
+    const { rows } = normalizeContractRows([
+      real({ 'Monto Adjudicado': 'NA', Moneda: 'NA' }),
+      real({
+        'Núm. Carpeta': 'A3T-0004',
+        'Monto Adjudicado': '.',
+        Moneda: 'usd',
+      }),
+      real({ 'Núm. Carpeta': 'A3T-0005', Moneda: 'EUROS' }),
+    ]);
+    expect(rows.map((r) => [r.amount, r.currency])).toEqual([
+      [null, null],
+      [null, 'USD'],
+      [455000, 'EUR'],
+    ]);
+  });
+
+  it('proveedores: catálogo sin la forma jurídica; las variantes del archivo se unifican en una alta', () => {
+    expect(matchSupplier('UVX', suppliers).entry?.id).toBe('sup-uvx');
+    const { plan: p } = realPlan([
+      real({ Proveedor: 'SOLUCIONES MARÍTIMAS DEL CARMEN SA DE CV' }),
+      real({
+        'Núm. Carpeta': 'A3T-0004',
+        Proveedor: 'Soluciones Maritimas del Carmen',
+      }),
+      real({ 'Núm. Carpeta': 'A3T-0005', Proveedor: 'SAYFI' }),
+    ]);
+    expect(p.create.map((c) => c.data.new_supplier_name)).toEqual([
+      'SOLUCIONES MARÍTIMAS DEL CARMEN SA DE CV',
+      'SOLUCIONES MARÍTIMAS DEL CARMEN SA DE CV',
+      'SAYFI',
+    ]);
+    expect(p.report.newSuppliers).toEqual([
+      {
+        name: 'SOLUCIONES MARÍTIMAS DEL CARMEN SA DE CV',
+        variants: [
+          'SOLUCIONES MARÍTIMAS DEL CARMEN SA DE CV',
+          'Soluciones Maritimas del Carmen',
+        ],
+        rows: ['A3T-0003', 'A3T-0004'],
+      },
+      { name: 'SAYFI', variants: ['SAYFI'], rows: ['A3T-0005'] },
+    ]);
+  });
+
+  it('comprador por nombre (exacto o prefijo único); el que no cuadra se reporta', () => {
+    const buyers = [
+      { id: 'u-1', full_name: 'Mariana López' },
+      { id: 'u-2', full_name: 'Jorge Hernández' },
+    ];
+    const { plan: p } = realPlan(
+      [
+        real({ Comprador: 'mariana lopez' }),
+        real({ 'Núm. Carpeta': 'A3T-0004', Comprador: 'Jorge' }),
+        real({ 'Núm. Carpeta': 'A3T-0005', Comprador: 'Laura' }),
+      ],
+      [],
+      { buyers },
+    );
+    expect(p.create.map((c) => c.data.buyer_profile_id)).toEqual([
+      'u-1',
+      'u-2',
+      undefined,
+    ]);
+    expect(p.report.unmatchedBuyers).toEqual([
+      { ref: 'A3T-0005', name: 'Laura' },
+    ]);
+  });
+
+  it('una segunda corrida con el mismo archivo no cambia nada (mismos números)', () => {
+    const records = [
+      real(),
+      real({ 'Tipo de documento': 'Carta de Intencion' }),
+    ];
+    const first = realPlan(records).plan;
+    const stored: ExistingContract[] = first.create.map((c, i) =>
+      existing({
+        id: `n-${i}`,
+        contract_number: c.data.contract_number,
+        tomo: c.data.tomo ?? null,
+        document_type: c.data.document_type,
+        service_description: c.data.service_description,
+        supplier_id: 'sup-nxt',
+        supplier_name: 'NXTVIEW S.A DE C.V.',
+        start_date: c.data.start_date,
+        end_date: c.data.end_date,
+        total_amount: c.data.total_amount ?? null,
+        currency: c.data.currency ?? null,
+        responsible_user_name: null,
+        status: c.data.status,
+        notes: c.data.notes ?? null,
+        carpeta: c.data.carpeta ?? null,
+        document_label: c.data.document_label ?? null,
+        user_area: c.data.user_area ?? null,
+      }),
+    );
+    const second = realPlan(records, stored, {
+      suppliers: [
+        ...suppliers,
+        {
+          id: 'sup-nxt',
+          legal_name: 'NXTVIEW S.A DE C.V.',
+          key: compact('NXTVIEW S.A DE C.V.'),
+        },
+      ],
+    }).plan;
+    expect(second.create).toEqual([]);
+    expect(second.update).toEqual([]);
+    expect(second.unchanged).toEqual(['A3T-0003', 'A3T-0003-CI']);
   });
 });

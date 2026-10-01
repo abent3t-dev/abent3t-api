@@ -17,6 +17,20 @@ import {
 } from '../common/column-filters/column-filters';
 import type { ColumnDefs } from '../common/column-filters/column-filters';
 import { addDaysUtc, cdmxDateUtc } from './contracts.dates';
+import {
+  baseContractNumber,
+  contractNumberFor,
+  contractStatusFor,
+  type ContractDocKind,
+  type ContractStatus,
+  docKindLabel,
+  docKindName,
+  docKindOf,
+  docKindRank,
+  docKindType,
+  normalizeCarpeta,
+  parseDocKind,
+} from './contract-catalog';
 import { ContractQueryDto } from './dto/contract-query.dto';
 import { CreateContractDto } from './dto/create-contract.dto';
 import { UpdateContractDto } from './dto/update-contract.dto';
@@ -32,6 +46,11 @@ import { UpdateContractDto } from './dto/update-contract.dto';
  *
  * E1 (2026-09-25, pedido también por César): filtro "tipo Excel" por
  * columna sobre el listado, con el mismo motor que el resto de Compras.
+ *
+ * I6 (go-live 2026-09-30, base real de Diana): carpeta + tipo arman el
+ * número (contract-catalog.ts), área usuaria, fechas opcionales ("Sin fecha
+ * de fin", sin alertas), estatus por fecha de fin y el listado agrupado por
+ * carpeta (`group=carpeta`): el contrato con su CI, enmiendas y convenios.
  */
 
 const MAX_PDF_SIZE = 20 * 1024 * 1024; // 20 MB (§15)
@@ -92,6 +111,8 @@ function aliasContract(row: ContractRow) {
   const consumed = consumed_amount === null ? null : Number(consumed_amount);
   return {
     ...rest,
+    // I6: tipo del documento dentro de la carpeta (por su etiqueta)
+    doc_kind: docKindOf(row),
     total_amount: total,
     consumed_amount: consumed,
     // Saldo = total - consumido, calculado (B4). null si falta cualquiera:
@@ -105,10 +126,27 @@ function aliasContract(row: ContractRow) {
 
 type ContractListRow = ReturnType<typeof aliasContract>;
 
+/** "2026-10-01" → Date; null/"" → null (I6: fechas opcionales). */
+function toDate(value: string | null | undefined): Date | null {
+  return value ? new Date(value) : null;
+}
+
+/** Estatus al guardar: por fecha de fin; renovado/cancelado se respetan. */
+function statusOnSave(
+  end: Date | null,
+  requested: ContractStatus | null,
+): ContractStatus {
+  if (requested === 'renovado' || requested === 'cancelado') return requested;
+  return contractStatusFor(end, cdmxDateUtc(), requested);
+}
+
 /** E1: columnas filtrables = tabla de /compras/contratos. */
 export const CONTRACT_FILTER_COLUMNS: ColumnDefs<ContractListRow> = {
   numero: { type: 'text', value: (r) => r.contract_number },
-  tipo: { type: 'text', value: (r) => r.document_type },
+  // I6: carpeta, tipo del documento (Contrato, Enmienda…) y área usuaria
+  carpeta: { type: 'text', value: (r) => r.carpeta },
+  tipo: { type: 'text', value: (r) => docKindName(r.doc_kind) },
+  area: { type: 'text', value: (r) => r.user_area },
   servicio: { type: 'text', value: (r) => r.service_description },
   proveedor: { type: 'text', value: (r) => r.supplier?.legal_name },
   inicio: { type: 'date', value: (r) => r.start_date },
@@ -121,6 +159,65 @@ export const CONTRACT_FILTER_COLUMNS: ColumnDefs<ContractListRow> = {
   comprador: { type: 'text', value: (r) => r.buyer?.full_name },
   responsable: { type: 'text', value: (r) => r.responsible_user_name },
 };
+
+/** I6: una carpeta con sus documentos (el contrato primero). */
+export interface ContractGroup {
+  key: string;
+  carpeta: string | null;
+  /** El contrato de la carpeta (o su primer documento). */
+  head: ContractListRow;
+  documents: ContractListRow[];
+}
+
+const docOrder = (r: ContractListRow) =>
+  docKindRank(r.doc_kind, parseDocKind(r.document_label)?.n ?? null);
+
+/**
+ * I6: agrupa los documentos (ya filtrados) por carpeta. Sin carpeta, cada
+ * documento es su propio grupo. Orden: el de la columna pedida (sobre el
+ * documento principal) o por carpeta.
+ */
+export function groupContractsByCarpeta(
+  rows: ContractListRow[],
+  sort: { column: string; order: 'asc' | 'desc' } | null = null,
+): ContractGroup[] {
+  const byKey = new Map<string, ContractListRow[]>();
+  for (const row of rows) {
+    const key = row.carpeta ?? `#${row.contract_number}`;
+    const docs = byKey.get(key);
+    if (docs) docs.push(row);
+    else byKey.set(key, [row]);
+  }
+  const groups = [...byKey.entries()].map(([key, docs]) => {
+    const documents = [...docs].sort(
+      (a, b) =>
+        docOrder(a) - docOrder(b) ||
+        a.contract_number.localeCompare(b.contract_number),
+    );
+    return {
+      key,
+      carpeta: documents[0].carpeta,
+      head: documents[0],
+      documents,
+    };
+  });
+  if (sort) {
+    const heads = applyColumnQuery(
+      groups.map((g) => g.head),
+      CONTRACT_FILTER_COLUMNS,
+      { filters: new Map(), sort },
+    );
+    const rank = new Map(heads.map((h, i) => [h.id, i]));
+    return groups.sort(
+      (a, b) => (rank.get(a.head.id) ?? 0) - (rank.get(b.head.id) ?? 0),
+    );
+  }
+  return groups.sort((a, b) => {
+    if (a.carpeta && b.carpeta) return a.carpeta.localeCompare(b.carpeta);
+    if (a.carpeta || b.carpeta) return a.carpeta ? -1 : 1;
+    return a.key.localeCompare(b.key);
+  });
+}
 
 @Injectable()
 export class ContractsService {
@@ -143,12 +240,15 @@ export class ContractsService {
         lte: addDaysUtc(today, query.vence_en_dias),
       };
     }
+    // I6: permanentes, "por servicio"… (sin alertas de vencimiento)
+    if (query.sin_fin === 'true') where.end_date = null;
     if (query.search) {
       where.OR = [
         { contract_number: { contains: query.search, mode: 'insensitive' } },
         {
           service_description: { contains: query.search, mode: 'insensitive' },
         },
+        { user_area: { contains: query.search, mode: 'insensitive' } },
         {
           suppliers: {
             legal_name: { contains: query.search, mode: 'insensitive' },
@@ -201,12 +301,47 @@ export class ContractsService {
     } satisfies PaginatedResponse<ReturnType<typeof aliasContract>>;
   }
 
+  /**
+   * I6: una fila por carpeta con sus documentos (el contrato principal y,
+   * desplegables, su CI, enmiendas y convenios). Los filtros aplican a los
+   * documentos; la página cuenta carpetas.
+   */
+  async findGroups(query: ContractQueryDto) {
+    const columnQuery = parseColumnQuery(query, CONTRACT_FILTER_COLUMNS);
+    const { rows } = await this.loadAll(query);
+    const filtered = applyColumnQuery(
+      rows,
+      CONTRACT_FILTER_COLUMNS,
+      columnQuery,
+      { sort: false },
+    );
+    return paginateRows(
+      groupContractsByCarpeta(filtered, columnQuery.sort),
+      query.page ?? 1,
+      query.limit ?? 20,
+    );
+  }
+
   /** Export (B1): mismos filtros que findAll, sin paginar, con tope. */
   async findAllForExport(query: ContractQueryDto) {
     const columnQuery = parseColumnQuery(query, CONTRACT_FILTER_COLUMNS);
     const { rows, truncated } = await this.loadAll(query);
+    const filtered = applyColumnQuery(
+      rows,
+      CONTRACT_FILTER_COLUMNS,
+      columnQuery,
+      {
+        sort: query.group !== 'carpeta',
+      },
+    );
     return {
-      rows: applyColumnQuery(rows, CONTRACT_FILTER_COLUMNS, columnQuery),
+      // I6: agrupado, el Excel va por carpeta (contrato, CI, enmiendas…)
+      rows:
+        query.group === 'carpeta'
+          ? groupContractsByCarpeta(filtered, columnQuery.sort).flatMap(
+              (g) => g.documents,
+            )
+          : filtered,
       truncated,
     };
   }
@@ -253,24 +388,57 @@ export class ContractsService {
 
   async create(dto: CreateContractDto, userId: string) {
     await this.assertValidReferences(dto);
-    this.assertValidDates(dto.start_date, dto.end_date);
+    const startDate = toDate(dto.start_date);
+    const endDate = toDate(dto.end_date);
+    this.assertValidDates(startDate, endDate);
+
+    // I6: número = carpeta + tipo (como la carga del control de contratos)
+    const {
+      carpeta: carpetaInput,
+      doc_kind: kindInput,
+      doc_number: nInput,
+      contract_number: numberInput,
+      ...rest
+    } = dto;
+    const carpeta = this.carpetaOf(carpetaInput);
+    const kind: ContractDocKind | null =
+      kindInput ?? (carpeta ? 'contrato' : null);
+    const n =
+      kind === 'enmienda'
+        ? (nInput ?? (carpeta ? await this.nextEnmienda(carpeta) : null))
+        : null;
+    let contractNumber = numberInput?.trim() ?? '';
+    if (!contractNumber) {
+      if (!carpeta || !kind) {
+        throw new BadRequestException(
+          'Indica la carpeta (A3T-0000) y el tipo de documento, o el número del contrato',
+        );
+      }
+      contractNumber = await this.nextContractNumber(carpeta, kind, n);
+    }
 
     const duplicate = await this.prisma.contracts.findFirst({
-      where: { contract_number: dto.contract_number },
+      where: { contract_number: contractNumber },
       select: { id: true },
     });
     if (duplicate) {
       throw new BadRequestException(
-        `Ya existe un contrato con el número ${dto.contract_number}`,
+        `Ya existe un contrato con el número ${contractNumber}`,
       );
     }
 
     try {
       const created = await this.prisma.contracts.create({
         data: {
-          ...dto,
-          start_date: new Date(dto.start_date),
-          end_date: new Date(dto.end_date),
+          ...rest,
+          contract_number: contractNumber,
+          document_type:
+            dto.document_type ?? (kind ? docKindType(kind) : 'contrato'),
+          ...(carpeta ? { carpeta } : {}),
+          ...(kind && carpeta ? { document_label: docKindLabel(kind, n) } : {}),
+          start_date: startDate,
+          end_date: endDate,
+          status: statusOnSave(endDate, dto.status ?? null),
           created_by: userId,
         },
         include: CONTRACT_INCLUDE,
@@ -281,7 +449,7 @@ export class ContractsService {
       // Carrera sobre el UNIQUE de contract_number (duck-typing, patrón repo)
       if ((err as { code?: string }).code === 'P2002') {
         throw new BadRequestException(
-          `Ya existe un contrato con el número ${dto.contract_number}`,
+          `Ya existe un contrato con el número ${contractNumber}`,
         );
       }
       throw err;
@@ -295,33 +463,75 @@ export class ContractsService {
     if (!existing) throw new NotFoundException('Contrato no encontrado');
 
     await this.assertValidReferences(dto);
-    this.assertValidDates(
-      dto.start_date ?? existing.start_date.toISOString(),
-      dto.end_date ?? existing.end_date.toISOString(),
-    );
+    const {
+      carpeta: carpetaInput,
+      doc_kind: kindInput,
+      doc_number: nInput,
+      contract_number: numberInput,
+      start_date: startInput,
+      end_date: endInput,
+      status: statusInput,
+      ...rest
+    } = dto;
+    // undefined = no se toca; null/"" = se borra (I6: sin fecha)
+    const startDate =
+      startInput === undefined ? existing.start_date : toDate(startInput);
+    const endDate =
+      endInput === undefined ? existing.end_date : toDate(endInput);
+    this.assertValidDates(startDate, endDate);
 
+    // I6: cambio de carpeta o de tipo → etiqueta y número de nuevo
+    const data: Prisma.contractsUncheckedUpdateInput = { ...rest };
+    let contractNumber = numberInput?.trim() || existing.contract_number;
     if (
-      dto.contract_number &&
-      dto.contract_number !== existing.contract_number
+      carpetaInput !== undefined ||
+      kindInput !== undefined ||
+      nInput !== undefined
     ) {
+      const carpeta =
+        carpetaInput === undefined
+          ? existing.carpeta
+          : this.carpetaOf(carpetaInput);
+      const kind = kindInput ?? docKindOf(existing);
+      const n =
+        kind === 'enmienda'
+          ? (nInput ??
+            parseDocKind(existing.document_label)?.n ??
+            (carpeta ? await this.nextEnmienda(carpeta) : null))
+          : null;
+      data.carpeta = carpeta;
+      data.document_label = carpeta ? docKindLabel(kind, n) : null;
+      data.document_type = dto.document_type ?? docKindType(kind);
+      if (!numberInput?.trim() && carpeta) {
+        const base = baseContractNumber(carpeta, kind, n);
+        const current = existing.contract_number;
+        if (current !== base && !current.startsWith(`${base}-`)) {
+          contractNumber = await this.nextContractNumber(carpeta, kind, n);
+        }
+      }
+    }
+    if (contractNumber !== existing.contract_number) {
       const duplicate = await this.prisma.contracts.findFirst({
-        where: { contract_number: dto.contract_number, id: { not: id } },
+        where: { contract_number: contractNumber, id: { not: id } },
         select: { id: true },
       });
       if (duplicate) {
         throw new BadRequestException(
-          `Ya existe un contrato con el número ${dto.contract_number}`,
+          `Ya existe un contrato con el número ${contractNumber}`,
         );
       }
+      data.contract_number = contractNumber;
+    }
+    if (startInput !== undefined) data.start_date = startDate;
+    if (endInput !== undefined) data.end_date = endDate;
+    // Estatus por fecha de fin (renovado/cancelado se respetan)
+    if (endInput !== undefined || statusInput !== undefined) {
+      data.status = statusOnSave(endDate, statusInput ?? existing.status);
     }
 
     const updated = await this.prisma.contracts.update({
       where: { id },
-      data: {
-        ...dto,
-        ...(dto.start_date ? { start_date: new Date(dto.start_date) } : {}),
-        ...(dto.end_date ? { end_date: new Date(dto.end_date) } : {}),
-      },
+      data,
       include: CONTRACT_INCLUDE,
     });
     this.logger.log(
@@ -475,12 +685,54 @@ export class ContractsService {
     }
   }
 
-  private assertValidDates(start: string | Date, end: string | Date) {
-    if (new Date(end).getTime() < new Date(start).getTime()) {
+  private assertValidDates(start: Date | null, end: Date | null) {
+    if (start && end && end.getTime() < start.getTime()) {
       throw new BadRequestException(
         'La fecha de fin no puede ser anterior a la fecha de inicio',
       );
     }
+  }
+
+  /** I6: "a3t-3" → "A3T-0003"; vacía → null; otra forma → 400. */
+  private carpetaOf(value: string | null | undefined): string | null {
+    if (value === undefined || value === null || value.trim() === '') {
+      return null;
+    }
+    const carpeta = normalizeCarpeta(value);
+    if (!carpeta) {
+      throw new BadRequestException(
+        `La carpeta "${value}" debe tener la forma A3T-0000`,
+      );
+    }
+    return carpeta;
+  }
+
+  /** I6: número libre para la carpeta y el tipo (los dados de baja cuentan). */
+  private async nextContractNumber(
+    carpeta: string,
+    kind: ContractDocKind,
+    n: number | null,
+  ): Promise<string> {
+    const base = baseContractNumber(carpeta, kind, n);
+    const taken = await this.prisma.contracts.findMany({
+      where: { contract_number: { startsWith: base } },
+      select: { contract_number: true },
+    });
+    const numbers = new Set(taken.map((t) => t.contract_number));
+    return contractNumberFor(carpeta, kind, n, (num) => numbers.has(num));
+  }
+
+  /** I6: la enmienda sin número es la siguiente de la carpeta. */
+  private async nextEnmienda(carpeta: string): Promise<number> {
+    const docs = await this.prisma.contracts.findMany({
+      where: { carpeta, document_type: 'addenda' },
+      select: { document_label: true },
+    });
+    const max = Math.max(
+      0,
+      ...docs.map((d) => parseDocKind(d.document_label)?.n ?? 0),
+    );
+    return max + 1;
   }
 
   private async assertValidReferences(dto: {
