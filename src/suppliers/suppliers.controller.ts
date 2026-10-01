@@ -17,7 +17,11 @@ import {
   sendExcel,
 } from '../common/utils/excel-export.util';
 import type { ExcelColumn } from '../common/utils/excel-export.util';
-import { SuppliersService } from './suppliers.service';
+import {
+  SuppliersService,
+  supplierSapState,
+  type SupplierFilters,
+} from './suppliers.service';
 import { SupplierSapMirrorService } from './supplier-sap-mirror.service';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
@@ -66,14 +70,40 @@ const SUPPLIER_COLUMNS: ExcelColumn<SupplierExportRow>[] = [
     value: (r) => (r.is_blocked ? 'Bloqueado' : 'Activo'),
     width: 14,
   },
+  // I5: congelado o no válido en SAP = inactivo en SAP
   {
-    header: 'Inactivo en SAP',
-    value: (r) =>
-      r.sap_valid === false ? 'Sí' : r.sap_valid === null ? '' : 'No',
-    width: 14,
+    header: 'Estado en SAP',
+    value: (r) => {
+      const state = supplierSapState(r);
+      return state === null
+        ? ''
+        : state === 'activo'
+          ? 'Activo en SAP'
+          : 'Inactivo en SAP';
+    },
+    width: 16,
   },
   { header: 'Motivo bloqueo', value: (r) => r.blocked_reason, width: 30 },
 ];
+
+/** Filtros propios del listado (query string). I5: `sap_estado`. */
+function listFilters(
+  isBlocked: string | undefined,
+  minScore: string | undefined,
+  sapEstado: string | undefined,
+): SupplierFilters {
+  return {
+    is_blocked:
+      isBlocked !== undefined && isBlocked !== ''
+        ? isBlocked === 'true'
+        : undefined,
+    min_score: minScore ? parseInt(minScore, 10) : undefined,
+    sap_estado:
+      sapEstado === 'activo' || sapEstado === 'inactivo'
+        ? sapEstado
+        : undefined,
+  };
+}
 
 @Controller('suppliers')
 export class SuppliersController {
@@ -92,6 +122,12 @@ export class SuppliersController {
     return this.sapMirror.runMirror();
   }
 
+  // I5: contadores activos / inactivos en SAP; ruta literal antes de ':id'.
+  @Get('sap-counts')
+  sapCounts() {
+    return this.service.sapCounts();
+  }
+
   // Export Excel (B1): mismos filtros que el listado; ruta literal antes de ':id'.
   @Get('export')
   async exportExcel(
@@ -99,13 +135,11 @@ export class SuppliersController {
     @Res() res: Response,
     @Query('is_blocked') isBlocked?: string,
     @Query('min_score') minScore?: string,
+    @Query('sap_estado') sapEstado?: string,
   ) {
     const { rows, truncated } = await this.service.findAllForExport(
       pagination,
-      {
-        is_blocked: isBlocked !== undefined ? isBlocked === 'true' : undefined,
-        min_score: minScore ? parseInt(minScore, 10) : undefined,
-      },
+      listFilters(isBlocked, minScore, sapEstado),
     );
     const buffer = await buildExcel('Proveedores', SUPPLIER_COLUMNS, rows, {
       truncated,
@@ -119,11 +153,12 @@ export class SuppliersController {
     @Query() query: ColumnFilterablePaginationDto,
     @Query('is_blocked') isBlocked?: string,
     @Query('min_score') minScore?: string,
+    @Query('sap_estado') sapEstado?: string,
   ) {
-    return this.service.facets(query, {
-      is_blocked: isBlocked !== undefined ? isBlocked === 'true' : undefined,
-      min_score: minScore ? parseInt(minScore, 10) : undefined,
-    });
+    return this.service.facets(
+      query,
+      listFilters(isBlocked, minScore, sapEstado),
+    );
   }
 
   // Lectura abierta a cualquier autenticado ("ver todos, actuar por rol").
@@ -132,11 +167,9 @@ export class SuppliersController {
     @Query() pagination: ColumnFilterablePaginationDto,
     @Query('is_blocked') isBlocked?: string,
     @Query('min_score') minScore?: string,
+    @Query('sap_estado') sapEstado?: string,
   ) {
-    const filters = {
-      is_blocked: isBlocked !== undefined ? isBlocked === 'true' : undefined,
-      min_score: minScore ? parseInt(minScore, 10) : undefined,
-    };
+    const filters = listFilters(isBlocked, minScore, sapEstado);
 
     if (
       pagination.page ||

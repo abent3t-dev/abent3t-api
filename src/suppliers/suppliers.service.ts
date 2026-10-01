@@ -29,6 +29,32 @@ type SupplierListQuery = PaginationDto &
   ColumnQueryParams & { column?: string; facet_search?: string };
 
 /**
+ * I5 (go-live 2026-09-30): estado del proveedor EN SAP — inactivo = congelado
+ * o no válido en SAP B1 (en prod 476 válidos y 400 congelados). No toca
+ * `is_active`, que es la baja dentro de la plataforma. null = no es de SAP.
+ */
+export type SupplierSapState = 'activo' | 'inactivo';
+
+export function supplierSapState(row: {
+  source: string;
+  sap_valid: boolean | null;
+  sap_frozen: boolean | null;
+}): SupplierSapState | null {
+  if (row.source !== 'sap') return null;
+  return row.sap_valid === false || row.sap_frozen === true
+    ? 'inactivo'
+    : 'activo';
+}
+
+/** Filtros propios del listado (además de búsqueda y columnas). */
+export interface SupplierFilters {
+  is_blocked?: boolean;
+  min_score?: number;
+  /** I5: activo o inactivo en SAP. */
+  sap_estado?: SupplierSapState;
+}
+
+/**
  * E1 (2026-09-25): columnas filtrables = tabla de /compras/proveedores. La
  * puntuación 0 es "Sin evaluar" (DEFAULT 0 en BD), no una calificación.
  */
@@ -52,6 +78,8 @@ export const SUPPLIER_FILTER_COLUMNS: ColumnDefs<SupplierRow> = {
     type: 'text',
     value: (r) => (r.is_blocked ? 'bloqueado' : 'activo'),
   },
+  // I5: activo / inactivo en SAP (vacío = proveedor capturado en ABENT)
+  sap: { type: 'text', value: supplierSapState },
   origen: { type: 'text', value: (r) => r.source },
 };
 
@@ -79,13 +107,25 @@ export class SuppliersService extends BaseCrudPrismaService<
   /** WHERE del listado filtrado (compartido con el export, B1). */
   private filteredWhere(
     pagination: PaginationDto,
-    filters?: { is_blocked?: boolean; min_score?: number },
+    filters?: SupplierFilters,
   ): Prisma.suppliersWhereInput {
     const where: Prisma.suppliersWhereInput = { is_active: true };
     if (filters?.is_blocked !== undefined)
       where.is_blocked = filters.is_blocked;
     if (filters?.min_score !== undefined)
       where.performance_score = { gte: filters.min_score };
+    // I5: congelado o no válido en SAP = inactivo en SAP
+    if (filters?.sap_estado === 'inactivo') {
+      where.source = 'sap';
+      where.AND = [{ OR: [{ sap_valid: false }, { sap_frozen: true }] }];
+    } else if (filters?.sap_estado === 'activo') {
+      where.source = 'sap';
+      // NULL cuenta como activo (igual que supplierSapState)
+      where.AND = [
+        { OR: [{ sap_valid: null }, { sap_valid: true }] },
+        { OR: [{ sap_frozen: null }, { sap_frozen: false }] },
+      ];
+    }
 
     const term = pagination.search?.trim();
     if (term) {
@@ -96,10 +136,30 @@ export class SuppliersService extends BaseCrudPrismaService<
     return where;
   }
 
+  /**
+   * I5: contadores "N activos · M inactivos" en SAP (catálogo vigente de la
+   * plataforma; los capturados en ABENT van aparte).
+   */
+  async sapCounts() {
+    const groups = await this.prisma.suppliers.groupBy({
+      by: ['source', 'sap_valid', 'sap_frozen'],
+      where: { is_active: true },
+      _count: { _all: true },
+    });
+    const counts = { activos: 0, inactivos: 0, sin_sap: 0 };
+    for (const g of groups) {
+      const state = supplierSapState(g);
+      if (state === 'activo') counts.activos += g._count._all;
+      else if (state === 'inactivo') counts.inactivos += g._count._all;
+      else counts.sin_sap += g._count._all;
+    }
+    return counts;
+  }
+
   /** Export (B1): mismos filtros, sin paginar, con tope. */
   async findAllForExport(
     pagination: SupplierListQuery,
-    filters?: { is_blocked?: boolean; min_score?: number },
+    filters?: SupplierFilters,
   ) {
     const columnQuery = parseColumnQuery(pagination, SUPPLIER_FILTER_COLUMNS);
     const { rows, truncated } = await this.loadAll(pagination, filters);
@@ -110,19 +170,13 @@ export class SuppliersService extends BaseCrudPrismaService<
   }
 
   /** E1: valores de una columna con los demás filtros aplicados. */
-  async facets(
-    query: SupplierListQuery,
-    filters?: { is_blocked?: boolean; min_score?: number },
-  ) {
+  async facets(query: SupplierListQuery, filters?: SupplierFilters) {
     const { rows } = await this.loadAll(query, filters);
     return facetOf(rows, SUPPLIER_FILTER_COLUMNS, query);
   }
 
   /** Catálogo completo con los filtros propios (tope del export). */
-  private async loadAll(
-    pagination: PaginationDto,
-    filters?: { is_blocked?: boolean; min_score?: number },
-  ) {
+  private async loadAll(pagination: PaginationDto, filters?: SupplierFilters) {
     const where = this.filteredWhere(pagination, filters);
     const rows = await this.prisma.suppliers.findMany({
       where,
@@ -137,7 +191,7 @@ export class SuppliersService extends BaseCrudPrismaService<
 
   async findAllFiltered(
     pagination: SupplierListQuery,
-    filters?: { is_blocked?: boolean; min_score?: number },
+    filters?: SupplierFilters,
   ) {
     const page = pagination.page ?? 1;
     const limit = pagination.limit ?? 20;

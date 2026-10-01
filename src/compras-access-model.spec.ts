@@ -109,6 +109,8 @@ const OPEN_READS = [
   '/maximo/contracts/facets',
   '/compras/contratos/facets',
   '/suppliers/facets',
+  // I5 (2026-09-30): contadores activos / inactivos en SAP del mismo catálogo
+  '/suppliers/sap-counts',
   // 2026-09-28 (G1): proveedores con nombre distinto en Maximo y SAP
   '/maximo/vendor-xref',
   '/maximo/vendor-xref/export',
