@@ -80,16 +80,28 @@ export const envValidationSchema = Joi.object({
   EMAIL_TRANSPORT: Joi.string()
     .trim()
     .lowercase()
-    .valid('simulacion', 'graph')
+    .valid('simulacion', 'graph', 'smtp')
     .default('simulacion')
     .messages({
-      'any.only': 'EMAIL_TRANSPORT debe ser simulacion o graph',
+      'any.only': 'EMAIL_TRANSPORT debe ser simulacion, graph o smtp',
     }),
-  // Remitente fijo (si falta, AZURE_EMAIL_FROM)
+  // Remitente fijo (si falta, AZURE_EMAIL_FROM). Con smtp es obligatorio:
+  // el dominio remitente autorizado en el relay (SPF y DKIM).
   EMAIL_FROM: Joi.string()
     .email({ tlds: { allow: false } })
     .allow('')
-    .optional(),
+    .when('EMAIL_TRANSPORT', {
+      is: 'smtp',
+      then: Joi.string()
+        .email({ tlds: { allow: false } })
+        .invalid('')
+        .required()
+        .messages({
+          'any.required': 'EMAIL_FROM es requerida con EMAIL_TRANSPORT=smtp',
+          'any.invalid':
+            'EMAIL_FROM no puede estar vacía con EMAIL_TRANSPORT=smtp',
+        }),
+    }),
   // Ritmo: un correo cada N segundos (César pidió 120)
   EMAIL_MIN_INTERVAL_SECONDS: Joi.number()
     .integer()
@@ -134,6 +146,32 @@ export const envValidationSchema = Joi.object({
       }),
     }),
   AZURE_EMAIL_FROM: Joi.string().allow('').default('noreply@abent3t.com'),
+
+  // Relay SMTP (EMAIL_TRANSPORT=smtp, J3): sin Mail.Send en Entra
+  SMTP_HOST: Joi.string()
+    .allow('')
+    .when('EMAIL_TRANSPORT', {
+      is: 'smtp',
+      then: Joi.string().invalid('').required().messages({
+        'any.required': 'SMTP_HOST es requerida con EMAIL_TRANSPORT=smtp',
+        'any.invalid':
+          'SMTP_HOST no puede estar vacía con EMAIL_TRANSPORT=smtp',
+      }),
+    }),
+  SMTP_PORT: Joi.number().port().default(587),
+  // true = TLS desde el inicio (465); false = STARTTLS (587), obligatorio
+  // si hay usuario
+  SMTP_SECURE: Joi.boolean().default(false),
+  SMTP_USER: Joi.string().allow('').optional(),
+  SMTP_PASS: Joi.string()
+    .allow('')
+    .when('SMTP_USER', {
+      is: Joi.string().min(1).required(),
+      then: Joi.string().invalid('').required().messages({
+        'any.required': 'SMTP_PASS es requerida si hay SMTP_USER',
+        'any.invalid': 'SMTP_PASS no puede estar vacía si hay SMTP_USER',
+      }),
+    }),
 
   // ===== Recordatorios =====
   REMINDERS_ENABLED: Joi.boolean().default(true),

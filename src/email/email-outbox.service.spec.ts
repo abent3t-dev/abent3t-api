@@ -6,11 +6,12 @@ import {
   RETRY_DELAY_MS,
   cdmxDayStart,
 } from './email-outbox.service';
-import type {
-  DeliveryResult,
+import {
   EmailTransportService,
-  OutgoingEmail,
+  type DeliveryResult,
+  type OutgoingEmail,
 } from './email-transport.service';
+import { startFakeSmtp } from '../../test/fake-smtp-server';
 
 /**
  * J1 (hilo con César, 2026-10-01) — Cola de correo probada con BD en memoria
@@ -578,5 +579,50 @@ describe('cola de correo (J1)', () => {
       });
       expect(h.rows[0].sent_at?.getTime()).toBe(at(0).getTime());
     });
+  });
+});
+
+describe('J3: SMTP por la misma cola', () => {
+  it('el worker saca el correo por el relay con ritmo y dominio, y la bitácora dice smtp', async () => {
+    const smtp = await startFakeSmtp();
+    try {
+      const relay = new EmailTransportService(
+        new ConfigService({
+          EMAIL_TRANSPORT: 'smtp',
+          SMTP_HOST: '127.0.0.1',
+          SMTP_PORT: String(smtp.port),
+          EMAIL_FROM: 'avisos@abent3t.com',
+        }),
+      );
+      const h = makeHarness({}, (email) => relay.deliver(email));
+      await h.service.enqueue(aviso('ingrid@abent3t.com'));
+      await h.service.enqueue(aviso('diana@abent3t.com'));
+      await h.service.enqueue(
+        aviso('ventas@proveedor.com.mx', {
+          template: 'expediting_critica',
+          entityId: 'po-1',
+        }),
+      );
+
+      expect((await h.service.processNext(at(0))).outcome).toBe('enviado');
+      expect((await h.service.processNext(at(60))).outcome).toBe('ritmo');
+      expect((await h.service.processNext(at(120))).outcome).toBe('enviado');
+      expect((await h.service.processNext(at(240))).outcome).toBe('vacio');
+
+      // El proveedor (dominio externo) nunca llega al relay
+      expect(smtp.messages.map((m) => m.to)).toEqual([
+        ['ingrid@abent3t.com'],
+        ['diana@abent3t.com'],
+      ]);
+      const sent = h.rows.filter((r) => r.status === 'enviado');
+      expect(sent).toHaveLength(2);
+      expect(sent.every((r) => r.transport === 'smtp')).toBe(true);
+      expect(sent[0].provider_message_id).toMatch(/^<.+>$/);
+      expect(
+        h.rows.find((r) => r.status === 'rechazado')?.recipient_email,
+      ).toBe('ventas@proveedor.com.mx');
+    } finally {
+      await smtp.close();
+    }
   });
 });

@@ -228,8 +228,54 @@ describe('envValidationSchema', () => {
       expect(value.EMAIL_TRANSPORT).toBe('graph');
     });
 
+    it('EMAIL_TRANSPORT=smtp exige SMTP_HOST y EMAIL_FROM (J3)', () => {
+      const { error } = validated({ ...baseEnv, EMAIL_TRANSPORT: 'smtp' });
+      expect(error).toBeDefined();
+      expect(error!.message).toContain('SMTP_HOST');
+      expect(error!.message).toContain('EMAIL_FROM');
+    });
+
+    it('smtp con host y remitente pasa: puerto 587 y STARTTLS por defecto (J3)', () => {
+      const { error, value } = validated({
+        ...baseEnv,
+        EMAIL_TRANSPORT: 'smtp',
+        SMTP_HOST: 'smtp.relay.example',
+        EMAIL_FROM: 'avisos@abent3t.com',
+      });
+      expect(error).toBeUndefined();
+      expect(value).toMatchObject({
+        EMAIL_TRANSPORT: 'smtp',
+        SMTP_PORT: 587,
+        SMTP_SECURE: false,
+      });
+    });
+
+    it('SMTP_USER sin SMTP_PASS falla (J3)', () => {
+      const { error } = validated({
+        ...baseEnv,
+        EMAIL_TRANSPORT: 'smtp',
+        SMTP_HOST: 'smtp.relay.example',
+        EMAIL_FROM: 'avisos@abent3t.com',
+        SMTP_USER: 'relay-user',
+      });
+      expect(error).toBeDefined();
+      expect(error!.message).toContain('SMTP_PASS');
+    });
+
+    it('las variables SMTP solas tampoco habilitan el envío (J3)', () => {
+      const { error, value } = validated({
+        ...baseEnv,
+        SMTP_HOST: 'smtp.relay.example',
+        SMTP_USER: 'relay-user',
+        SMTP_PASS: 'x',
+      });
+      expect(error).toBeUndefined();
+      expect(value.EMAIL_TRANSPORT).toBe('simulacion');
+    });
+
     it.each([
       ['EMAIL_TRANSPORT', 'sendgrid'],
+      ['SMTP_PORT', '70000'],
       ['EMAIL_MIN_INTERVAL_SECONDS', '0'],
       ['EMAIL_DAILY_CAP', '-5'],
       ['EMAIL_FROM', 'no-es-correo'],

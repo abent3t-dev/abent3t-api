@@ -1,5 +1,9 @@
 import { ConfigService } from '@nestjs/config';
 import { EmailTransportService } from './email-transport.service';
+import {
+  startFakeSmtp,
+  type FakeSmtpServer,
+} from '../../test/fake-smtp-server';
 
 /**
  * J1 (2026-10-01) — Transporte del correo. El default es SIMULACIÓN aunque
@@ -142,5 +146,119 @@ describe('transporte de correo (J1)', () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('403');
     expect((error as Error).message).not.toContain(AZURE.AZURE_CLIENT_SECRET);
+  });
+});
+
+/**
+ * J3 (2026-10-01) — Relay SMTP con un servidor SMTP FALSO local (127.0.0.1,
+ * puerto libre): se prueba el protocolo de verdad sin salir a la red.
+ */
+describe('transporte SMTP (J3)', () => {
+  let smtp: FakeSmtpServer | null = null;
+
+  afterEach(async () => {
+    await smtp?.close();
+    smtp = null;
+  });
+
+  const smtpEnv = (port: number, extra: Record<string, string> = {}) => ({
+    EMAIL_TRANSPORT: 'smtp',
+    SMTP_HOST: '127.0.0.1',
+    SMTP_PORT: String(port),
+    EMAIL_FROM: 'avisos@abent3t.com',
+    ...extra,
+  });
+
+  it('envía por el relay con el remitente fijo', async () => {
+    smtp = await startFakeSmtp();
+    const transport = make(smtpEnv(smtp.port));
+    expect(transport.info()).toMatchObject({
+      mode: 'smtp',
+      from: 'avisos@abent3t.com',
+      ready: true,
+      missing: [],
+    });
+
+    const result = await transport.deliver(email);
+    expect(result.status).toBe('enviado');
+    expect(result.transport).toBe('smtp');
+    expect(result.messageId).toMatch(/^<.+>$/);
+
+    expect(smtp.messages).toHaveLength(1);
+    const [message] = smtp.messages;
+    expect(message.from).toBe('avisos@abent3t.com');
+    expect(message.to).toEqual(['ingrid@abent3t.com']);
+    expect(message.data).toContain('Subject: Contratos por vencer');
+    expect(message.data).toContain('text/html');
+    expect(message.data).toContain('<p>Hola</p>');
+  });
+
+  it('el texto plano sale como text/plain', async () => {
+    smtp = await startFakeSmtp();
+    await make(smtpEnv(smtp.port)).deliver({
+      ...email,
+      body: 'Hola en texto',
+      isHtml: false,
+    });
+    expect(smtp.messages[0].data).toContain('text/plain');
+    expect(smtp.messages[0].data).toContain('Hola en texto');
+  });
+
+  it('con usuario exige STARTTLS: sin TLS falla y la contraseña nunca sale', async () => {
+    smtp = await startFakeSmtp();
+    const transport = make(
+      smtpEnv(smtp.port, {
+        SMTP_USER: 'relay-user',
+        SMTP_PASS: 'secreto-smtp',
+      }),
+    );
+    expect(transport.smtpOptions()).toMatchObject({
+      secure: false,
+      requireTLS: true,
+      auth: { user: 'relay-user' },
+      tls: { minVersion: 'TLSv1.2' },
+    });
+
+    const error = await transport.deliver(email).catch((e: Error) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain('STARTTLS');
+    expect((error as Error).message).not.toContain('secreto-smtp');
+    // Se detiene al no poder cifrar: nunca llega a AUTH
+    expect(smtp.commands.map((c) => c.split(' ')[0])).toEqual([
+      'EHLO',
+      'STARTTLS',
+    ]);
+    expect(smtp.commands.join('\n')).not.toContain(
+      Buffer.from('secreto-smtp').toString('base64'),
+    );
+    expect(smtp.messages).toHaveLength(0);
+  });
+
+  it('un destinatario rechazado por el relay es error (la cola reintenta)', async () => {
+    smtp = await startFakeSmtp({ rejectRecipients: true });
+    await expect(make(smtpEnv(smtp.port)).deliver(email)).rejects.toThrow(
+      /SMTP respondió 550/,
+    );
+    expect(smtp.messages).toHaveLength(0);
+  });
+
+  it('SMTP_SECURE=true es TLS desde el inicio; el puerto default es 587', () => {
+    expect(
+      make(smtpEnv(465, { SMTP_SECURE: 'true' })).smtpOptions(),
+    ).toMatchObject({ port: 465, secure: true, requireTLS: false });
+    expect(
+      make({ EMAIL_TRANSPORT: 'smtp', SMTP_HOST: 'relay' }).smtpOptions(),
+    ).toMatchObject({ port: 587, secure: false });
+  });
+
+  it('sin SMTP_HOST ni EMAIL_FROM no intenta enviar y dice qué falta', async () => {
+    const transport = make({ EMAIL_TRANSPORT: 'smtp', SMTP_USER: 'u' });
+    expect(transport.info()).toMatchObject({
+      ready: false,
+      missing: ['SMTP_HOST', 'EMAIL_FROM', 'SMTP_PASS'],
+    });
+    await expect(transport.deliver(email)).rejects.toThrow(
+      'Faltan variables para SMTP: SMTP_HOST, EMAIL_FROM, SMTP_PASS',
+    );
   });
 });
