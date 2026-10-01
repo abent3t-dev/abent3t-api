@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { rangeEnd } from '../common/utils/date-range.util';
+import { poSearchNumber } from '../common/utils/po-search.util';
 import {
   daysBetween,
   sapLineReachedAt,
@@ -635,6 +636,11 @@ export class SapRecordsService {
   ): Promise<Record<string, unknown>> {
     const search = query.search?.trim();
     const extra: Record<string, unknown>[] = [];
+    // I2: "po 104896" también encuentra la migrada por su PO de Maximo
+    const number = poSearchNumber(search);
+    if (number && number !== search) {
+      extra.push({ maximo_ponum: { contains: number, mode: 'insensitive' } });
+    }
     if (search) {
       const requests = await this.prisma.sap_purchase_requests.findMany({
         where: {

@@ -18,7 +18,12 @@ import type { ExcelColumn } from '../common/utils/excel-export.util';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ExpeditingService } from './expediting.service';
-import { buyerLabel, expeditingDays } from './expediting.columns';
+import {
+  buyerLabel,
+  expeditingClosedBy,
+  expeditingDays,
+} from './expediting.columns';
+import { maximoStatusText } from './expediting.status';
 import { ExpeditingQueryDto } from './dto/expediting-query.dto';
 import {
   FollowUpDto,
@@ -45,11 +50,18 @@ const STATUS_LABEL: Record<string, string> = {
   retrasada: 'Retrasada',
   parcial: 'Entrega parcial',
   entregada: 'Entregada',
+  cancelada: 'Cancelada',
 };
 
 /** D9: columnas del export = tabla de /compras/expeditacion (+ monto). */
 const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
-  { header: 'PO', value: (r) => r.po_number, width: 14 },
+  // I2: los dos números (la OC propia de ABENT va en la columna de la OC)
+  { header: 'PO Maximo', value: (r) => r.po_maximo, width: 14 },
+  {
+    header: 'OC SAP',
+    value: (r) => (r.source === 'abent' ? r.po_number : r.oc_sap),
+    width: 12,
+  },
   {
     header: 'Origen',
     value: (r) =>
@@ -81,6 +93,10 @@ const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
     value: (r) => STATUS_LABEL[r.delivery_status] ?? r.delivery_status,
     width: 16,
   },
+  // I1: por qué ya no es entrega pendiente aunque su sistema la tenga abierta
+  { header: 'Cierre', value: expeditingClosedBy, width: 26 },
+  // I1b: con la recepción cuando CIISA la mande ("INPRG · recepción parcial")
+  { header: 'Estatus en Maximo', value: maximoStatusText, width: 22 },
   {
     header: 'Alertas',
     value: (r) => (r.purchase_order_id ? (r.tracking?.alert_count ?? 0) : null),

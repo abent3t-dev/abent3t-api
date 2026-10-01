@@ -1,6 +1,7 @@
 import {
   daysUntilDate,
   deriveDeliveryStatus,
+  erpClosure,
   RISK_WINDOW_DAYS,
 } from './expediting.status';
 
@@ -83,5 +84,49 @@ describe('deriveDeliveryStatus (T9: -15 naturales / vencida / +7)', () => {
     expect(
       deriveDeliveryStatus(input({ po_status: 'entregada_completa' }), TODAY),
     ).toBe('entregada');
+  });
+});
+
+describe('erpClosure (I1, 2026-09-30)', () => {
+  const closure = (overrides: Partial<Parameters<typeof erpClosure>[0]>) =>
+    erpClosure({ maximo_status: null, receipt_status: null, ...overrides });
+
+  it('migrada abierta en SAP: CLOSE en Maximo → entregada; CAN → cancelada; INPRG → sigue', () => {
+    expect(closure({ maximo_status: 'CLOSE' })).toEqual({
+      status: 'entregada',
+      closed_by: 'cerrada_maximo',
+    });
+    expect(closure({ maximo_status: 'CAN' })).toEqual({
+      status: 'cancelada',
+      closed_by: 'cancelada_maximo',
+    });
+    expect(closure({ maximo_status: 'INPRG' })).toBeNull();
+  });
+
+  it('Maximo con su copia en SAP cerrada → entregada; cancelada → cancelada', () => {
+    expect(closure({ maximo_status: 'APPR', sap_closed: true })).toEqual({
+      status: 'entregada',
+      closed_by: 'cerrada_sap',
+    });
+    expect(closure({ maximo_status: 'INPRG', sap_cancelled: true })).toEqual({
+      status: 'cancelada',
+      closed_by: 'cancelada_sap',
+    });
+  });
+
+  it('I1b: recepción COMPLETE cierra; PARTIAL y NONE no', () => {
+    expect(
+      closure({ maximo_status: 'INPRG', receipt_status: 'COMPLETE' }),
+    ).toEqual({ status: 'entregada', closed_by: 'recepcion_completa' });
+    expect(
+      closure({ maximo_status: 'INPRG', receipt_status: 'PARTIAL' }),
+    ).toBeNull();
+    expect(
+      closure({ maximo_status: 'INPRG', receipt_status: 'NONE' }),
+    ).toBeNull();
+  });
+
+  it('SAP solo (sin Maximo ni recepción): sin cambio', () => {
+    expect(closure({})).toBeNull();
   });
 });

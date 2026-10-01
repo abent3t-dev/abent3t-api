@@ -8,13 +8,15 @@ export const DERIVED_STATUSES = [
   'retrasada',
   'parcial',
   'entregada',
+  'cancelada',
 ] as const;
 
 /**
- * Fase Expeditación — Filtros del listado. `search` (número de PO o razón
- * social), `page`/`limit` de PaginationDto. `status` filtra por el estatus
- * DERIVADO (se aplica tras derivar, no en SQL). E1 (2026-09-25): filtros
- * por columna `filters`/`sort`/`order` (y `column`/`facet_search` en /facets).
+ * Fase Expeditación — Filtros del listado. `search` (número de PO u OC, o
+ * razón social), `page`/`limit` de PaginationDto. `status` filtra por el
+ * estatus DERIVADO (se aplica tras derivar, no en SQL). E1 (2026-09-25):
+ * filtros por columna `filters`/`sort`/`order` (y `column`/`facet_search`
+ * en /facets).
  */
 export class ExpeditingQueryDto extends ColumnFilterablePaginationDto {
   @IsIn(DERIVED_STATUSES)
@@ -41,4 +43,12 @@ export class ExpeditingQueryDto extends ColumnFilterablePaginationDto {
   @IsIn(['abent', 'sap', 'maximo'])
   @IsOptional()
   source?: 'abent' | 'sap' | 'maximo';
+
+  /**
+   * I1a (2026-09-30): solo las OC abiertas en SAP que ya están cerradas o
+   * canceladas en Maximo — la lista para depurarlas en SAP.
+   */
+  @IsIn(['true', 'false'])
+  @IsOptional()
+  closed_in_maximo?: 'true' | 'false';
 }

@@ -31,6 +31,8 @@ export function sapPoRequesterText(row: SapPurchaseOrderRow): string | null {
 
 export const SAP_PO_FILTER_COLUMNS: ColumnDefs<SapPurchaseOrderRow> = {
   numero: { type: 'text', value: (r) => r.doc_num },
+  // I2: la PO de Maximo de la migrada, igual que en Expeditación
+  po_maximo: { type: 'text', value: (r) => r.maximo_ponum },
   origen: { type: 'text', value: sapPoOriginKey },
   proveedor: { type: 'text', value: (r) => r.card_name },
   solicitante: { type: 'text', value: sapPoRequesterText },

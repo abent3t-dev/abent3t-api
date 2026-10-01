@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { ExpeditingService } from './expediting.service';
+import { poSearchNumber } from '../common/utils/po-search.util';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import { buildVendorXref } from '../erp-vendors/maximo-vendor-xref';
 import { cdmxDateUtc } from '../contracts/contracts.dates';
@@ -804,5 +805,285 @@ describe('ExpeditingService — proveedor efectivo de Maximo (G1)', () => {
       supplier_code: 'P0000219',
       supplier_note: 'en Maximo: ASOCIACION MEXICANA DE ENERGIA (P0000440)',
     });
+  });
+});
+
+describe('ExpeditingService — cierre en el otro sistema y búsqueda por PO (I1/I2)', () => {
+  const today = cdmxDateUtc();
+  const rel = (days: number) => new Date(today.getTime() + days * 86_400_000);
+  const row = (overrides: Record<string, unknown>) => ({
+    source: 'sap',
+    po_status: 'bost_Open',
+    supplier_name: 'Desarrollos de Automática',
+    supplier_code: 'P0000100',
+    amount: '100.00',
+    currency: 'MXN',
+    expected_date: rel(-16),
+    requested_by: null,
+    maximo_ponum: null,
+    buyer_code: null,
+    buyer_name: null,
+    created_by_name: null,
+    maximo_created_by: null,
+    maximo_exists: false,
+    maximo_status: null,
+    receipt_status: null,
+    ...overrides,
+  });
+  const copy = (
+    maximo_ponum: string,
+    state: { open?: boolean; closed?: boolean; cancelled?: boolean },
+    doc_num: number,
+  ) => ({
+    maximo_ponum,
+    open: state.open ?? false,
+    closed: state.closed ?? false,
+    cancelled: state.cancelled ?? false,
+    doc_num,
+  });
+
+  /** SAP abiertas (3 migradas + 1 propia), Maximo APPR/INPRG y sus copias en SAP. */
+  function seeded() {
+    const h = makeHarness();
+    h.prisma.$queryRaw
+      .mockResolvedValueOnce([
+        // migradas, abiertas en SAP: según su estatus en Maximo
+        row({
+          external_key: '1',
+          po_number: '7001',
+          maximo_ponum: 'PO104896',
+          maximo_exists: true,
+          maximo_status: 'INPRG',
+        }),
+        row({
+          external_key: '2',
+          po_number: '7002',
+          maximo_ponum: 'PO104897',
+          maximo_exists: true,
+          maximo_status: 'CLOSE',
+        }),
+        row({
+          external_key: '3',
+          po_number: '7003',
+          maximo_ponum: 'PO104898',
+          maximo_exists: true,
+          maximo_status: 'CAN',
+        }),
+        // de SAP solo: sin cambio
+        row({ external_key: '4', po_number: '7004' }),
+      ])
+      .mockResolvedValueOnce([
+        // su copia en SAP ya cerró → entregada
+        row({
+          source: 'maximo',
+          external_key: 'PO200',
+          po_number: 'PO200',
+          po_status: 'INPRG',
+          maximo_status: 'INPRG',
+        }),
+        // su copia en SAP se canceló → cancelada
+        row({
+          source: 'maximo',
+          external_key: 'PO201',
+          po_number: 'PO201',
+          po_status: 'APPR',
+          maximo_status: 'APPR',
+        }),
+        // sin copia en SAP → por fecha, como hoy
+        row({
+          source: 'maximo',
+          external_key: 'PO202',
+          po_number: 'PO202',
+          po_status: 'APPR',
+          maximo_status: 'APPR',
+        }),
+        // su copia sigue abierta → se muestra la fila de SAP (D1)
+        row({
+          source: 'maximo',
+          external_key: 'PO104896',
+          po_number: 'PO104896',
+          po_status: 'INPRG',
+          maximo_status: 'INPRG',
+        }),
+      ])
+      .mockResolvedValueOnce([
+        copy('PO104896', { open: true }, 7001),
+        copy('PO104897', { open: true }, 7002),
+        copy('PO104898', { open: true }, 7003),
+        copy('PO200', { closed: true }, 6200),
+        copy('PO201', { cancelled: true }, 6201),
+      ]);
+    return h;
+  }
+
+  it('I1a: la migrada CLOSE/CAN en Maximo sale de abiertas; INPRG y la de SAP solo siguen por fecha', async () => {
+    const h = seeded();
+    const { data } = await h.service.findAll({ limit: 50 });
+    const byPo = new Map(data.map((r) => [r.po_number, r]));
+    expect(data).toHaveLength(7);
+    expect(byPo.get('7001')).toMatchObject({
+      delivery_status: 'retrasada',
+      days_left: -16,
+      closed_by: null,
+      maximo_status: 'INPRG',
+    });
+    expect(byPo.get('7002')).toMatchObject({
+      delivery_status: 'entregada',
+      closed_by: 'cerrada_maximo',
+    });
+    expect(byPo.get('7003')).toMatchObject({
+      delivery_status: 'cancelada',
+      closed_by: 'cancelada_maximo',
+    });
+    expect(byPo.get('7004')).toMatchObject({
+      delivery_status: 'retrasada',
+      closed_by: null,
+    });
+    // la de Maximo con su copia en SAP cerrada o cancelada
+    expect(byPo.get('PO200')).toMatchObject({
+      delivery_status: 'entregada',
+      closed_by: 'cerrada_sap',
+      oc_sap: '6200',
+    });
+    expect(byPo.get('PO201')).toMatchObject({
+      delivery_status: 'cancelada',
+      closed_by: 'cancelada_sap',
+    });
+    expect(byPo.get('PO202')).toMatchObject({
+      delivery_status: 'retrasada',
+      closed_by: null,
+      oc_sap: null,
+    });
+    // D1: la PO104896 sale una vez, con la fila de SAP
+    expect(byPo.has('PO104896')).toBe(false);
+  });
+
+  it('I1a: tarjetas sin las cerradas en el otro sistema; contador y lista para depurar en SAP', async () => {
+    let h = seeded();
+    const stats = await h.service.getStats({});
+    expect(stats.counts).toMatchObject({
+      retrasada: 3,
+      entregada: 2,
+      cancelada: 2,
+    });
+    expect(stats.closed_in_maximo).toBe(2);
+
+    h = seeded();
+    const purge = await h.service.findAllForExport({
+      closed_in_maximo: 'true',
+    });
+    expect(purge.rows.map((r) => r.po_number).sort()).toEqual(['7002', '7003']);
+  });
+
+  it('I1b: recepción COMPLETE en Maximo → entregada; PARTIAL sigue abierta', async () => {
+    const h = makeHarness();
+    h.prisma.$queryRaw
+      .mockResolvedValueOnce([
+        row({
+          external_key: '1',
+          po_number: '7101',
+          maximo_ponum: 'PO300',
+          maximo_exists: true,
+          maximo_status: 'INPRG',
+          receipt_status: 'COMPLETE',
+        }),
+        row({
+          external_key: '2',
+          po_number: '7102',
+          maximo_ponum: 'PO301',
+          maximo_exists: true,
+          maximo_status: 'INPRG',
+          receipt_status: 'PARTIAL',
+        }),
+      ])
+      .mockResolvedValueOnce([
+        row({
+          source: 'maximo',
+          external_key: 'PO302',
+          po_number: 'PO302',
+          po_status: 'INPRG',
+          maximo_status: 'INPRG',
+          receipt_status: 'COMPLETE',
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    const { data } = await h.service.findAll({ limit: 50 });
+    const byPo = new Map(data.map((r) => [r.po_number, r]));
+    expect(byPo.get('7101')).toMatchObject({
+      delivery_status: 'entregada',
+      closed_by: 'recepcion_completa',
+    });
+    expect(byPo.get('7102')).toMatchObject({
+      delivery_status: 'retrasada',
+      closed_by: null,
+      receipt_status: 'PARTIAL',
+    });
+    expect(byPo.get('PO302')).toMatchObject({
+      delivery_status: 'entregada',
+      closed_by: 'recepcion_completa',
+    });
+  });
+
+  it('I2: las dos columnas (PO Maximo / OC SAP) y la búsqueda por PONUM con o sin "PO"', async () => {
+    let h = seeded();
+    const { data } = await h.service.findAll({ limit: 50 });
+    const byPo = new Map(data.map((r) => [r.po_number, r]));
+    expect(byPo.get('7001')).toMatchObject({
+      po_maximo: 'PO104896',
+      oc_sap: '7001',
+    });
+    expect(byPo.get('7004')).toMatchObject({ po_maximo: null, oc_sap: '7004' });
+    expect(byPo.get('PO202')).toMatchObject({
+      po_maximo: 'PO202',
+      oc_sap: null,
+    });
+
+    for (const search of ['104896', 'PO104896', 'po 104896']) {
+      h = seeded();
+      await h.service.findAll({ search });
+      // el término llega a SQL también como número (sin espacios ni "PO")
+      const calls = h.prisma.$queryRaw.mock.calls as unknown[][];
+      const sql = calls[0][0] as { values: unknown[] };
+      expect(sql.values).toContain('%104896%');
+    }
+
+    // la de Maximo se encuentra por su número y por el de su OC de SAP
+    h = seeded();
+    const maximoOnly = await h.service.findAll({
+      search: '202',
+      source: 'maximo',
+    });
+    expect(maximoOnly.data.map((r) => r.po_number)).toEqual(['PO202']);
+    h = seeded();
+    const bySapDoc = await h.service.findAll({
+      search: '6200',
+      source: 'maximo',
+    });
+    expect(bySapDoc.data.map((r) => r.po_number)).toEqual(['PO200']);
+  });
+
+  it('I2: filtro tipo Excel por las columnas nuevas', async () => {
+    let h = seeded();
+    const filtered = await h.service.findAll({
+      filters: JSON.stringify({ po_maximo: { in: ['PO104897'] } }),
+    });
+    expect(filtered.data.map((r) => r.po_number)).toEqual(['7002']);
+    h = seeded();
+    const closure = await h.service.findAll({
+      filters: JSON.stringify({ cierre: { in: ['Cerrada en Maximo'] } }),
+    });
+    expect(closure.data.map((r) => r.po_number)).toEqual(['7002']);
+  });
+});
+
+describe('poSearchNumber (I2)', () => {
+  it('quita espacios y el prefijo "PO"; un texto no numérico no es número', () => {
+    expect(poSearchNumber('104896')).toBe('104896');
+    expect(poSearchNumber('PO104896')).toBe('104896');
+    expect(poSearchNumber('po 104896')).toBe('104896');
+    expect(poSearchNumber(' Po104896 ')).toBe('104896');
+    expect(poSearchNumber('NAES')).toBeNull();
+    expect(poSearchNumber('PO-104896')).toBeNull();
+    expect(poSearchNumber(undefined)).toBeNull();
   });
 });

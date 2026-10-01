@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { poSearchNumber } from '../common/utils/po-search.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
@@ -19,6 +20,8 @@ import {
   DerivedDeliveryStatus,
   daysUntilDate,
   deriveDeliveryStatus,
+  erpClosure,
+  type ErpClosedBy,
   RISK_WINDOW_DAYS,
 } from './expediting.status';
 import { ExpeditingQueryDto } from './dto/expediting-query.dto';
@@ -72,6 +75,15 @@ import type { Buyer, BuyerKind } from '../common/utils/buyer.util';
  *  - G1 (2026-09-28): las filas de Maximo muestran el proveedor EFECTIVO
  *    (según SAP si la OC migró o por cruce de código; ver erp-vendors) y
  *    `supplier_note` = "en Maximo: …" cuando el nombre de Maximo es otro.
+ *
+ * Go-live 2026-09-30:
+ *  - I1: una OC cerrada o cancelada en cualquiera de los dos sistemas no es
+ *    entrega pendiente (`erpClosure`): la de SAP con su PO de Maximo en
+ *    CLOSE/CAN, y la de Maximo con su copia de SAP cerrada o cancelada; y,
+ *    cuando CIISA mande RECEIPTS, la recepción COMPLETE. `closed_in_maximo`
+ *    = la lista para depurar en SAP.
+ *  - I2: columnas "PO Maximo" y "OC SAP"; la búsqueda encuentra cualquiera
+ *    de los dos números ("104896", "PO104896" o "po 104896").
  */
 
 const SAFETY_SCAN_LIMIT = 2000;
@@ -106,10 +118,35 @@ interface ErpRow {
   maximo_created_by: string | null;
   /** E4: la OC de SAP migrada existe en el staging de Maximo. */
   maximo_exists: boolean;
+  /** I1: estatus en Maximo (el propio, o el de la PO que originó la de SAP). */
+  maximo_status: string | null;
+  /** I1b: recepción de Maximo (RECEIPTS); null mientras CIISA no la exponga. */
+  receipt_status: string | null;
+}
+
+/** I1/I2: copia en SAP de una PO de Maximo (puede haber varias por PONUM). */
+interface SapCopyRow {
+  maximo_ponum: string;
+  open: boolean;
+  closed: boolean;
+  cancelled: boolean;
+  doc_num: number | null;
 }
 
 /** Tope del export (D9), mismo criterio que los demás listados. */
 const EXPORT_MAX_ROWS = 20_000;
+
+/** I1a: OC abierta en SAP cuya PO de Maximo ya está cerrada o cancelada. */
+function closedInMaximo(item: {
+  source: string;
+  closed_by: ErpClosedBy | null;
+}): boolean {
+  return (
+    item.source === 'sap' &&
+    (item.closed_by === 'cerrada_maximo' ||
+      item.closed_by === 'cancelada_maximo')
+  );
+}
 
 const CURRENT_MAXIMO_POS = Prisma.sql`
   SELECT DISTINCT ON (ponum, coalesce(siteid, '')) *
@@ -246,9 +283,14 @@ export class ExpeditingService {
       if (da !== db) return da - db;
       return a.po_number.localeCompare(b.po_number);
     });
+    // I1a: la lista para depurar en SAP (abiertas allá, cerradas en Maximo)
+    const scoped =
+      query.closed_in_maximo === 'true'
+        ? mapped.filter((item) => closedInMaximo(item))
+        : mapped;
     const byStatus = query.status
-      ? mapped.filter((item) => item.delivery_status === query.status)
-      : mapped;
+      ? scoped.filter((item) => item.delivery_status === query.status)
+      : scoped;
     return applyColumnQuery(byStatus, EXPEDITING_FILTER_COLUMNS, columnQuery, {
       exclude: options.exclude,
       sort: options.exclude === undefined,
@@ -312,6 +354,7 @@ export class ExpeditingService {
       retrasada: 0,
       parcial: 0,
       entregada: 0,
+      cancelada: 0,
     };
     // B6: las OC abiertas de los ERPs suman al semáforo (por fuente aparte).
     const bySource = {
@@ -352,6 +395,8 @@ export class ExpeditingService {
     return {
       total: items.length,
       counts,
+      // I1a: abiertas en SAP que ya están cerradas o canceladas en Maximo
+      closed_in_maximo: items.filter((item) => closedInMaximo(item)).length,
       by_source: bySource,
       avg_delay_days: avg(delay.all),
       avg_delay_by_source: {
@@ -672,6 +717,9 @@ export class ExpeditingService {
    * de Maximo (APPR/INPRG vigentes, fecha = VENDELIVERYDATE del raw; si no
    * viene → sin_fecha). Agregado en SQL, derivación de semáforo en memoria
    * con el MISMO motor que las propias. Solo lectura.
+   *
+   * I1: antes de derivar por fecha se aplica `erpClosure` (cerrada o
+   * cancelada en el otro sistema, o recepción completa en Maximo).
    */
   private async loadErpItems(
     today: Date,
@@ -679,9 +727,12 @@ export class ExpeditingService {
     source: 'abent' | 'sap' | 'maximo' | undefined,
   ) {
     const term = query.search ? `%${query.search}%` : null;
+    // I2: "104896", "PO104896" o "po 104896" encuentran la PO y la OC
+    const number = poSearchNumber(query.search);
+    const numberTerm = number ? `%${number}%` : null;
     const from = query.expected_from ? new Date(query.expected_from) : null;
     const to = query.expected_to ? new Date(query.expected_to) : null;
-    const [sapRows, maximoRows] = await Promise.all([
+    const [sapRows, maximoRows, sapCopies] = await Promise.all([
       // Aunque se pida solo Maximo, las OC abiertas de SAP se necesitan para
       // no mostrar dos veces las migradas (D1): se descartan después.
       // E4: comprador de las migradas = PURCHASEAGENT de su OC en Maximo.
@@ -701,17 +752,22 @@ export class ExpeditingService {
                    mx.purchase_agent_name AS buyer_name,
                    s.created_by_name,
                    mx.created_by AS maximo_created_by,
-                   (mx.ponum IS NOT NULL) AS maximo_exists
+                   (mx.ponum IS NOT NULL) AS maximo_exists,
+                   mx.status AS maximo_status,
+                   mx.receipt_status
             FROM sap_purchase_orders s
             LEFT JOIN LATERAL (
-              SELECT m.ponum, m.purchase_agent, m.purchase_agent_name, m.created_by
+              SELECT m.ponum, m.purchase_agent, m.purchase_agent_name, m.created_by,
+                     m.status, m.receipt_status
               FROM maximo_purchase_orders m
               WHERE s.maximo_ponum IS NOT NULL AND m.ponum = s.maximo_ponum
               ORDER BY coalesce(m.revisionnum, 0) DESC
               LIMIT 1
             ) mx ON true
             WHERE s.document_status = 'bost_Open' AND s.cancelled IS DISTINCT FROM true
-              AND (${term}::text IS NULL OR s.card_name ILIKE ${term} OR s.doc_num::text ILIKE ${term})
+              AND (${term}::text IS NULL OR s.card_name ILIKE ${term}
+                   OR s.doc_num::text ILIKE ${term} OR s.maximo_ponum ILIKE ${term}
+                   OR s.doc_num::text ILIKE ${numberTerm} OR s.maximo_ponum ILIKE ${numberTerm})
               AND (${from}::timestamptz IS NULL OR s.doc_due_date >= ${from})
               AND (${to}::timestamptz IS NULL OR s.doc_due_date <= ${to})
             ORDER BY s.doc_due_date ASC NULLS LAST
@@ -736,12 +792,28 @@ export class ExpeditingService {
                    purchase_agent_name AS buyer_name,
                    NULL::text AS created_by_name,
                    created_by AS maximo_created_by,
-                   false AS maximo_exists
+                   false AS maximo_exists,
+                   status AS maximo_status,
+                   receipt_status
             FROM current
             WHERE status IN ('APPR', 'INPRG')
             ORDER BY ponum ASC
             LIMIT ${ERP_SCAN_LIMIT}`),
+      // D1/I1: copia en SAP de cada PO de Maximo (abierta, cerrada o cancelada),
+      // sin los filtros de la búsqueda para no duplicar ni perder el cierre
+      source === 'sap'
+        ? Promise.resolve([] as SapCopyRow[])
+        : this.prisma.$queryRaw<SapCopyRow[]>(Prisma.sql`
+            SELECT maximo_ponum,
+                   bool_or(document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true) AS open,
+                   bool_or(document_status <> 'bost_Open' AND cancelled IS DISTINCT FROM true) AS closed,
+                   bool_and(cancelled IS TRUE) AS cancelled,
+                   min(doc_num) AS doc_num
+            FROM sap_purchase_orders
+            WHERE maximo_ponum IS NOT NULL
+            GROUP BY maximo_ponum`),
     ]);
+    const copyOf = new Map(sapCopies.map((c) => [c.maximo_ponum, c]));
     // G1: proveedor efectivo de las OC de Maximo; la búsqueda también
     // encuentra el nombre efectivo (por eso se filtra aquí y no en SQL)
     const xref = await this.vendors.get();
@@ -759,18 +831,21 @@ export class ExpeditingService {
       ]),
     );
     const needle = query.search?.trim().toLowerCase() ?? '';
-    const matchesSearch = (row: ErpRow) =>
-      !needle ||
-      [
+    const matchesSearch = (row: ErpRow) => {
+      if (!needle) return true;
+      const sapDoc = copyOf.get(row.po_number)?.doc_num;
+      const texts = [
         row.po_number,
         row.supplier_name,
         maximoVendor.get(row.external_key)?.name ?? null,
-      ].some((v) => v?.toLowerCase().includes(needle));
-    // D1: PONUM de las OC de SAP que nacieron en Maximo → la fila de Maximo
-    // con ese PONUM se omite (queda la de SAP, que trae la fecha comprometida).
-    const migrated = new Set(
-      sapRows.map((r) => r.maximo_ponum).filter((p): p is string => p !== null),
-    );
+        sapDoc === null || sapDoc === undefined ? null : String(sapDoc),
+      ];
+      return texts.some(
+        (v) =>
+          (v?.toLowerCase().includes(needle) ?? false) ||
+          (number !== null && (v?.includes(number) ?? false)),
+      );
+    };
     // D6/E4/F1: alias de solicitantes, compradores y creadores de Maximo
     const aliasNames = await this.aliases.resolveMany('maximo', [
       ...maximoRows.map((r) => r.requested_by),
@@ -801,7 +876,8 @@ export class ExpeditingService {
     return [...(source === 'maximo' ? [] : sapRows), ...maximoRows]
       .filter((row) => {
         if (row.source !== 'maximo') return true;
-        if (migrated.has(row.po_number)) return false;
+        // D1: si su copia en SAP sigue abierta, se muestra la fila de SAP
+        if (copyOf.get(row.po_number)?.open) return false;
         if (!matchesSearch(row)) return false;
         const d = row.expected_date;
         if (from && (!d || d < from)) return false;
@@ -810,15 +886,26 @@ export class ExpeditingService {
       })
       .map((row) => {
         const expected = row.expected_date ? new Date(row.expected_date) : null;
-        const status = deriveDeliveryStatus(
-          {
-            expected_date: expected,
-            actual_delivery_date: null,
-            po_status: null,
-            tracking_status: null,
-          },
-          today,
-        );
+        const copy =
+          row.source === 'maximo' ? copyOf.get(row.po_number) : undefined;
+        // I1: cerrada o cancelada en el otro sistema, o recibida completa
+        const closure = erpClosure({
+          maximo_status: row.maximo_status,
+          sap_closed: copy?.closed ?? false,
+          sap_cancelled: copy ? copy.cancelled && !copy.closed : false,
+          receipt_status: row.receipt_status,
+        });
+        const status =
+          closure?.status ??
+          deriveDeliveryStatus(
+            {
+              expected_date: expected,
+              actual_delivery_date: null,
+              po_status: null,
+              tracking_status: null,
+            },
+            today,
+          );
         const buyer = buyerOf(row);
         const vendor =
           row.source === 'maximo'
@@ -857,6 +944,17 @@ export class ExpeditingService {
               ? null
               : (aliasNames.get(row.requested_by) ?? row.requested_by),
           maximo_ponum: row.maximo_ponum,
+          // I2: los dos números, cada uno en su columna
+          po_maximo: row.source === 'maximo' ? row.po_number : row.maximo_ponum,
+          oc_sap:
+            row.source === 'sap'
+              ? row.po_number
+              : copy?.doc_num === null || copy?.doc_num === undefined
+                ? null
+                : String(copy.doc_num),
+          maximo_status: row.maximo_status,
+          receipt_status: row.receipt_status,
+          closed_by: closure?.closed_by ?? null,
         };
       });
   }
@@ -894,6 +992,12 @@ export class ExpeditingService {
       currency: 'MXN' as string | null,
       requested_by: null as string | null,
       maximo_ponum: null as string | null,
+      // I1/I2: solo aplican a las OC de los ERP
+      po_maximo: null as string | null,
+      oc_sap: null as string | null,
+      maximo_status: null as string | null,
+      receipt_status: null as string | null,
+      closed_by: null as ErpClosedBy | null,
       buyer: row.profiles,
       buyer_name: row.profiles?.full_name ?? null,
       buyer_kind: (row.profiles?.full_name ? 'comprador' : null) as BuyerKind,
