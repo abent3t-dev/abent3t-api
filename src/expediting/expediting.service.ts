@@ -555,7 +555,13 @@ export class ExpeditingService {
         }
         if (!alertType) continue;
 
-        const sent = await this.sendAlert(po, alertType, alertDate, daysLeft);
+        const sent = await this.sendAlert(
+          po,
+          alertType,
+          alertDate,
+          daysLeft,
+          now,
+        );
         if (sent === 'sent') result.sent += 1;
         else result.alreadySent += 1;
       } catch (err: unknown) {
@@ -578,6 +584,7 @@ export class ExpeditingService {
     alertType: 'preventiva' | 'recordatorio' | 'critica',
     alertDate: Date,
     daysLeft: number,
+    now: Date,
   ): Promise<'sent' | 'duplicate'> {
     // Destinatarios (§Alertas): comprador + proveedor; crítica += supervisores
     const recipients: Array<{ email: string; name: string | null }> = [];
@@ -635,16 +642,22 @@ export class ExpeditingService {
             : alertType === 'recordatorio'
               ? `[ABENT 3T] Entrega vencida: PO ${po.po_number}`
               : `[ABENT 3T] RETRASO CRÍTICO: PO ${po.po_number} (${-daysLeft} días vencida)`;
+        // J1: a la cola, atómico con el registro de la alerta (el proveedor
+        // es externo: la cola lo rechaza y lo deja registrado)
         for (const recipient of recipients) {
-          const sent = await this.emailService.sendEmail({
-            to: { email: recipient.email, name: recipient.name ?? undefined },
-            subject,
-            body: this.alertBody(po, alertType, daysLeft, recipient.name),
-            isHtml: true,
-          });
-          if (!sent.success) {
-            throw new Error(sent.error ?? 'envío de correo fallido');
-          }
+          await this.emailService.enqueue(
+            {
+              template: `expediting_${alertType}`,
+              entityType: 'purchase_order',
+              entityId: po.id,
+              to: { email: recipient.email, name: recipient.name },
+              subject,
+              body: this.alertBody(po, alertType, daysLeft, recipient.name),
+              isHtml: true,
+              at: now,
+            },
+            tx,
+          );
         }
       });
       return 'sent';

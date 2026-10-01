@@ -45,6 +45,7 @@ function makeHarness(
 ) {
   const notifications: NotifRow[] = [];
   const digests: DigestSent[] = [];
+  const outboxKeys = new Set<string>();
   let failEmails = false;
   let lastRendered: {
     porVencer: ContractDigestItem[];
@@ -125,13 +126,27 @@ function makeHarness(
         return { subject: `[test] resumen`, body: '<html></html>' };
       },
     ),
-    sendEmail: jest.fn(
-      ({ to, subject }: { to: { email: string }; subject: string }) => {
+    // J1: el resumen va a la cola con la llave del día (destinatario + día)
+    enqueue: jest.fn(
+      ({
+        to,
+        subject,
+        at,
+      }: {
+        to: { email: string };
+        subject: string;
+        at: Date;
+      }) => {
         if (failEmails) {
-          return Promise.resolve({ success: false, error: 'smtp caído' });
+          return Promise.reject(new Error('BD caída al encolar'));
         }
+        const key = `${to.email}|${cdmxDateUtc(at).toISOString().slice(0, 10)}`;
+        if (outboxKeys.has(key)) {
+          return Promise.resolve({ status: 'duplicado', key });
+        }
+        outboxKeys.add(key);
         digests.push({ to: to.email, subject, ...lastRendered });
-        return Promise.resolve({ success: true, messageId: 'sim' });
+        return Promise.resolve({ status: 'pendiente', key });
       },
     ),
   };
@@ -189,13 +204,13 @@ describe('ContractExpiryService — resumen diario por persona (J2)', () => {
     const { service, notifications, digests } = makeHarness([contractAt(46)]);
     expect(service.alertDaysBefore).toBe(45);
     const result = await service.runCheck(NOW);
-    expect(result.digestsSent).toBe(0);
+    expect(result.digestsQueued).toBe(0);
     expect(notifications).toHaveLength(0);
     expect(digests).toHaveLength(0);
 
     const custom = makeHarness([contractAt(46)], { daysBefore: '60' });
     expect(custom.service.alertDaysBefore).toBe(60);
-    expect((await custom.service.runCheck(NOW)).digestsSent).toBe(2);
+    expect((await custom.service.runCheck(NOW)).digestsQueued).toBe(2);
   });
 
   it('UN resumen por persona con todos sus contratos: por vencer y vencidos sin renovar', async () => {
@@ -206,7 +221,7 @@ describe('ContractExpiryService — resumen diario por persona (J2)', () => {
     const result = await service.runCheck(NOW);
 
     // comprador, responsable y lider_procura: un correo cada uno, no 12
-    expect(result.digestsSent).toBe(3);
+    expect(result.digestsQueued).toBe(3);
     expect(result.alertingContracts).toBe(4);
     expect(digests.map((d) => d.to).sort()).toEqual([
       'comprador@abent3t.com',
@@ -250,7 +265,7 @@ describe('ContractExpiryService — resumen diario por persona (J2)', () => {
       { admins: ADMINS },
     );
     const result = await service.runCheck(NOW);
-    expect(result.digestsSent).toBe(0);
+    expect(result.digestsQueued).toBe(0);
     expect(digests).toHaveLength(0);
     expect(notifications).toHaveLength(0);
   });
@@ -261,16 +276,16 @@ describe('ContractExpiryService — resumen diario por persona (J2)', () => {
       contractAt(8),
     ]);
     const first = await service.runCheck(NOW);
-    expect(first.digestsSent).toBe(2);
+    expect(first.digestsQueued).toBe(2);
 
     const second = await service.runCheck(NOW);
-    expect(second.digestsSent).toBe(0);
+    expect(second.digestsQueued).toBe(0);
     expect(second.alreadyNotified).toBe(2);
     expect(notifications).toHaveLength(4);
-    expect(emailService.sendEmail).toHaveBeenCalledTimes(2);
+    expect(emailService.enqueue).toHaveBeenCalledTimes(2);
 
     const nextDay = await service.runCheck(TOMORROW);
-    expect(nextDay.digestsSent).toBe(2);
+    expect(nextDay.digestsQueued).toBe(2);
     expect(notifications).toHaveLength(8);
     expect(notifications[4].notification_type).toBe('expiring:2026-09-02');
   });
@@ -289,7 +304,7 @@ describe('ContractExpiryService — resumen diario por persona (J2)', () => {
 
     const nextDay = await service.runCheck(TOMORROW);
     expect(nextDay.expiredMarked).toBe(0); // ya estaba vencido
-    expect(nextDay.digestsSent).toBe(2); // sigue avisando a diario
+    expect(nextDay.digestsQueued).toBe(2); // sigue avisando a diario
   });
 
   it('vencimiento que quedó atrás (server caído el día 0) también expira', async () => {
@@ -307,7 +322,7 @@ describe('ContractExpiryService — resumen diario por persona (J2)', () => {
     ]);
     const result = await service.runCheck(NOW);
     expect(result.checkedContracts).toBe(0);
-    expect(result.digestsSent).toBe(0);
+    expect(result.digestsQueued).toBe(0);
     expect(notifications).toHaveLength(0);
     expect(prisma.contracts.update).not.toHaveBeenCalled();
   });
@@ -324,22 +339,22 @@ describe('ContractExpiryService — resumen diario por persona (J2)', () => {
     )[0];
     expect(args.where.end_date).toEqual({ not: null });
     // aunque la consulta lo dejara pasar, el job lo salta sin tocarlo
-    expect(result.digestsSent).toBe(0);
+    expect(result.digestsQueued).toBe(0);
     expect(notifications).toHaveLength(0);
     expect(prisma.contracts.update).not.toHaveBeenCalled();
   });
 
-  it('correo fallido → rollback del registro (se reintenta en la siguiente corrida)', async () => {
+  it('si encolar falla → rollback del registro (se reintenta en la siguiente corrida)', async () => {
     const harness = makeHarness([contractAt(30)]);
     harness.setFailEmails(true);
     const failed = await harness.service.runCheck(NOW);
-    expect(failed.digestsSent).toBe(0);
+    expect(failed.digestsQueued).toBe(0);
     expect(failed.errors).toHaveLength(2);
     expect(harness.notifications).toHaveLength(0); // rollback
 
     harness.setFailEmails(false);
     const retry = await harness.service.runCheck(NOW);
-    expect(retry.digestsSent).toBe(2);
+    expect(retry.digestsQueued).toBe(2);
     expect(harness.notifications).toHaveLength(2);
   });
 
@@ -353,7 +368,7 @@ describe('ContractExpiryService — resumen diario por persona (J2)', () => {
       { admins: [{ email: 'Responsable@abent3t.com', full_name: 'R' }] },
     );
     const result = await service.runCheck(NOW);
-    expect(result.digestsSent).toBe(1);
+    expect(result.digestsQueued).toBe(1);
     expect(digests.map((d) => d.to)).toEqual(['responsable@abent3t.com']);
     expect(notifications[0].recipient_role).toBe('responsible_user');
   });
@@ -371,5 +386,47 @@ describe('contracts.dates', () => {
     const utcEarly = new Date('2026-09-01T03:00:00Z');
     expect(cdmxDateUtc(utcEarly).toISOString().slice(0, 10)).toBe('2026-08-31');
     expect(cdmxDateUtc(NOW).toISOString().slice(0, 10)).toBe('2026-09-01');
+  });
+});
+
+describe('ContractExpiryService — con la cola de correo (J1)', () => {
+  it('el resumen va a la cola con la plantilla, la entidad y el día del aviso', async () => {
+    const { service, emailService } = makeHarness([contractAt(10)], {
+      admins: ADMINS,
+    });
+    await service.runCheck(NOW);
+    const call = (
+      emailService.enqueue.mock.calls[0] as unknown as [
+        Record<string, unknown>,
+        unknown,
+      ]
+    )[0];
+    expect(call).toMatchObject({
+      template: 'contract_digest',
+      entityType: 'contratos',
+      entityId: 'resumen',
+      at: NOW,
+    });
+    // dentro de la transacción del registro por contrato
+    expect(
+      (emailService.enqueue.mock.calls[0] as unknown as unknown[])[1],
+    ).toBeDefined();
+  });
+
+  it('si la llave del día ya estaba en la cola, no se registra nada más (un correo por persona y día)', async () => {
+    const contracts: Array<Record<string, unknown>> = [contractAt(10)];
+    const harness = makeHarness(contracts);
+    await harness.service.runCheck(NOW);
+    expect(harness.digests).toHaveLength(2);
+    expect(harness.notifications).toHaveLength(2);
+
+    // un contrato nuevo entra el mismo día: el resumen de hoy ya salió
+    contracts.push(contractAt(12));
+    const again = await harness.service.runCheck(NOW);
+    expect(again.digestsQueued).toBe(0);
+    expect(again.alreadyNotified).toBe(2);
+    expect(harness.digests).toHaveLength(2);
+    // las filas del contrato nuevo se revierten: entran en el de mañana
+    expect(harness.notifications).toHaveLength(2);
   });
 });

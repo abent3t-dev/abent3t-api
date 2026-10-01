@@ -50,6 +50,12 @@ const ALLOWED_MIME_TYPES = [
   'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx
 ];
 const DOWNLOAD_TTL_SECONDS = 3600; // 1 h (§16: los aprobadores tardan más)
+/** J1: qué aviso es (plantilla + entidad) para la llave de la cola de correo. */
+interface CommitteeNotice {
+  template: string;
+  entityId: string;
+}
+
 const MS_PER_HOUR = 3_600_000;
 
 const COMMITTEE_INCLUDE = {
@@ -611,6 +617,10 @@ export class PurchaseCommitteesService {
         `El comité "${updated.title}" (versión ${updated.current_version}) fue enviado a aprobación.`,
         'Eres el primer nivel de la cadena.',
       ],
+      {
+        template: 'committee_turn',
+        entityId: `${updated.id}:v${updated.current_version}:n${levels[0].orden}`,
+      },
     );
     return this.aliasCommittee(updated, levels, user);
   }
@@ -697,6 +707,10 @@ export class PurchaseCommitteesService {
           `El nivel anterior aprobó el comité "${committee.title}" (versión ${committee.current_version}).`,
           'Es tu turno en la cadena de aprobación.',
         ],
+        {
+          template: 'committee_turn',
+          entityId: `${committee.id}:v${committee.current_version}:n${nextLevel.orden}`,
+        },
       );
     }
     return this.aliasCommittee(committee, levels, user);
@@ -894,6 +908,10 @@ export class PurchaseCommitteesService {
           [
             `El comité "${committee.title}" (versión ${committee.current_version}) está detenido en tu nivel desde hace ${Math.floor(hours)} horas.`,
           ],
+          {
+            template: 'committee_reminder',
+            entityId: `${committee.id}:v${committee.current_version}:n${level.orden}`,
+          },
         );
         result.reminded += 1;
       } catch (err: unknown) {
@@ -1043,6 +1061,7 @@ export class PurchaseCommitteesService {
     level: LevelRow,
     subject: string,
     lines: string[],
+    notice: CommitteeNotice,
   ): Promise<void> {
     try {
       const recipients = level.profile_id
@@ -1065,7 +1084,7 @@ export class PurchaseCommitteesService {
             select: { email: true, full_name: true },
           });
       for (const recipient of recipients) {
-        await this.sendPlainEmail(recipient, subject, lines);
+        await this.sendPlainEmail(recipient, subject, lines, notice);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1110,7 +1129,10 @@ export class PurchaseCommitteesService {
               'Sube una nueva versión y reenvíalo para reiniciar la cadena.',
             ];
       for (const recipient of recipients.values()) {
-        await this.sendPlainEmail(recipient, subject, lines);
+        await this.sendPlainEmail(recipient, subject, lines, {
+          template: `committee_${outcome}`,
+          entityId: `${committee.id}:v${committee.current_version}`,
+        });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -1124,6 +1146,7 @@ export class PurchaseCommitteesService {
     recipient: { email: string; full_name: string | null },
     subject: string,
     lines: string[],
+    notice: CommitteeNotice,
   ): Promise<void> {
     // Asuntos/cuerpos sobrios (§16 no define plantillas; consistente con §15)
     const body = [
@@ -1132,8 +1155,13 @@ export class PurchaseCommitteesService {
       `<p><a href="${process.env.FRONTEND_URL?.split(',')[0] ?? 'http://localhost:3000'}/compras/comite">Abrir el Comité de Compras</a></p>`,
       '<p style="color:#666;font-size:12px">Mensaje automático del sistema de compras ABENT 3T.</p>',
     ].join('\n');
-    await this.emailService.sendEmail({
-      to: { email: recipient.email, name: recipient.full_name ?? undefined },
+    // J1: a la cola (ritmo, tope, pausa y dominio); la llave del día evita
+    // repetir el mismo aviso
+    await this.emailService.enqueue({
+      template: notice.template,
+      entityType: 'committee',
+      entityId: notice.entityId,
+      to: { email: recipient.email, name: recipient.full_name },
       subject,
       body,
       isHtml: true,

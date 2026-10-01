@@ -73,10 +73,66 @@ export const envValidationSchema = Joi.object({
   THROTTLE_TTL_MS: Joi.number().integer().positive().default(60_000),
   THROTTLE_LIMIT: Joi.number().integer().positive().default(100),
 
-  // ===== Email (Microsoft Graph) — vacío = modo simulación =====
-  AZURE_TENANT_ID: Joi.string().allow('').optional(),
-  AZURE_CLIENT_ID: Joi.string().allow('').optional(),
-  AZURE_CLIENT_SECRET: Joi.string().allow('').optional(),
+  // ===== Correo (J1, hilo con César 2026-10-01) =====
+  // Todo correo pasa por la cola (`email_outbox`). `simulacion` (default) no
+  // envía nada: queda "simulado" en la bitácora. El envío real se habilita
+  // cambiando esto a propósito, nunca solo por tener credenciales.
+  EMAIL_TRANSPORT: Joi.string()
+    .trim()
+    .lowercase()
+    .valid('simulacion', 'graph')
+    .default('simulacion')
+    .messages({
+      'any.only': 'EMAIL_TRANSPORT debe ser simulacion o graph',
+    }),
+  // Remitente fijo (si falta, AZURE_EMAIL_FROM)
+  EMAIL_FROM: Joi.string()
+    .email({ tlds: { allow: false } })
+    .allow('')
+    .optional(),
+  // Ritmo: un correo cada N segundos (César pidió 120)
+  EMAIL_MIN_INTERVAL_SECONDS: Joi.number()
+    .integer()
+    .min(1)
+    .max(3600)
+    .default(120),
+  // Tope diario: al llegar, el envío se pausa solo hasta el día siguiente
+  EMAIL_DAILY_CAP: Joi.number().integer().min(1).max(10_000).default(100),
+
+  // Microsoft Graph (EMAIL_TRANSPORT=graph): app con Mail.Send en Entra
+  AZURE_TENANT_ID: Joi.string()
+    .allow('')
+    .when('EMAIL_TRANSPORT', {
+      is: 'graph',
+      then: Joi.string().invalid('').required().messages({
+        'any.required':
+          'AZURE_TENANT_ID es requerida con EMAIL_TRANSPORT=graph',
+        'any.invalid':
+          'AZURE_TENANT_ID no puede estar vacía con EMAIL_TRANSPORT=graph',
+      }),
+    }),
+  AZURE_CLIENT_ID: Joi.string()
+    .allow('')
+    .when('EMAIL_TRANSPORT', {
+      is: 'graph',
+      then: Joi.string().invalid('').required().messages({
+        'any.required':
+          'AZURE_CLIENT_ID es requerida con EMAIL_TRANSPORT=graph',
+        'any.invalid':
+          'AZURE_CLIENT_ID no puede estar vacía con EMAIL_TRANSPORT=graph',
+      }),
+    }),
+  AZURE_CLIENT_SECRET: Joi.string()
+    .allow('')
+    .when('EMAIL_TRANSPORT', {
+      is: 'graph',
+      then: Joi.string().invalid('').required().messages({
+        'any.required':
+          'AZURE_CLIENT_SECRET es requerida con EMAIL_TRANSPORT=graph',
+        'any.invalid':
+          'AZURE_CLIENT_SECRET no puede estar vacía con EMAIL_TRANSPORT=graph',
+      }),
+    }),
   AZURE_EMAIL_FROM: Joi.string().allow('').default('noreply@abent3t.com'),
 
   // ===== Recordatorios =====

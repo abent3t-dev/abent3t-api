@@ -1,13 +1,18 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import {
   ContractDigestItem,
   IEmailService,
-  SendEmailOptions,
-  SendEmailResult,
   EmailTemplateType,
   EmailTemplateData,
 } from './email.interfaces';
+import {
+  EmailOutboxService,
+  type EnqueueEmailInput,
+  type EnqueueResult,
+} from './email-outbox.service';
+import { EmailTransportService } from './email-transport.service';
 
 /**
  * Texto seguro para plantillas: EmailTemplateData admite `unknown` en sus
@@ -51,127 +56,41 @@ export function contractDigestSubject(
 }
 
 /**
- * Servicio de correo electrónico.
+ * Servicio de correo electrónico: plantillas y ENCOLADO.
  *
- * ESTADO ACTUAL: Modo simulación (logging)
- *
- * TODO: Implementar con Microsoft Graph API cuando las credenciales
- * de Azure AD estén disponibles:
- *
- * 1. Instalar: npm install @azure/identity @microsoft/microsoft-graph-client
- * 2. Configurar variables de entorno:
- *    - AZURE_TENANT_ID
- *    - AZURE_CLIENT_ID
- *    - AZURE_CLIENT_SECRET
- *    - AZURE_EMAIL_FROM (email del remitente)
- * 3. Descomentar el código de Microsoft Graph en sendEmail()
+ * J1 (hilo con César, 2026-10-01): nadie envía directo. `enqueue` registra
+ * el correo en la cola (`email_outbox`) y el worker lo envía respetando el
+ * ritmo, el tope diario, la pausa y el dominio permitido (ver
+ * EmailOutboxService). El transporte (simulación por defecto, Graph o SMTP)
+ * vive en EmailTransportService.
  */
 @Injectable()
 export class EmailService implements IEmailService {
-  private readonly logger = new Logger(EmailService.name);
-  private readonly isConfiguredFlag: boolean;
-  private readonly emailFrom: string;
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly outbox: EmailOutboxService,
+    private readonly transport: EmailTransportService,
+  ) {}
 
-  constructor(private readonly configService: ConfigService) {
-    // Verificar si Microsoft/Azure está configurado
-    const tenantId = this.configService.get<string>('AZURE_TENANT_ID');
-    const clientId = this.configService.get<string>('AZURE_CLIENT_ID');
-    const clientSecret = this.configService.get<string>('AZURE_CLIENT_SECRET');
-    this.emailFrom =
-      this.configService.get<string>('AZURE_EMAIL_FROM') ||
-      'noreply@abent3t.com';
-
-    this.isConfiguredFlag = !!(tenantId && clientId && clientSecret);
-
-    if (this.isConfiguredFlag) {
-      this.logger.log('✉️ Servicio de email configurado con Microsoft Graph');
-    } else {
-      this.logger.warn(
-        '⚠️ Servicio de email en MODO SIMULACIÓN. ' +
-          'Configure AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET para habilitar envío real.',
-      );
-    }
+  /** Registra el correo en la cola (dentro de `tx` si se pasa). */
+  enqueue(
+    input: EnqueueEmailInput,
+    tx?: Prisma.TransactionClient,
+  ): Promise<EnqueueResult> {
+    return this.outbox.enqueue(input, tx);
   }
 
-  isConfigured(): boolean {
-    return this.isConfiguredFlag;
-  }
-
-  getProviderInfo(): { name: string; configured: boolean } {
-    return {
-      name: 'Microsoft Graph / Azure AD',
-      configured: this.isConfiguredFlag,
+  getProviderInfo(): { name: string; configured: boolean; mode: string } {
+    const info = this.transport.info();
+    const names: Record<string, string> = {
+      simulacion: 'Simulación (no sale correo)',
+      graph: 'Microsoft Graph',
+      smtp: 'SMTP (relay)',
     };
-  }
-
-  // Sin await mientras el envio real por Graph siga comentado (modo simulacion)
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
-    const recipients = Array.isArray(options.to) ? options.to : [options.to];
-    const recipientEmails = recipients.map((r) => r.email).join(', ');
-
-    // Si no está configurado, solo logueamos
-    if (!this.isConfiguredFlag) {
-      this.logger.log('─────────────────────────────────────────────');
-      this.logger.log('📧 EMAIL SIMULADO (Microsoft Graph no configurado)');
-      this.logger.log(`   Para: ${recipientEmails}`);
-      this.logger.log(`   Asunto: ${options.subject}`);
-      this.logger.log(`   Cuerpo: ${options.body.substring(0, 200)}...`);
-      this.logger.log('─────────────────────────────────────────────');
-
-      return {
-        success: true,
-        messageId: `simulated-${Date.now()}`,
-      };
-    }
-
-    // TODO: Implementar envío real con Microsoft Graph
-    // Cuando las credenciales estén disponibles, descomentar:
-    /*
-    try {
-      const { ClientSecretCredential } = await import('@azure/identity');
-      const { Client } = await import('@microsoft/microsoft-graph-client');
-      const { TokenCredentialAuthenticationProvider } = await import(
-        '@microsoft/microsoft-graph-client/authProviders/azureTokenCredentials'
-      );
-
-      const credential = new ClientSecretCredential(
-        this.configService.get('AZURE_TENANT_ID'),
-        this.configService.get('AZURE_CLIENT_ID'),
-        this.configService.get('AZURE_CLIENT_SECRET'),
-      );
-
-      const authProvider = new TokenCredentialAuthenticationProvider(credential, {
-        scopes: ['https://graph.microsoft.com/.default'],
-      });
-
-      const client = Client.initWithMiddleware({ authProvider });
-
-      const message = {
-        subject: options.subject,
-        body: {
-          contentType: options.isHtml ? 'HTML' : 'Text',
-          content: options.body,
-        },
-        toRecipients: recipients.map((r) => ({
-          emailAddress: { address: r.email, name: r.name },
-        })),
-      };
-
-      await client.api(`/users/${this.emailFrom}/sendMail`).post({ message });
-
-      return { success: true, messageId: `ms-${Date.now()}` };
-    } catch (error) {
-      this.logger.error('Error enviando email con Microsoft Graph:', error);
-      return { success: false, error: error.message };
-    }
-    */
-
-    // Por ahora, retornamos simulación
-    this.logger.log(`📧 Email enviado (simulado) a: ${recipientEmails}`);
     return {
-      success: true,
-      messageId: `simulated-${Date.now()}`,
+      name: names[info.mode] ?? info.mode,
+      configured: info.mode !== 'simulacion' && info.ready,
+      mode: info.mode,
     };
   }
 

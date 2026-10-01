@@ -30,10 +30,10 @@ import { cdmxDateUtc, daysUntil } from './contracts.dates';
  *
  * Idempotencia por DÍA: una fila de `contract_expiry_notifications` por
  * contrato incluido en el resumen (UNIQUE contract_id + tipo + destinatario,
- * tipo `expiring:YYYY-MM-DD` / `expired:YYYY-MM-DD`). El registro y el envío
- * del resumen van en la misma transacción: un envío fallido revierte las
- * filas y se reintenta en la siguiente corrida; si ya estaban todas, el
- * resumen de hoy ya salió.
+ * tipo `expiring:YYYY-MM-DD` / `expired:YYYY-MM-DD`) y, desde J1, el resumen
+ * va a la COLA de correo con su llave del día (`contract_digest:…:persona:día`)
+ * en la misma transacción: si esa llave ya estaba, el resumen de hoy ya
+ * salió y no se registra nada más. El envío lo hace el worker de la cola.
  */
 
 export const DEFAULT_ALERT_DAYS_BEFORE = 45;
@@ -42,8 +42,10 @@ export interface ContractExpiryCheckResult {
   checkedContracts: number;
   /** J2: contratos que entran a los resúmenes de hoy. */
   alertingContracts: number;
-  /** J2: resúmenes enviados (uno por persona). */
-  digestsSent: number;
+  /** J2: resúmenes encolados (uno por persona). */
+  digestsQueued: number;
+  /** J1: resúmenes rechazados (destinatario fuera del dominio permitido). */
+  digestsRejected: number;
   /** Personas que ya tenían su resumen de hoy. */
   alreadyNotified: number;
   expiredMarked: number;
@@ -94,7 +96,8 @@ export class ContractExpiryService {
     const result: ContractExpiryCheckResult = {
       checkedContracts: 0,
       alertingContracts: 0,
-      digestsSent: 0,
+      digestsQueued: 0,
+      digestsRejected: 0,
       alreadyNotified: 0,
       expiredMarked: 0,
       historicSkipped: 0,
@@ -195,8 +198,14 @@ export class ContractExpiryService {
 
     for (const { recipient, entries } of digests.values()) {
       try {
-        await this.sendDigest(recipient, entries, threshold);
-        result.digestsSent += 1;
+        const queued = await this.queueDigest(
+          recipient,
+          entries,
+          threshold,
+          now,
+        );
+        if (queued === 'rechazado') result.digestsRejected += 1;
+        else result.digestsQueued += 1;
       } catch (err: unknown) {
         if (err instanceof AlreadyNotifiedToday) {
           result.alreadyNotified += 1;
@@ -212,19 +221,20 @@ export class ContractExpiryService {
 
     this.logger.log(
       `Avisos de contratos (umbral ${threshold} días, resumen diario): revisados=${result.checkedContracts} ` +
-        `en el resumen=${result.alertingContracts} resúmenes=${result.digestsSent} repetidos=${result.alreadyNotified} ` +
+        `en el resumen=${result.alertingContracts} resúmenes=${result.digestsQueued} rechazados=${result.digestsRejected} repetidos=${result.alreadyNotified} ` +
         `vencidos=${result.expiredMarked} históricos=${result.historicSkipped} errores=${result.errors.length}`,
     );
     return result;
   }
 
-  /** Registro por contrato + el resumen de la persona, en una transacción. */
-  private async sendDigest(
+  /** Registro por contrato + el resumen de la persona a la cola, en una transacción. */
+  private async queueDigest(
     recipient: Recipient,
     entries: DigestEntry[],
     threshold: number,
-  ): Promise<void> {
-    await this.prisma.$transaction(async (tx) => {
+    now: Date,
+  ): Promise<'pendiente' | 'rechazado'> {
+    return this.prisma.$transaction(async (tx) => {
       const { count } = await tx.contract_expiry_notifications.createMany({
         data: entries.map((e) => ({
           contract_id: e.contractId,
@@ -255,16 +265,22 @@ export class ContractExpiryService {
           .map(item),
         thresholdDays: threshold,
       });
-      const sent = await this.emailService.sendEmail({
-        to: { email: recipient.email, name: recipient.name ?? undefined },
-        subject: rendered.subject,
-        body: rendered.body,
-        isHtml: true,
-      });
-      // Envío fallido → rollback del registro para reintentar mañana
-      if (!sent.success) {
-        throw new Error(sent.error ?? 'envío de correo fallido');
-      }
+      // J1: a la cola, con la llave del día; si ya estaba, ya salió hoy
+      const queued = await this.emailService.enqueue(
+        {
+          template: 'contract_digest',
+          entityType: 'contratos',
+          entityId: 'resumen',
+          to: { email: recipient.email, name: recipient.name },
+          subject: rendered.subject,
+          body: rendered.body,
+          isHtml: true,
+          at: now,
+        },
+        tx,
+      );
+      if (queued.status === 'duplicado') throw new AlreadyNotifiedToday();
+      return queued.status;
     });
   }
 

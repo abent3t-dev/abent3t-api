@@ -1,7 +1,8 @@
 /**
  * Fase Expeditación: corre a mano el job de alertas (-15/vencida/+7, T9).
  * Idempotente (UNIQUE tracking+tipo+fecha): repetirlo el mismo día no
- * re-envía. Sin credenciales AZURE_* los correos se SIMULAN en el log.
+ * re-envía. J1: las alertas van a la cola de correo; las envía el worker del
+ * api según EMAIL_TRANSPORT (simulación por defecto).
  *
  * USO:  npm run expediting:check            (hoy)
  *       npm run expediting:check -- 2026-10-01   (fecha simulada, para pruebas)
@@ -9,6 +10,8 @@
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { EmailService } from '../src/email/email.service';
+import { EmailOutboxService } from '../src/email/email-outbox.service';
+import { EmailTransportService } from '../src/email/email-transport.service';
 import { ExpeditingService } from '../src/expediting/expediting.service';
 import { ErpAliasesService } from '../src/erp-aliases/erp-aliases.service';
 import { MaximoVendorXrefService } from '../src/erp-vendors/maximo-vendor-xref.service';
@@ -24,7 +27,16 @@ async function main(): Promise<void> {
   try {
     const service = new ExpeditingService(
       prisma,
-      new EmailService(new ConfigService()),
+      // J1: las alertas se ENCOLAN; las envía el worker del api
+      new EmailService(
+        new ConfigService(),
+        new EmailOutboxService(
+          prisma,
+          new ConfigService(),
+          new EmailTransportService(new ConfigService()),
+        ),
+        new EmailTransportService(new ConfigService()),
+      ),
       new ErpAliasesService(prisma),
       new MaximoVendorXrefService(prisma),
     );

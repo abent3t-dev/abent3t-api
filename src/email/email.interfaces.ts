@@ -34,19 +34,24 @@ export interface SendEmailResult {
 
 export interface IEmailService {
   /**
-   * Envía un correo electrónico
+   * J1 (2026-10-01): encola el correo; el worker de la cola lo envía
+   * (ritmo, tope diario, pausa y dominio permitido).
    */
-  sendEmail(options: SendEmailOptions): Promise<SendEmailResult>;
+  enqueue(input: {
+    template: string;
+    entityType?: string | null;
+    entityId?: string | null;
+    to: { email: string; name?: string | null };
+    subject: string;
+    body: string;
+    isHtml?: boolean;
+    at?: Date;
+  }): Promise<{ status: 'pendiente' | 'rechazado' | 'duplicado'; key: string }>;
 
   /**
-   * Verifica si el servicio está configurado y disponible
+   * Obtiene información del transporte actual
    */
-  isConfigured(): boolean;
-
-  /**
-   * Obtiene información del proveedor actual
-   */
-  getProviderInfo(): { name: string; configured: boolean };
+  getProviderInfo(): { name: string; configured: boolean; mode: string };
 }
 
 // Tipos de plantillas de correo

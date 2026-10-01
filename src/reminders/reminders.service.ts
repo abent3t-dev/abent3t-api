@@ -260,18 +260,30 @@ export class RemindersService {
       daysPending,
     });
 
-    const result = await this.emailService.sendEmail({
+    // J1 (2026-10-01): a la cola de correo; la llave del día evita repetirlo
+    const result = await this.emailService.enqueue({
+      template: isFollowUp ? 'evidence_followup' : 'evidence_reminder',
+      entityType: 'enrollment',
+      entityId: record.id,
       to: { email: profile.email, name: profile.full_name },
-      subject: isFollowUp ? `⏰ URGENTE: ${template.subject}` : template.subject,
+      subject: isFollowUp
+        ? `⏰ URGENTE: ${template.subject}`
+        : template.subject,
       body: template.body,
       isHtml: true,
     });
 
-    if (result.success) {
-      this.logger.debug(`📧 Recordatorio enviado a ${profile.email} para curso ${course.name}`);
+    if (result.status !== 'duplicado') {
+      this.logger.debug(
+        `📧 Recordatorio encolado (${result.status}) para ${profile.email}, curso ${course.name}`,
+      );
 
       // Registrar el envío para evitar spam
-      await this.logReminderSent(record.id, profile.id, isFollowUp ? 'followup' : 'first');
+      await this.logReminderSent(
+        record.id,
+        profile.id,
+        isFollowUp ? 'followup' : 'first',
+      );
     }
   }
 
@@ -305,16 +317,22 @@ export class RemindersService {
       daysPending,
     });
 
+    // J1 (2026-10-01): a la cola de correo
     for (const admin of admins) {
-      await this.emailService.sendEmail({
-        to: { email: admin.email, name: admin.full_name || '' },
+      await this.emailService.enqueue({
+        template: 'evidence_escalation',
+        entityType: 'enrollment',
+        entityId: record.id,
+        to: { email: admin.email, name: admin.full_name || null },
         subject: template.subject,
         body: template.body,
         isHtml: true,
       });
     }
 
-    this.logger.log(`⚠️ Escalamiento enviado a ${admins.length} admin(s) de RRHH`);
+    this.logger.log(
+      `⚠️ Escalamiento encolado para ${admins.length} admin(s) de RRHH`,
+    );
 
     // Registrar escalamiento
     await this.logReminderSent(record.id, profile?.id || '', 'escalation');

@@ -172,6 +172,74 @@ describe('envValidationSchema', () => {
     expect(error).toBeUndefined();
   });
 
+  describe('correo (J1)', () => {
+    /** Resultado con los valores ya convertidos (defaults incluidos). */
+    const validated = (env: Record<string, string>) => {
+      const result = validate(env);
+      return {
+        error: result.error,
+        value: result.value as Record<string, unknown>,
+      };
+    };
+
+    it('sin variables: simulación, ritmo de 120 s y tope de 100', () => {
+      const { error, value } = validated(baseEnv);
+      expect(error).toBeUndefined();
+      expect(value).toMatchObject({
+        EMAIL_TRANSPORT: 'simulacion',
+        EMAIL_MIN_INTERVAL_SECONDS: 120,
+        EMAIL_DAILY_CAP: 100,
+      });
+    });
+
+    it('las credenciales de Azure solas NO habilitan el envío', () => {
+      const { error, value } = validated({
+        ...baseEnv,
+        AZURE_TENANT_ID: 't',
+        AZURE_CLIENT_ID: 'c',
+        AZURE_CLIENT_SECRET: 's',
+      });
+      expect(error).toBeUndefined();
+      expect(value.EMAIL_TRANSPORT).toBe('simulacion');
+    });
+
+    it('EMAIL_TRANSPORT=graph exige las tres variables de Azure', () => {
+      const { error } = validate({
+        ...baseEnv,
+        EMAIL_TRANSPORT: 'graph',
+        AZURE_TENANT_ID: 't',
+        AZURE_CLIENT_SECRET: '',
+      });
+      expect(error).toBeDefined();
+      expect(error!.message).toContain('AZURE_CLIENT_ID');
+      expect(error!.message).toContain('AZURE_CLIENT_SECRET');
+      expect(error!.message).not.toContain('AZURE_TENANT_ID');
+    });
+
+    it('EMAIL_TRANSPORT=Graph con las tres variables pasa', () => {
+      const { error, value } = validated({
+        ...baseEnv,
+        EMAIL_TRANSPORT: ' Graph ',
+        AZURE_TENANT_ID: 't',
+        AZURE_CLIENT_ID: 'c',
+        AZURE_CLIENT_SECRET: 's',
+      });
+      expect(error).toBeUndefined();
+      expect(value.EMAIL_TRANSPORT).toBe('graph');
+    });
+
+    it.each([
+      ['EMAIL_TRANSPORT', 'sendgrid'],
+      ['EMAIL_MIN_INTERVAL_SECONDS', '0'],
+      ['EMAIL_DAILY_CAP', '-5'],
+      ['EMAIL_FROM', 'no-es-correo'],
+    ])('rechaza %s=%s', (name, bad) => {
+      const { error } = validate({ ...baseEnv, [name]: bad });
+      expect(error).toBeDefined();
+      expect(error!.message).toContain(name);
+    });
+  });
+
   it('reporta TODAS las variables faltantes en un solo error (abortEarly=false)', () => {
     const { error } = validate(omit('JWT_SECRET', 'DATABASE_URL'));
     expect(error).toBeDefined();

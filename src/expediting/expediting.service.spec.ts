@@ -29,7 +29,7 @@ function makeHarness() {
   const trackings: Row[] = [];
   const events: Row[] = [];
   const alerts: Row[] = [];
-  const emails: Array<{ to: string; subject: string }> = [];
+  const emails: Array<{ to: string; subject: string; template?: string }> = [];
 
   const withIncludes = (po: Row) => ({
     ...po,
@@ -169,10 +169,19 @@ function makeHarness() {
   );
 
   const email = {
-    sendEmail: jest.fn(
-      ({ to, subject }: { to: { email: string }; subject: string }) => {
-        emails.push({ to: to.email, subject });
-        return Promise.resolve({ success: true, messageId: 'sim' });
+    // J1: todo correo va a la cola de correo
+    enqueue: jest.fn(
+      ({
+        to,
+        subject,
+        template,
+      }: {
+        to: { email: string };
+        subject: string;
+        template: string;
+      }) => {
+        emails.push({ to: to.email, subject, template });
+        return Promise.resolve({ status: 'pendiente', key: template });
       },
     ),
   };

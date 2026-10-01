@@ -31,12 +31,14 @@ export class RemindersController {
   @Roles('super_admin', 'admin_rh')
   getEmailStatus() {
     const providerInfo = this.emailService.getProviderInfo();
+    // J1: el envío real depende de EMAIL_TRANSPORT; la cola, en /correo/estado
     return {
       provider: providerInfo.name,
       configured: providerInfo.configured,
       mode: providerInfo.configured ? 'producción' : 'simulación',
+      transport: providerInfo.mode,
       note: !providerInfo.configured
-        ? 'Configure AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET para habilitar envío real de correos'
+        ? 'El correo sale solo con EMAIL_TRANSPORT distinto de simulacion y sus variables; estado de la cola en /correo/estado'
         : undefined,
     };
   }
