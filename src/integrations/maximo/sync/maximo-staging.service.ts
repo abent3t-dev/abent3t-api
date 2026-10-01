@@ -1,10 +1,10 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
 import { MaximoContractDto } from '../dto/maximo-contract.dto';
 import { MaximoPurchaseOrderDto } from '../dto/maximo-po.dto';
-import { MAXIMO_MAPPER_VERSION } from '../maximo.mapper';
+import { MAXIMO_MAPPER_VERSION, toCanonical } from '../maximo.mapper';
 import { MaximoUpsertOutcome } from './maximo-sync.types';
 import { poRequestColumns, replacePoStatusHistory } from './maximo-po-history';
 
@@ -24,6 +24,14 @@ import { poRequestColumns, replacePoStatusHistory } from './maximo-po-history';
  *
  * G6 (2026-09-28): el alta o el cambio de una OC reescribe su historial
  * POSTATUS (`maximo_po_status_history`) en la MISMA transacción.
+ *
+ * I9 (2026-09-30): el rowstamp es por fila en Maximo y NO cambia cuando CIISA
+ * agrega campos a la Object Structure. Por eso "sin cambio" exige además el
+ * mismo `raw_hash` (hash del payload recibido) y la misma versión del mapper:
+ * un campo nuevo, o un mapper nuevo, reescribe `raw` y re-mapea la fila en el
+ * siguiente full, sin pasos manuales (misma regla que el staging de SAP). El
+ * hash va sobre la forma canónica: el mismo registro por legacy u OSLC no
+ * cuenta como cambio.
  */
 @Injectable()
 export class MaximoStagingService {
@@ -34,6 +42,7 @@ export class MaximoStagingService {
     raw: unknown,
     runId: string,
   ): Promise<MaximoUpsertOutcome> {
+    const rawHash = maximoRawHash(raw);
     // Normalización de la clave natural: el índice único usa coalesce(x, ''),
     // que colapsa NULL y '' en la misma tupla; aquí se normaliza '' → null
     // para que el espacio del findFirst coincida con el del índice y ninguna
@@ -64,12 +73,18 @@ export class MaximoStagingService {
       created_at_source: toDate(dto.orderDate),
       ...poRequestColumns(dto),
       rowstamp: dto.rowstamp,
+      raw_hash: rawHash,
     };
 
     const attempt = async (): Promise<MaximoUpsertOutcome> => {
       const existing = await this.prisma.maximo_purchase_orders.findFirst({
         where,
-        select: { id: true, rowstamp: true },
+        select: {
+          id: true,
+          rowstamp: true,
+          raw_hash: true,
+          mapper_version: true,
+        },
       });
       if (!existing) {
         // id generado aquí para escribir OC + historial en una transacción
@@ -90,7 +105,10 @@ export class MaximoStagingService {
         return 'inserted';
       }
       const unchanged =
-        existing.rowstamp !== null && existing.rowstamp === dto.rowstamp;
+        existing.rowstamp !== null &&
+        existing.rowstamp === dto.rowstamp &&
+        existing.raw_hash === rawHash &&
+        existing.mapper_version === MAXIMO_MAPPER_VERSION;
       if (unchanged) {
         await this.prisma.maximo_purchase_orders.update({
           where: { id: existing.id },
@@ -123,6 +141,7 @@ export class MaximoStagingService {
     raw: unknown,
     runId: string,
   ): Promise<MaximoUpsertOutcome> {
+    const rawHash = maximoRawHash(raw);
     // Ver nota de normalización en upsertPurchaseOrder ('' → null).
     const where = {
       prnum: emptyToNull(dto.prnum),
@@ -151,12 +170,19 @@ export class MaximoStagingService {
       has_contract: dto.hasContract,
       pr_rowstamp: dto.rowstamp,
       contract_rowstamp: dto.contractRowstamp,
+      raw_hash: rawHash,
     };
 
     const attempt = async (): Promise<MaximoUpsertOutcome> => {
       const existing = await this.prisma.maximo_contracts.findFirst({
         where,
-        select: { id: true, contract_rowstamp: true, pr_rowstamp: true },
+        select: {
+          id: true,
+          contract_rowstamp: true,
+          pr_rowstamp: true,
+          raw_hash: true,
+          mapper_version: true,
+        },
       });
       if (!existing) {
         await this.prisma.maximo_contracts.create({
@@ -179,7 +205,11 @@ export class MaximoStagingService {
         existing.contract_rowstamp === null && dto.contractRowstamp === null;
       const samePrRow =
         existing.pr_rowstamp !== null && existing.pr_rowstamp === dto.rowstamp;
-      const unchanged = sameContractRow || (bothWithoutContract && samePrRow);
+      // I9: y el mismo payload con el mismo mapper
+      const unchanged =
+        (sameContractRow || (bothWithoutContract && samePrRow)) &&
+        existing.raw_hash === rawHash &&
+        existing.mapper_version === MAXIMO_MAPPER_VERSION;
       await this.prisma.maximo_contracts.update({
         where: { id: existing.id },
         data: unchanged
@@ -215,6 +245,32 @@ export class MaximoStagingService {
       throw error;
     }
   }
+}
+
+/**
+ * I9: hash del payload recibido sobre su forma canónica (claves en mayúsculas
+ * y ordenadas, sin nulos): un campo o valor nuevo lo cambia; la forma de la
+ * API (legacy anidado, legacy compacto u OSLC) no.
+ */
+export function maximoRawHash(raw: unknown): string {
+  let payload: unknown;
+  try {
+    payload = stableForHash(toCanonical(raw));
+  } catch {
+    payload = raw;
+  }
+  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
+function stableForHash(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableForHash);
+  if (value === null || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) {
+    const item = (value as Record<string, unknown>)[key];
+    if (item !== null) out[key] = stableForHash(item);
+  }
+  return out;
 }
 
 function toDate(value: string | null): Date | null {

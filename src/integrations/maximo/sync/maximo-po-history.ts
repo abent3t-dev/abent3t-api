@@ -48,11 +48,15 @@ export function replacePoStatusHistory(
   ];
 }
 
-/** Columnas G2/G3 de la OC derivadas de sus líneas (PR). */
+/**
+ * Columnas de la OC derivadas de sus líneas: PR (G2/G3) y recepción (I1b).
+ * Las usan staging y remap por igual.
+ */
 export function poRequestColumns(dto: MaximoPurchaseOrderDto) {
   return {
     pr_issue_date: toDate(dto.prIssueDate),
     pr_nums: dto.prNums,
+    receipt_status: dto.receiptStatus,
   };
 }
 

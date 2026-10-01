@@ -1,8 +1,12 @@
 import { MaximoClient, MaximoFetchResult } from '../maximo.client';
 import { MaximoConfig } from '../maximo.config';
 import { MaximoPurchaseOrderDto } from '../dto/maximo-po.dto';
-import { MAXIMO_MAPPER_VERSION } from '../maximo.mapper';
-import { MaximoStagingService } from './maximo-staging.service';
+import {
+  MAXIMO_MAPPER_VERSION,
+  parseOslcEnvelope,
+  toPurchaseOrder,
+} from '../maximo.mapper';
+import { MaximoStagingService, maximoRawHash } from './maximo-staging.service';
 import { MaximoSyncService } from './maximo-sync.service';
 import { MaximoSyncConfig } from './maximo-sync.config';
 import {
@@ -194,6 +198,100 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
     expect(Number(row.total_cost)).toBe(111111.11);
     expect((row.raw as Record<string, unknown>).rowstamp).toBe('999999999');
     expect(row.last_changed_at).toBeDefined();
+  });
+
+  it('I9: mismo rowstamp con un campo nuevo (RECEIPTS) → updated, raw reescrito y receipt_status mapeado', async () => {
+    const { service, prisma, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    const base = poPageFromLegacyFixture(
+      'ab-compras.legacy-compact.po102249.json',
+    );
+    client.fetchPurchaseOrders.mockResolvedValueOnce(base);
+    await service.syncPurchaseOrders('manual');
+    const before = structuredClone(prisma.maximo_purchase_orders.rows[0]);
+    expect(before.receipt_status).toBeNull();
+    expect(before.raw_hash).toBe(maximoRawHash(base.raw[0]));
+
+    // CIISA agrega RECEIPTS a AB_COMPRAS: Maximo NO cambia el rowstamp
+    const rawWithReceipts = structuredClone(base.raw[0]) as Record<
+      string,
+      unknown
+    >;
+    rawWithReceipts.RECEIPTS = 'COMPLETE';
+    const changed = poPageFromLegacyFixture(
+      'ab-compras.legacy-compact.po102249.json',
+    );
+    changed.raw = [rawWithReceipts];
+    changed.records = [toPurchaseOrder(rawWithReceipts)];
+    expect(changed.records[0].rowstamp).toBe(base.records[0].rowstamp);
+    client.fetchPurchaseOrders.mockResolvedValueOnce(changed);
+
+    const second = await service.syncPurchaseOrders('manual');
+    expect(summaryOf(second)).toEqual({
+      status: 'success',
+      inserted: 0,
+      updated: 1,
+      unchanged: 0,
+      failed: 0,
+    });
+    const row = prisma.maximo_purchase_orders.rows[0];
+    expect(row.receipt_status).toBe('COMPLETE');
+    expect((row.raw as Record<string, unknown>).RECEIPTS).toBe('COMPLETE');
+    expect(row.raw_hash).not.toBe(before.raw_hash);
+
+    // El mismo payload otra vez → unchanged
+    const again = poPageFromLegacyFixture(
+      'ab-compras.legacy-compact.po102249.json',
+    );
+    again.raw = [structuredClone(rawWithReceipts)];
+    again.records = [toPurchaseOrder(rawWithReceipts)];
+    client.fetchPurchaseOrders.mockResolvedValueOnce(again);
+    const third = await service.syncPurchaseOrders('manual');
+    expect(summaryOf(third)).toMatchObject({ updated: 0, unchanged: 1 });
+  });
+
+  it('I9: filas previas a 0017 (sin raw_hash) o de otro mapper se reescriben UNA vez y luego quedan unchanged', async () => {
+    const { service, prisma, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    const page = () =>
+      poPageFromLegacyFixture('ab-compras.legacy-compact.range.json');
+    client.fetchPurchaseOrders.mockResolvedValueOnce(page());
+    await service.syncPurchaseOrders('manual');
+    const [a, b] = prisma.maximo_purchase_orders.rows;
+    a.raw_hash = null;
+    b.mapper_version = '2026.09.28-1';
+
+    client.fetchPurchaseOrders.mockResolvedValueOnce(page());
+    const second = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(second)).toMatchObject({ updated: 2, unchanged: 1 });
+    expect(a.raw_hash).toEqual(expect.any(String));
+    expect(b.mapper_version).toBe(MAXIMO_MAPPER_VERSION);
+
+    client.fetchPurchaseOrders.mockResolvedValueOnce(page());
+    const third = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(third)).toMatchObject({ updated: 0, unchanged: 3 });
+  });
+
+  it('I9: el hash no depende de la forma de la API (legacy ≡ OSLC) pero sí detecta campos y valores nuevos', () => {
+    const legacy = poPageFromLegacyFixture(
+      'ab-compras.legacy-compact.po102249.json',
+    ).raw[0] as Record<string, unknown>;
+    const oslc = parseOslcEnvelope(fixture('ab-compras.oslc.po102249.json'))
+      .records[0];
+    expect(maximoRawHash(oslc)).toBe(maximoRawHash(legacy));
+
+    expect(maximoRawHash({ ...legacy, RECEIPTS: 'PARTIAL' })).not.toBe(
+      maximoRawHash(legacy),
+    );
+    expect(maximoRawHash({ ...legacy, TOTALCOST: 1 })).not.toBe(
+      maximoRawHash(legacy),
+    );
+    // un campo nuevo que llega vacío no es un cambio de datos
+    expect(maximoRawHash({ ...legacy, RECEIPTS: '~null~' })).toBe(
+      maximoRawHash(legacy),
+    );
   });
 
   it('página que falla → corrida partial, las demás páginas persistidas', async () => {

@@ -56,6 +56,10 @@ export interface MaximoPurchaseOrderLineDto {
   enterDate: string | null;
   prnum: string | null;
   pr: MaximoPurchaseRequestRefDto | null;
+  /** I1b: POLINE.RECEIPTSCOMPLETE (null = no llega en la Object Structure). */
+  receiptsComplete: boolean | null;
+  /** I1b: POLINE.RECEIVEDQTY. */
+  receivedQty: number | null;
 }
 
 export interface MaximoPurchaseOrderDto {
@@ -120,6 +124,11 @@ export interface MaximoPurchaseOrderDto {
   prStatusDate: string | null;
   /** G3 (2026-09-28): PRNUM distintos de todas las líneas, ordenados. */
   prNums: string[];
+  /**
+   * I1b (2026-09-30): recepción de la OC — RECEIPTS (NONE / PARTIAL /
+   * COMPLETE) o derivada de las líneas. null = AB_COMPRAS no la trae (hoy).
+   */
+  receiptStatus: string | null;
 
   lines: MaximoPurchaseOrderLineDto[];
   rowstamp: string | null;

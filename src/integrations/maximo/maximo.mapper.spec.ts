@@ -739,3 +739,53 @@ describe('solicitudes de la OC (G2/G3, 2026-09-28)', () => {
     expect(po100012.prIssueDate).toBe('2019-06-25T15:28:46+00:00');
   });
 });
+
+describe('recepción de la OC (I1b, 2026-09-30)', () => {
+  it('RECEIPTS de la cabecera manda, en cualquier forma de la API', () => {
+    expect(
+      toPurchaseOrder({ PONUM: 'PO-R1', RECEIPTS: 'complete' }).receiptStatus,
+    ).toBe('COMPLETE');
+    expect(
+      toPurchaseOrder({
+        Attributes: {
+          PONUM: { content: 'PO-R2' },
+          RECEIPTS: { content: 'PARTIAL' },
+        },
+      }).receiptStatus,
+    ).toBe('PARTIAL');
+  });
+
+  it('sin RECEIPTS se deriva de POLINE.RECEIPTSCOMPLETE / RECEIVEDQTY', () => {
+    const lines = (...l: Record<string, unknown>[]) =>
+      toPurchaseOrder({ PONUM: 'PO-R3', POLINE: l }).receiptStatus;
+    expect(
+      lines(
+        { POLINENUM: 1, RECEIPTSCOMPLETE: 1, RECEIVEDQTY: 5 },
+        { POLINENUM: 2, RECEIPTSCOMPLETE: true },
+      ),
+    ).toBe('COMPLETE');
+    expect(
+      lines(
+        { POLINENUM: 1, RECEIPTSCOMPLETE: 0, RECEIVEDQTY: 2 },
+        { POLINENUM: 2, RECEIPTSCOMPLETE: 0, RECEIVEDQTY: 0 },
+      ),
+    ).toBe('PARTIAL');
+    expect(
+      lines({ POLINENUM: 1, RECEIPTSCOMPLETE: false, RECEIVEDQTY: 0 }),
+    ).toBe('NONE');
+  });
+
+  it('hoy AB_COMPRAS no trae la recepción: null en todos los fixtures reales', () => {
+    const all = [
+      ...legacyRecords('ab-compras.legacy-nested.page.json', 'AB_COMPRAS'),
+      ...legacyRecords('ab-compras.legacy-compact.range.json', 'AB_COMPRAS'),
+      ...oslcRecords('ab-compras.oslc.po102249.json'),
+    ].map(toPurchaseOrder);
+    expect(all.every((po) => po.receiptStatus === null)).toBe(true);
+    expect(
+      all
+        .flatMap((po) => po.lines)
+        .every((l) => l.receiptsComplete === null && l.receivedQty === null),
+    ).toBe(true);
+  });
+});

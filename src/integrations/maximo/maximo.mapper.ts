@@ -27,7 +27,7 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
  * `maximo:remap` para re-derivar las filas ya sincronizadas.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.09.28-1'; // 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
+export const MAXIMO_MAPPER_VERSION = '2026.10.01-1'; // 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -280,7 +280,43 @@ function mapPurchaseOrderLine(
     enterDate: str(line, 'ENTERDATE'),
     prnum,
     pr: mapPurchaseRequestRef(prline, prnum),
+    receiptsComplete: flag(line, 'RECEIPTSCOMPLETE'),
+    receivedQty: num(line, 'RECEIVEDQTY'),
   };
+}
+
+/** Bandera de Maximo ("1"/"0", true/false, "Y"/"N"); null si no viene. */
+function flag(rec: MaximoCanonicalRecord | null, key: string): boolean | null {
+  const v = rec?.[key];
+  if (typeof v === 'boolean') return v;
+  const text = str(rec, key);
+  if (text === null || text.trim() === '') return null;
+  return ['1', 'TRUE', 'Y', 'YES'].includes(text.trim().toUpperCase());
+}
+
+/**
+ * I1b (2026-09-30): recepción de la OC. RECEIPTS de la cabecera si viene
+ * (NONE / PARTIAL / COMPLETE); si solo llega por línea, se deriva de
+ * POLINE.RECEIPTSCOMPLETE / RECEIVEDQTY. Hoy AB_COMPRAS no trae ninguno:
+ * null, y Expeditación sigue como siempre hasta que CIISA lo exponga.
+ */
+export function receiptStatusOf(
+  header: MaximoCanonicalRecord | null,
+  lines: MaximoPurchaseOrderLineDto[],
+): string | null {
+  const receipts = str(header, 'RECEIPTS');
+  if (receipts && receipts.trim() !== '') return receipts.trim().toUpperCase();
+  const known = lines.filter(
+    (l) => l.receiptsComplete !== null || l.receivedQty !== null,
+  );
+  if (known.length === 0) return null;
+  if (lines.every((l) => l.receiptsComplete === true)) return 'COMPLETE';
+  if (
+    lines.some((l) => l.receiptsComplete === true || (l.receivedQty ?? 0) > 0)
+  ) {
+    return 'PARTIAL';
+  }
+  return 'NONE';
 }
 
 /** Mapea un registro crudo de AB_COMPRAS (cualquier forma) al DTO interno. */
@@ -345,6 +381,7 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
     prIssueDate: prIssueDates[0] ?? null,
     prNums,
     prStatusDate: firstPr?.statusDate ?? null,
+    receiptStatus: receiptStatusOf(r, lines),
 
     lines,
     rowstamp: str(r, 'ROWSTAMP'),
