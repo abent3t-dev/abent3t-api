@@ -424,4 +424,76 @@ describe('ContractsService', () => {
       expect(data[1].documents[1].doc_kind).toBe('carta_intencion');
     });
   });
+
+  describe('J2: vencido histórico (sin avisos)', () => {
+    const base = {
+      service_description: 'Servicio',
+      supplier_id: 's-1',
+      carpeta: 'A3T-0150',
+      doc_kind: 'contrato' as const,
+    };
+    const lastCreate = (prisma: ReturnType<typeof makeService>['prisma']) =>
+      (
+        prisma.contracts.create.mock.calls.at(-1) as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+
+    it('el que se da de alta ya vencido es histórico por defecto; Compras lo puede desmarcar', async () => {
+      const { service, prisma } = makeService();
+      prisma.contracts.findMany.mockResolvedValue([]);
+      prisma.contracts.findFirst.mockResolvedValue(null);
+      prisma.contracts.create.mockResolvedValue(CONTRACT_ROW);
+      await service.create({ ...base, end_date: '2025-06-30' }, 'u-1');
+      expect(lastCreate(prisma)).toMatchObject({
+        status: 'vencido',
+        vencido_historico: true,
+      });
+      await service.create(
+        { ...base, end_date: '2025-06-30', vencido_historico: false },
+        'u-1',
+      );
+      expect(lastCreate(prisma).vencido_historico).toBe(false);
+      await service.create({ ...base, end_date: '2099-01-31' }, 'u-1');
+      expect(lastCreate(prisma)).toMatchObject({
+        status: 'vigente',
+        vencido_historico: false,
+      });
+    });
+
+    it('al renovar (nueva fecha de fin) deja de ser histórico; vencido se puede desmarcar', async () => {
+      const { service, prisma } = makeService();
+      const historic = {
+        ...CONTRACT_ROW,
+        status: 'vencido',
+        vencido_historico: true,
+        start_date: new Date('2024-07-01'),
+        end_date: new Date('2025-06-30'),
+      };
+      prisma.contracts.findFirst.mockResolvedValue(historic);
+      prisma.contracts.update.mockResolvedValue(CONTRACT_ROW);
+      await service.update(CONTRACT_ROW.id, { end_date: '2099-12-31' }, 'u-1');
+      const renewed = (
+        prisma.contracts.update.mock.calls[0] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(renewed).toMatchObject({
+        status: 'vigente',
+        vencido_historico: false,
+      });
+
+      await service.update(
+        CONTRACT_ROW.id,
+        { vencido_historico: false },
+        'u-1',
+      );
+      const unmarked = (
+        prisma.contracts.update.mock.calls[1] as [
+          { data: Record<string, unknown> },
+        ]
+      )[0].data;
+      expect(unmarked.vencido_historico).toBe(false);
+    });
+  });
 });

@@ -1536,6 +1536,8 @@ model contracts {
   responsible_user_email String?
   responsible_user_name  String?
   status                 contract_status                 @default(vigente)
+  /// J2 (0018): vencido antes de la carga de la base real o dado de alta ya vencido: sin avisos.
+  vencido_historico      Boolean                         @default(false)
   notes                  String?
   is_active              Boolean                         @default(true)
   created_by             String?                         @db.Uuid
@@ -1572,6 +1574,46 @@ model contract_documents {
   profiles        profiles? @relation(fields: [uploaded_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([contract_id], map: "idx_contract_documents_contract")
+}
+
+/// J1 (0018): cola y bitácora de TODOS los correos. El único que envía es el
+/// worker (ritmo EMAIL_MIN_INTERVAL_SECONDS, tope EMAIL_DAILY_CAP, pausa).
+model email_outbox {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  idempotency_key     String    @unique(map: "uq_email_outbox_key") @db.VarChar(400)
+  template            String    @db.VarChar(60)
+  entity_type         String?   @db.VarChar(40)
+  entity_id           String?   @db.VarChar(120)
+  recipient_email     String    @db.VarChar(255)
+  recipient_name      String?   @db.VarChar(255)
+  subject             String    @db.VarChar(500)
+  body                String
+  is_html             Boolean   @default(true)
+  status              String    @default("pendiente") @db.VarChar(20)
+  attempts            Int       @default(0)
+  last_error          String?
+  transport           String?   @db.VarChar(20)
+  provider_message_id String?   @db.VarChar(255)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  scheduled_at        DateTime  @default(now()) @db.Timestamptz(6)
+  last_attempt_at     DateTime? @db.Timestamptz(6)
+  sent_at             DateTime? @db.Timestamptz(6)
+  updated_at          DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([status, scheduled_at], map: "idx_email_outbox_due")
+  @@index([created_at(sort: Desc)], map: "idx_email_outbox_created")
+  @@index([sent_at], map: "idx_email_outbox_sent")
+  @@index([last_attempt_at], map: "idx_email_outbox_attempt")
+}
+
+/// J1 (0018): interruptor "Pausar envíos" (una sola fila, id = 1).
+model email_settings {
+  id            Int       @id @default(1) @db.SmallInt
+  paused        Boolean   @default(false)
+  paused_reason String?   @db.VarChar(500)
+  paused_at     DateTime? @db.Timestamptz(6)
+  paused_by     String?   @db.Uuid
+  updated_at    DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 }
 
 model contract_expiry_notifications {

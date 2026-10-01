@@ -23,7 +23,7 @@ import type { ExcelColumn } from '../common/utils/excel-export.util';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { ContractsService } from './contracts.service';
+import { ContractsService, contractStatusKey } from './contracts.service';
 import { docKindName } from './contract-catalog';
 import { ContractQueryDto } from './dto/contract-query.dto';
 import { CreateContractDto } from './dto/create-contract.dto';
@@ -39,6 +39,8 @@ type ContractExportRow = Awaited<
 const STATUS_LABEL: Record<string, string> = {
   vigente: 'Vigente',
   vencido: 'Vencido',
+  // J2: sin avisos de vencimiento
+  vencido_historico: 'Vencido (histórico)',
   renovado: 'Renovado',
   cancelado: 'Cancelado',
 };
@@ -85,7 +87,7 @@ const CONTRACT_COLUMNS: ExcelColumn<ContractExportRow>[] = [
   { header: 'Responsable', value: (r) => r.responsible_user_name, width: 24 },
   {
     header: 'Estatus',
-    value: (r) => STATUS_LABEL[r.status] ?? r.status,
+    value: (r) => STATUS_LABEL[contractStatusKey(r)] ?? r.status,
     width: 12,
   },
   { header: 'Link', value: (r) => r.external_link, width: 40 },

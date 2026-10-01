@@ -5,6 +5,9 @@
  * día no re-envía nada. Sin credenciales AZURE_* los correos se SIMULAN
  * (quedan en el log), pero el registro de notificaciones sí se escribe.
  *
+ * J2 (2026-10-01): un resumen diario por persona; los vencidos históricos no
+ * alertan.
+ *
  * USO:  npm run contracts:check-expiry
  */
 import { ConfigService } from '@nestjs/config';
@@ -23,10 +26,14 @@ async function main(): Promise<void> {
       new ConfigService(),
     );
     const result = await service.runCheck();
-    console.log('Chequeo de vencimientos (§15):');
-    console.log(`  contratos vigentes revisados: ${result.checkedContracts}`);
-    console.log(`  notificaciones enviadas:      ${result.notificationsSent}`);
-    console.log(`  ya notificadas (omitidas):    ${result.alreadyNotified}`);
+    console.log('Chequeo de vencimientos (§15, J2 resumen diario):');
+    console.log(`  contratos revisados:          ${result.checkedContracts}`);
+    console.log(`  contratos en los resúmenes:   ${result.alertingContracts}`);
+    console.log(`  vencidos históricos (sin aviso): ${result.historicSkipped}`);
+    console.log(`  resúmenes (uno por persona):  ${result.digestsSent}`);
+    console.log(
+      `  personas que ya tenían el de hoy: ${result.alreadyNotified}`,
+    );
     console.log(`  contratos marcados vencidos:  ${result.expiredMarked}`);
     if (result.errors.length > 0) {
       console.error(`  errores (${result.errors.length}):`);

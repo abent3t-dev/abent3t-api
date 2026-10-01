@@ -613,3 +613,28 @@ describe('I6: plan con la base real', () => {
     expect(second.unchanged).toEqual(['A3T-0003', 'A3T-0003-CI']);
   });
 });
+
+describe('J2: el que entra ya vencido es histórico (sin avisos)', () => {
+  it('vencido por fecha o por el Excel sin fecha de fin → histórico; vigente no', () => {
+    const { plan: p } = realPlan([
+      real(), // fin 2025-01-22: vencido
+      real({
+        'Núm. Carpeta': 'A3T-0004',
+        'Fecha Fin': 'NA',
+        Estatus: 'Vencido',
+      }),
+      real({ 'Núm. Carpeta': 'A3T-0005', 'Fecha Fin': '31/12/2099' }),
+    ]);
+    expect(
+      p.create.map((c) => [
+        c.data.contract_number,
+        c.data.status,
+        c.data.vencido_historico,
+      ]),
+    ).toEqual([
+      ['A3T-0003', 'vencido', true],
+      ['A3T-0004', 'vencido', true],
+      ['A3T-0005', 'vigente', false],
+    ]);
+  });
+});

@@ -107,6 +107,8 @@ export interface ExistingContract {
   document_label: string | null;
   user_area: string | null;
   buyer_profile_id: string | null;
+  /** J2: vencido histórico (sin avisos). */
+  vencido_historico?: boolean;
 }
 
 export interface SupplierIndexEntry {
@@ -170,6 +172,8 @@ export interface ContractData {
   document_label?: string;
   user_area?: string;
   buyer_profile_id?: string;
+  /** J2: el que entra ya vencido es histórico (sin avisos). */
+  vencido_historico?: boolean;
 }
 
 /** I6: lo que se le pasa a Diana después del dry-run. */
@@ -791,6 +795,11 @@ export function planContractImport(input: {
         options.importLabel ?? 'Importado del Excel de contratos.',
         ...noteSentences(row),
       ].join(' ');
+      const createStatus = contractStatusFor(
+        row.endDate,
+        options.today,
+        row.excelStatus,
+      );
       plan.create.push({
         row,
         supplierNote: supplier.isNew
@@ -804,11 +813,9 @@ export function planContractImport(input: {
           start_date: row.startDate,
           end_date: row.endDate,
           // por fecha de fin; sin ella, el del Excel o vigente
-          status: contractStatusFor(
-            row.endDate,
-            options.today,
-            row.excelStatus,
-          ),
+          status: createStatus,
+          // J2: el que entra ya vencido es histórico (sin avisos)
+          vencido_historico: createStatus === 'vencido',
           document_type: row.documentType ?? 'contrato',
           ...(row.carpeta ? { carpeta: row.carpeta } : {}),
           ...(row.documentLabel ? { document_label: row.documentLabel } : {}),
@@ -921,6 +928,10 @@ export function planContractImport(input: {
       if ((data.end_date || !end) && status !== current.status) {
         changes.push({ field: 'status', from: current.status, to: status });
         data.status = status;
+        // J2: el histórico solo cuenta mientras esté vencido
+        if (status !== 'vencido' && current.vencido_historico) {
+          data.vencido_historico = false;
+        }
       }
     }
     const amounts = amountFields(row, where, ref);

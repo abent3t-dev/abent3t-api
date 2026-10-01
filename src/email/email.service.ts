@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  ContractDigestItem,
   IEmailService,
   SendEmailOptions,
   SendEmailResult,
@@ -19,6 +20,34 @@ function asText(value: unknown): string {
     return String(value);
   }
   return '';
+}
+
+/** Escapa texto para HTML (razones sociales con "&", servicios con "<"…). */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+const plural = (n: number, one: string, many: string) =>
+  `${n} ${n === 1 ? one : many}`;
+
+/** "1 contrato por vencer y 3 vencidos sin renovar" (asunto del resumen). */
+export function contractDigestSubject(
+  porVencer: number,
+  vencidos: number,
+): string {
+  const parts = [
+    porVencer > 0
+      ? plural(porVencer, 'contrato por vencer', 'contratos por vencer')
+      : null,
+    vencidos > 0
+      ? plural(vencidos, 'vencido sin renovar', 'vencidos sin renovar')
+      : null,
+  ].filter(Boolean);
+  return `[ABENT 3T] Contratos: ${parts.join(' y ')}`;
 }
 
 /**
@@ -187,18 +216,20 @@ export class EmailService implements IEmailService {
           body: this.renderEnrollmentTemplate(data, baseUrl),
         };
 
-      case 'contract_expiring':
+      case 'contract_digest': {
+        const porVencer = (data.porVencer ?? []) as ContractDigestItem[];
+        const vencidos = (data.vencidos ?? []) as ContractDigestItem[];
         return {
-          // Asunto según la plantilla de §15
-          subject: `[ABENT 3T] Contrato ${asText(data.contractNumber)} - ${asText(data.serviceDescription)} vence en ${asText(data.daysLeft) || '?'} días`,
-          body: this.renderContractExpiryTemplate(data, baseUrl, false),
+          subject: contractDigestSubject(porVencer.length, vencidos.length),
+          body: this.renderContractDigestTemplate(
+            asText(data.recipientName),
+            porVencer,
+            vencidos,
+            Number(data.thresholdDays) || 45,
+            baseUrl,
+          ),
         };
-
-      case 'contract_expired':
-        return {
-          subject: `[ABENT 3T] Contrato ${asText(data.contractNumber)} - ${asText(data.serviceDescription)} ha VENCIDO`,
-          body: this.renderContractExpiryTemplate(data, baseUrl, true),
-        };
+      }
 
       default:
         return {
@@ -209,57 +240,82 @@ export class EmailService implements IEmailService {
   }
 
   /**
-   * §15 — Alerta de vencimiento de contrato (30/7 días o vencido). El enlace
-   * apunta al listado de contratos: el detalle se abre en modal, no hay
-   * página por id.
+   * J2 (hilo con César, 2026-10-01) — UN resumen diario por persona con sus
+   * contratos por vencer y los vencidos sin renovar, en lugar de un correo
+   * por contrato. Enlace al portal (el detalle se abre en modal) y sin
+   * adjuntos.
    */
-  private renderContractExpiryTemplate(
-    data: EmailTemplateData,
+  private renderContractDigestTemplate(
+    recipientName: string,
+    porVencer: ContractDigestItem[],
+    vencidos: ContractDigestItem[],
+    thresholdDays: number,
     baseUrl: string,
-    expired: boolean,
   ): string {
-    const s = (value: unknown): string => asText(value) || '—';
-    const amount =
-      data.totalAmount === null || data.totalAmount === undefined
-        ? '—'
-        : `${s(data.totalAmount)} ${s(data.currency ?? 'MXN')}`;
-    const headline = expired
-      ? `El contrato <strong>${s(data.contractNumber)}</strong> con el proveedor <strong>${s(data.supplierName)}</strong> venció el <strong>${s(data.endDate)}</strong>.`
-      : `El contrato <strong>${s(data.contractNumber)}</strong> con el proveedor <strong>${s(data.supplierName)}</strong> vence el <strong>${s(data.endDate)}</strong> (en ${s(data.daysLeft)} días).`;
+    const cell =
+      'padding:6px 8px;border-bottom:1px solid #e5e7eb;text-align:left;';
+    const head = `${cell}background:#f3f4f6;font-size:12px;color:#4b5563;`;
+    const table = (
+      items: ContractDigestItem[],
+      when: (item: ContractDigestItem) => string,
+    ) => `
+      <table style="border-collapse:collapse;width:100%;font-size:13px;">
+        <tr>
+          <th style="${head}">Contrato</th>
+          <th style="${head}">Proveedor</th>
+          <th style="${head}">Servicio</th>
+          <th style="${head}">Fin</th>
+          <th style="${head}"></th>
+        </tr>
+        ${items
+          .map(
+            (item) => `
+        <tr>
+          <td style="${cell}white-space:nowrap;"><strong>${escapeHtml(item.contractNumber)}</strong></td>
+          <td style="${cell}">${escapeHtml(item.supplierName)}</td>
+          <td style="${cell}">${escapeHtml(item.serviceDescription)}</td>
+          <td style="${cell}white-space:nowrap;">${escapeHtml(item.endDate)}</td>
+          <td style="${cell}white-space:nowrap;">${when(item)}</td>
+        </tr>`,
+          )
+          .join('')}
+      </table>`;
+    const sections = [
+      porVencer.length > 0
+        ? `<h3 style="margin:20px 0 8px;color:#2E7D1F;">Por vencer en los próximos ${thresholdDays} días (${porVencer.length})</h3>${table(
+            porVencer,
+            (item) =>
+              item.daysLeft === 0
+                ? 'vence hoy'
+                : `en ${plural(item.daysLeft, 'día', 'días')}`,
+          )}`
+        : '',
+      vencidos.length > 0
+        ? `<h3 style="margin:20px 0 8px;color:#c0392b;">Vencidos sin renovar (${vencidos.length})</h3>${table(
+            vencidos,
+            (item) =>
+              item.daysLeft === 0
+                ? 'venció hoy'
+                : `hace ${plural(-item.daysLeft, 'día', 'días')}`,
+          )}`
+        : '',
+    ].join('');
     return `
 <!DOCTYPE html>
 <html>
-<head>
-  <style>
-    body { font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #333; }
-    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: linear-gradient(135deg, ${expired ? '#c0392b, #e74c3c' : '#52AF32, #67B52E'}); color: white; padding: 20px; border-radius: 8px 8px 0 0; }
-    .content { background: #f9f9f9; padding: 20px; border-radius: 0 0 8px 8px; }
-    .btn { display: inline-block; background: #52AF32; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; margin-top: 15px; }
-    .footer { margin-top: 20px; font-size: 12px; color: #666; }
-    .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 15px 0; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="header">
-      <h2>${expired ? '⛔ Contrato vencido' : '📄 Contrato por vencer'}</h2>
+<body style="font-family:'Segoe UI',Arial,sans-serif;line-height:1.5;color:#333;">
+  <div style="max-width:720px;margin:0 auto;padding:20px;">
+    <div style="background:#52AF32;color:#fff;padding:16px 20px;border-radius:8px 8px 0 0;">
+      <h2 style="margin:0;">Resumen diario de contratos</h2>
     </div>
-    <div class="content">
-      <p>Estimado/a <strong>${s(data.recipientName)}</strong>,</p>
-      <p>${headline}</p>
-      <div class="warning">
-        <strong>Servicio:</strong> ${s(data.serviceDescription)}<br>
-        <strong>Monto total:</strong> ${amount}<br>
-        <strong>Comprador:</strong> ${s(data.buyerName)}<br>
-        <strong>Usuario responsable:</strong> ${s(data.responsibleName)}
-      </div>
-      <a href="${baseUrl}/compras/contratos" class="btn">
-        Ver contrato
-      </a>
-      <div class="footer">
-        <p>Este es un mensaje automático del sistema de compras ABENT 3T.</p>
-      </div>
+    <div style="background:#f9f9f9;padding:20px;border-radius:0 0 8px 8px;">
+      <p>Estimado/a <strong>${escapeHtml(recipientName)}</strong>,</p>
+      <p>Estos son los contratos que requieren atención hoy. Llega un solo correo al día mientras sigan por vencer o vencidos sin renovar.</p>
+      ${sections}
+      <p style="margin-top:20px;">
+        <a href="${baseUrl}/compras/contratos" style="display:inline-block;background:#52AF32;color:#fff;padding:10px 20px;text-decoration:none;border-radius:6px;">Ver contratos en el portal</a>
+      </p>
+      <p style="margin-top:20px;font-size:12px;color:#666;">Mensaje automático del sistema de compras ABENT 3T. Los contratos vencidos antes de la carga de la base no se incluyen; Compras puede reactivarlos si están en renovación.</p>
     </div>
   </div>
 </body>

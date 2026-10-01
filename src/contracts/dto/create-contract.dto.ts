@@ -1,4 +1,5 @@
 import {
+  IsBoolean,
   IsDateString,
   IsEmail,
   IsIn,
@@ -140,6 +141,15 @@ export class CreateContractDto {
   @IsIn(CONTRACT_STATUSES)
   @IsOptional()
   status?: (typeof CONTRACT_STATUSES)[number];
+
+  /**
+   * J2 (2026-10-01): vencido histórico = sin avisos de vencimiento. Por
+   * defecto, el que se da de alta ya vencido; Compras lo desmarca si está en
+   * renovación. Solo cuenta mientras el contrato esté vencido.
+   */
+  @IsBoolean()
+  @IsOptional()
+  vencido_historico?: boolean;
 
   @IsString()
   @IsOptional()

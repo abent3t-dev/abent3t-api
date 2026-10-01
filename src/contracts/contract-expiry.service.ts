@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { EmailService } from '../email/email.service';
+import type { ContractDigestItem } from '../email/email.interfaces';
 import { cdmxDateUtc, daysUntil } from './contracts.dates';
 
 /**
@@ -10,28 +11,44 @@ import { cdmxDateUtc, daysUntil } from './contracts.dates';
  * (`runCheck(now)`) para poder probarla con fechas fijas y ejecutarla a mano
  * (`npm run contracts:check-expiry`).
  *
- * Bloque 2026-09-23 (D11, requisitos de César 2026-09-22): en lugar de los
- * hitos 30/7/0, la alerta arranca `CONTRACT_ALERT_DAYS_BEFORE` días antes
- * (default 45) y se manda TODOS LOS DÍAS hasta que el contrato deje de estar
- * vigente/vencido (renovado o cancelado). Un contrato que llega al día 0
- * pasa a `vencido` y sigue alertando (como vencido) hasta la renovación o el
- * cierre. Destinatarios: comprador del contrato, usuario responsable
- * ("Adm. de contrato") y los administradores de contratos (lider_procura).
+ * Bloque 2026-09-23 (D11, requisitos de César 2026-09-22): la alerta arranca
+ * `CONTRACT_ALERT_DAYS_BEFORE` días antes (default 45) y sigue TODOS LOS
+ * DÍAS hasta que el contrato deje de estar vigente/vencido (renovado o
+ * cancelado). Un contrato que llega al día 0 pasa a `vencido` y sigue
+ * alertando (como vencido) hasta la renovación o el cierre. Destinatarios:
+ * comprador del contrato, usuario responsable y los administradores de
+ * contratos (lider_procura). El área usuaria no tiene correo.
  *
- * Idempotencia por DÍA: UNIQUE (contract_id, notification_type,
- * recipient_email) con `notification_type = expiring:YYYY-MM-DD` /
- * `expired:YYYY-MM-DD` — el insert del log y el envío del correo van en la
- * misma transacción, así un envío fallido revierte el log y se reintenta en
- * la siguiente corrida; un P2002 significa "ya enviado hoy" y se ignora.
+ * J2 (hilo con César, 2026-10-01): con la base real, un correo por contrato
+ * y por día eran más de 118 correos diarios para Ingrid. Ahora:
+ *  - UN resumen diario por persona con todos sus contratos ("por vencer en N
+ *    días" y "vencidos sin renovar");
+ *  - los vencidos históricos (`vencido_historico`: ya vencidos al cargar la
+ *    base real o al darse de alta) no alertan. Compras los desmarca a mano si
+ *    alguno sí está en renovación; los que venzan de aquí en adelante siguen
+ *    la regla de 45 días.
+ *
+ * Idempotencia por DÍA: una fila de `contract_expiry_notifications` por
+ * contrato incluido en el resumen (UNIQUE contract_id + tipo + destinatario,
+ * tipo `expiring:YYYY-MM-DD` / `expired:YYYY-MM-DD`). El registro y el envío
+ * del resumen van en la misma transacción: un envío fallido revierte las
+ * filas y se reintenta en la siguiente corrida; si ya estaban todas, el
+ * resumen de hoy ya salió.
  */
 
 export const DEFAULT_ALERT_DAYS_BEFORE = 45;
 
 export interface ContractExpiryCheckResult {
   checkedContracts: number;
-  notificationsSent: number;
+  /** J2: contratos que entran a los resúmenes de hoy. */
+  alertingContracts: number;
+  /** J2: resúmenes enviados (uno por persona). */
+  digestsSent: number;
+  /** Personas que ya tenían su resumen de hoy. */
   alreadyNotified: number;
   expiredMarked: number;
+  /** J2: vencidos históricos que no alertan. */
+  historicSkipped: number;
   errors: string[];
 }
 
@@ -41,7 +58,18 @@ interface Recipient {
   role: string;
 }
 
+interface DigestEntry extends ContractDigestItem {
+  contractId: string;
+  notificationType: string;
+  role: string;
+}
+
+/** Ya estaban todas las filas: el resumen de hoy ya salió. */
+class AlreadyNotifiedToday extends Error {}
+
 const MAX_ERRORS = 20;
+
+const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
 @Injectable()
 export class ContractExpiryService {
@@ -65,13 +93,15 @@ export class ContractExpiryService {
   async runCheck(now: Date = new Date()): Promise<ContractExpiryCheckResult> {
     const result: ContractExpiryCheckResult = {
       checkedContracts: 0,
-      notificationsSent: 0,
+      alertingContracts: 0,
+      digestsSent: 0,
       alreadyNotified: 0,
       expiredMarked: 0,
+      historicSkipped: 0,
       errors: [],
     };
     const today = cdmxDateUtc(now);
-    const todayKey = today.toISOString().slice(0, 10);
+    const todayKey = isoDay(today);
     const threshold = this.alertDaysBefore;
 
     // Vigentes (por vencer) y vencidos (siguen alertando a diario hasta que
@@ -89,10 +119,16 @@ export class ContractExpiryService {
           select: { email: true, full_name: true },
         },
       },
+      orderBy: [{ end_date: 'asc' }, { contract_number: 'asc' }],
     });
     result.checkedContracts = contracts.length;
     const admins = await this.contractAdmins();
 
+    // Un resumen por persona con todos sus contratos
+    const digests = new Map<
+      string,
+      { recipient: Recipient; entries: DigestEntry[] }
+    >();
     for (const contract of contracts) {
       const endDate = contract.end_date;
       if (!endDate) continue;
@@ -109,7 +145,12 @@ export class ContractExpiryService {
         });
         result.expiredMarked += 1;
       }
-      const type = `${expired ? 'expired' : 'expiring'}:${todayKey}`;
+      // J2: los vencidos históricos no alertan
+      if (expired && contract.vencido_historico) {
+        result.historicSkipped += 1;
+        continue;
+      }
+      result.alertingContracts += 1;
 
       const buyer = contract.profiles_contracts_buyer_profile_idToprofiles;
       const candidates: Array<{
@@ -130,77 +171,101 @@ export class ContractExpiryService {
         })),
       ];
       const seen = new Set<string>();
-      const recipients: Recipient[] = [];
       for (const c of candidates) {
         const email = c.email?.trim().toLowerCase();
         if (!email || seen.has(email)) continue;
         seen.add(email);
-        recipients.push({ email, name: c.name ?? null, role: c.role });
+        const digest = digests.get(email) ?? {
+          recipient: { email, name: c.name ?? null, role: c.role },
+          entries: [],
+        };
+        digest.entries.push({
+          contractId: contract.id,
+          contractNumber: contract.contract_number,
+          supplierName: contract.suppliers.legal_name,
+          serviceDescription: contract.service_description,
+          endDate: isoDay(endDate),
+          daysLeft,
+          notificationType: `${expired ? 'expired' : 'expiring'}:${todayKey}`,
+          role: c.role,
+        });
+        digests.set(email, digest);
       }
+    }
 
-      for (const recipient of recipients) {
-        try {
-          await this.prisma.$transaction(async (tx) => {
-            await tx.contract_expiry_notifications.create({
-              data: {
-                contract_id: contract.id,
-                notification_type: type,
-                recipient_email: recipient.email,
-                recipient_role: recipient.role,
-              },
-            });
-            const rendered = this.emailService.renderTemplate(
-              expired ? 'contract_expired' : 'contract_expiring',
-              {
-                recipientName: recipient.name ?? recipient.email,
-                contractNumber: contract.contract_number,
-                serviceDescription: contract.service_description,
-                supplierName: contract.suppliers.legal_name,
-                endDate: endDate.toISOString().slice(0, 10),
-                totalAmount:
-                  contract.total_amount === null
-                    ? null
-                    : Number(contract.total_amount),
-                currency: contract.currency,
-                buyerName: buyer?.full_name ?? null,
-                responsibleName: contract.responsible_user_name,
-                daysLeft,
-              },
-            );
-            const sent = await this.emailService.sendEmail({
-              to: { email: recipient.email, name: recipient.name ?? undefined },
-              subject: rendered.subject,
-              body: rendered.body,
-              isHtml: true,
-            });
-            // Envío fallido → rollback del log para reintentar mañana
-            if (!sent.success) {
-              throw new Error(sent.error ?? 'envío de correo fallido');
-            }
-          });
-          result.notificationsSent += 1;
-        } catch (err: unknown) {
-          // Duck-typing del código Prisma (patrón del repo, ver staging Int-3)
-          if ((err as { code?: string }).code === 'P2002') {
-            result.alreadyNotified += 1;
-            continue;
-          }
-          // Un destinatario fallido no detiene ni el contrato ni el job
-          if (result.errors.length < MAX_ERRORS) {
-            const msg = err instanceof Error ? err.message : String(err);
-            result.errors.push(
-              `${contract.contract_number}/${recipient.email}: ${msg}`,
-            );
-          }
+    for (const { recipient, entries } of digests.values()) {
+      try {
+        await this.sendDigest(recipient, entries, threshold);
+        result.digestsSent += 1;
+      } catch (err: unknown) {
+        if (err instanceof AlreadyNotifiedToday) {
+          result.alreadyNotified += 1;
+          continue;
+        }
+        // Un destinatario fallido no detiene el job
+        if (result.errors.length < MAX_ERRORS) {
+          const msg = err instanceof Error ? err.message : String(err);
+          result.errors.push(`${recipient.email}: ${msg}`);
         }
       }
     }
 
     this.logger.log(
-      `Alertas de contratos (umbral ${threshold} días, diaria): revisados=${result.checkedContracts} enviadas=${result.notificationsSent} ` +
-        `repetidas=${result.alreadyNotified} vencidos=${result.expiredMarked} errores=${result.errors.length}`,
+      `Avisos de contratos (umbral ${threshold} días, resumen diario): revisados=${result.checkedContracts} ` +
+        `en el resumen=${result.alertingContracts} resúmenes=${result.digestsSent} repetidos=${result.alreadyNotified} ` +
+        `vencidos=${result.expiredMarked} históricos=${result.historicSkipped} errores=${result.errors.length}`,
     );
     return result;
+  }
+
+  /** Registro por contrato + el resumen de la persona, en una transacción. */
+  private async sendDigest(
+    recipient: Recipient,
+    entries: DigestEntry[],
+    threshold: number,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const { count } = await tx.contract_expiry_notifications.createMany({
+        data: entries.map((e) => ({
+          contract_id: e.contractId,
+          notification_type: e.notificationType,
+          recipient_email: recipient.email,
+          recipient_role: e.role,
+        })),
+        skipDuplicates: true,
+      });
+      if (count === 0) throw new AlreadyNotifiedToday();
+
+      const item = (e: DigestEntry): ContractDigestItem => ({
+        contractNumber: e.contractNumber,
+        supplierName: e.supplierName,
+        serviceDescription: e.serviceDescription,
+        endDate: e.endDate,
+        daysLeft: e.daysLeft,
+      });
+      const rendered = this.emailService.renderTemplate('contract_digest', {
+        recipientName: recipient.name ?? recipient.email,
+        porVencer: entries
+          .filter((e) => e.daysLeft > 0)
+          .sort((a, b) => a.daysLeft - b.daysLeft)
+          .map(item),
+        vencidos: entries
+          .filter((e) => e.daysLeft <= 0)
+          .sort((a, b) => a.daysLeft - b.daysLeft)
+          .map(item),
+        thresholdDays: threshold,
+      });
+      const sent = await this.emailService.sendEmail({
+        to: { email: recipient.email, name: recipient.name ?? undefined },
+        subject: rendered.subject,
+        body: rendered.body,
+        isHtml: true,
+      });
+      // Envío fallido → rollback del registro para reintentar mañana
+      if (!sent.success) {
+        throw new Error(sent.error ?? 'envío de correo fallido');
+      }
+    });
   }
 
   /** Administradores de contratos: perfiles activos con rol lider_procura. */

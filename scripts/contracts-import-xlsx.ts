@@ -311,6 +311,7 @@ async function main(): Promise<void> {
       document_label: c.document_label,
       user_area: c.user_area,
       buyer_profile_id: c.buyer_profile_id,
+      vencido_historico: c.vencido_historico,
     }));
     const label = `Importado del Excel ${basename(filePath, extname(filePath))} (${isoDay(today)}).`;
     const plan = planContractImport({

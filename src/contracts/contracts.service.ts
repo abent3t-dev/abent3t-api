@@ -51,6 +51,10 @@ import { UpdateContractDto } from './dto/update-contract.dto';
  * número (contract-catalog.ts), área usuaria, fechas opcionales ("Sin fecha
  * de fin", sin alertas), estatus por fecha de fin y el listado agrupado por
  * carpeta (`group=carpeta`): el contrato con su CI, enmiendas y convenios.
+ *
+ * J2 (2026-10-01): "vencido (histórico)" = sin avisos. Se marca solo al dar
+ * de alta un contrato ya vencido; Compras lo desmarca si está en renovación.
+ * Si el contrato deja de estar vencido (nueva fecha de fin), se apaga.
  */
 
 const MAX_PDF_SIZE = 20 * 1024 * 1024; // 20 MB (§15)
@@ -126,6 +130,16 @@ function aliasContract(row: ContractRow) {
 
 type ContractListRow = ReturnType<typeof aliasContract>;
 
+/** J2: estatus para tabla, filtro y export ("vencido_historico" aparte). */
+export function contractStatusKey(row: {
+  status: string;
+  vencido_historico: boolean;
+}): string {
+  return row.status === 'vencido' && row.vencido_historico
+    ? 'vencido_historico'
+    : row.status;
+}
+
 /** "2026-10-01" → Date; null/"" → null (I6: fechas opcionales). */
 function toDate(value: string | null | undefined): Date | null {
   return value ? new Date(value) : null;
@@ -151,7 +165,8 @@ export const CONTRACT_FILTER_COLUMNS: ColumnDefs<ContractListRow> = {
   proveedor: { type: 'text', value: (r) => r.supplier?.legal_name },
   inicio: { type: 'date', value: (r) => r.start_date },
   fin: { type: 'date', value: (r) => r.end_date },
-  estatus: { type: 'text', value: (r) => r.status },
+  // J2: el vencido histórico (sin avisos) se filtra aparte
+  estatus: { type: 'text', value: contractStatusKey },
   monto: { type: 'number', value: (r) => r.total_amount },
   consumido: { type: 'number', value: (r) => r.consumed_amount },
   saldo: { type: 'number', value: (r) => r.balance_amount },
@@ -400,6 +415,8 @@ export class ContractsService {
       contract_number: numberInput,
       ...rest
     } = dto;
+    // J2: el histórico se decide abajo según el estatus
+    delete rest.vencido_historico;
     const carpeta = this.carpetaOf(carpetaInput);
     const kind: ContractDocKind | null =
       kindInput ?? (carpeta ? 'contrato' : null);
@@ -426,6 +443,7 @@ export class ContractsService {
         `Ya existe un contrato con el número ${contractNumber}`,
       );
     }
+    const status = statusOnSave(endDate, dto.status ?? null);
 
     try {
       const created = await this.prisma.contracts.create({
@@ -438,7 +456,10 @@ export class ContractsService {
           ...(kind && carpeta ? { document_label: docKindLabel(kind, n) } : {}),
           start_date: startDate,
           end_date: endDate,
-          status: statusOnSave(endDate, dto.status ?? null),
+          status,
+          // J2: el que se da de alta ya vencido es histórico (sin avisos)
+          vencido_historico:
+            status === 'vencido' ? (dto.vencido_historico ?? true) : false,
           created_by: userId,
         },
         include: CONTRACT_INCLUDE,
@@ -473,6 +494,8 @@ export class ContractsService {
       status: statusInput,
       ...rest
     } = dto;
+    // J2: el histórico se decide abajo según el estatus
+    delete rest.vencido_historico;
     // undefined = no se toca; null/"" = se borra (I6: sin fecha)
     const startDate =
       startInput === undefined ? existing.start_date : toDate(startInput);
@@ -527,6 +550,13 @@ export class ContractsService {
     // Estatus por fecha de fin (renovado/cancelado se respetan)
     if (endInput !== undefined || statusInput !== undefined) {
       data.status = statusOnSave(endDate, statusInput ?? existing.status);
+    }
+    // J2: el histórico solo cuenta mientras esté vencido
+    const statusAfter = (data.status as string | undefined) ?? existing.status;
+    if (statusAfter !== 'vencido') {
+      if (existing.vencido_historico) data.vencido_historico = false;
+    } else if (dto.vencido_historico !== undefined) {
+      data.vencido_historico = dto.vencido_historico;
     }
 
     const updated = await this.prisma.contracts.update({

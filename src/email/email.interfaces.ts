@@ -58,8 +58,18 @@ export type EmailTemplateType =
   | 'enrollment_notification' // Notificación de inscripción
   | 'course_starting_soon' // Curso por iniciar
   | 'course_completed' // Curso completado
-  | 'contract_expiring' // Contrato por vencer (§15: 30/7 días)
-  | 'contract_expired'; // Contrato vencido (§15: día 0)
+  | 'contract_digest'; // J2: resumen diario de contratos por persona
+
+/** J2: un contrato dentro del resumen diario. */
+export interface ContractDigestItem {
+  contractNumber: string;
+  supplierName: string;
+  serviceDescription: string;
+  /** YYYY-MM-DD */
+  endDate: string;
+  /** Días a la fecha de fin (0 o negativo = ya venció). */
+  daysLeft: number;
+}
 
 export interface EmailTemplateData {
   recipientName: string;
