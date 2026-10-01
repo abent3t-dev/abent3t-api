@@ -79,6 +79,16 @@ export function maximoPrWithoutPo(alias: string): Prisma.Sql {
     AND ${a}.prnum NOT IN (${MAXIMO_PRS_WITH_PO}))`;
 }
 
+/**
+ * I8 (go-live 2026-09-30): PR DE CONTRATO sin OC vigente. No son carga de
+ * Compras: la OC se genera en automático (Ingrid); se muestran aparte.
+ */
+export function maximoContractPrWithoutPo(alias: string): Prisma.Sql {
+  const a = Prisma.raw(alias);
+  return Prisma.sql`(${a}.prnum IS NOT NULL AND ${a}.has_contract = true
+    AND ${a}.prnum NOT IN (${MAXIMO_PRS_WITH_PO}))`;
+}
+
 /** Ventana de folios [lower, upper) de las PR de Maximo creadas en un periodo. */
 export interface MaximoPrFolioWindow {
   lower: bigint | null;

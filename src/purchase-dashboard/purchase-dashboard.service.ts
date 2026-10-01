@@ -313,6 +313,9 @@ export class PurchaseDashboardService {
         // null = sin fechas de PR conocidas para ubicar el periodo
         pendientes: pending.maximo.pendientes,
         pendientes_sin_limite: pending.maximo.sin_limite,
+        // I8: PR de contrato sin OC, aparte (la OC se genera en automático)
+        de_contrato: pending.maximo.de_contrato,
+        de_contrato_sin_limite: pending.maximo.de_contrato_sin_limite,
       },
       abent: src(abentRq),
     };

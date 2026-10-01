@@ -114,6 +114,8 @@ export interface MaximoContractView extends SupplierFields {
   balance_value: number | null;
   purchview_count: number;
   has_contract: boolean;
+  /** I8: alguna OC vigente (no cancelada) usa esta PR. */
+  has_po: boolean;
   last_changed_at: Date | null;
   last_seen_at: Date;
   raw?: unknown;

@@ -4,6 +4,7 @@ import {
   andMaximoPrInWindow,
   CURRENT_MAXIMO_CONTRACTS,
   loadMaximoPrFolioWindow,
+  maximoContractPrWithoutPo,
   maximoPrWithoutPo,
 } from '../common/sql/erp-views.sql';
 
@@ -22,11 +23,21 @@ import {
  * Periodo: el año elegido o, sin año, los últimos 12 meses (las PR
  * históricas nunca cerradas inflarían el número). `sin_limite` = el conteo
  * sin periodo, para el tooltip.
+ *
+ * I8 (go-live 2026-09-30): las PR de contrato sin OC no cuentan (ya no
+ * contaban); se muestran aparte ("N de contrato"): la OC se genera en
+ * automático.
  */
 
 export interface PendingRequests {
   sap: { pendientes: number; sin_limite: number };
-  maximo: { pendientes: number | null; sin_limite: number };
+  maximo: {
+    pendientes: number | null;
+    sin_limite: number;
+    /** I8: PR de contrato sin OC del periodo (fuera de la carga de Compras). */
+    de_contrato: number | null;
+    de_contrato_sin_limite: number;
+  };
   /** Periodo aplicado (YYYY-MM-DD); `hasta` null = hasta hoy. */
   desde: string;
   hasta: string | null;
@@ -53,13 +64,19 @@ export async function loadPendingRequests(
           SELECT unnest(base_request_entries) FROM sap_purchase_orders
           WHERE cancelled IS DISTINCT FROM true)`),
     prisma.$queryRaw<
-      Array<{ pendientes: number; sin_limite: number }>
+      Array<{
+        pendientes: number;
+        sin_limite: number;
+        de_contrato: number;
+        de_contrato_sin_limite: number;
+      }>
     >(Prisma.sql`
       WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
-      SELECT count(*) FILTER (WHERE true ${andMaximoPrInWindow('c', window)})::int AS pendientes,
-             count(*)::int AS sin_limite
-      FROM current c
-      WHERE ${maximoPrWithoutPo('c')}`),
+      SELECT count(*) FILTER (WHERE ${maximoPrWithoutPo('c')} ${andMaximoPrInWindow('c', window)})::int AS pendientes,
+             count(*) FILTER (WHERE ${maximoPrWithoutPo('c')})::int AS sin_limite,
+             count(*) FILTER (WHERE ${maximoContractPrWithoutPo('c')} ${andMaximoPrInWindow('c', window)})::int AS de_contrato,
+             count(*) FILTER (WHERE ${maximoContractPrWithoutPo('c')})::int AS de_contrato_sin_limite
+      FROM current c`),
   ]);
   return {
     sap: {
@@ -71,6 +88,9 @@ export async function loadPendingRequests(
       pendientes:
         window.lower === null ? null : Number(maximo[0]?.pendientes ?? 0),
       sin_limite: Number(maximo[0]?.sin_limite ?? 0),
+      de_contrato:
+        window.lower === null ? null : Number(maximo[0]?.de_contrato ?? 0),
+      de_contrato_sin_limite: Number(maximo[0]?.de_contrato_sin_limite ?? 0),
     },
     desde: isoDay(from),
     hasta: toExcl ? isoDay(new Date(toExcl.getTime() - 1)) : null,

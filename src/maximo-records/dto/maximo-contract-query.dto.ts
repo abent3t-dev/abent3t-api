@@ -76,4 +76,12 @@ export class MaximoContractQueryDto extends ColumnFilterablePaginationDto {
   @IsOptional()
   @IsISO8601()
   pr_desde?: string;
+
+  /**
+   * I8 (2026-09-30): `true` = PR DE CONTRATO sin OC vigente (la OC se genera
+   * en automático): aparte de las pendientes de gestionar. Mismo periodo.
+   */
+  @IsOptional()
+  @IsIn(['true'])
+  contrato_sin_oc?: 'true';
 }

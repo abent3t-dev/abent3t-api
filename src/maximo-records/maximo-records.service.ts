@@ -7,6 +7,8 @@ import {
   andMaximoPrInWindow,
   andYear,
   loadMaximoPrFolioWindow,
+  MAXIMO_PRS_WITH_PO,
+  maximoContractPrWithoutPo,
   maximoPrWithoutPo,
 } from '../common/sql/erp-views.sql';
 import type { MaximoPrFolioWindow } from '../common/sql/erp-views.sql';
@@ -114,7 +116,8 @@ const CONTRACT_LIST_COLUMNS = Prisma.sql`
   start_date, end_date, vendor_id, vendor_name, requested_by, department,
   approved_at, approved_by, created_at_source, contract_ref_num, contract_value,
   pr_total, consumed_value,
-  purchview_count, has_contract, last_changed_at, last_seen_at`;
+  purchview_count, has_contract, last_changed_at, last_seen_at,
+  (prnum IS NOT NULL AND prnum IN (${MAXIMO_PRS_WITH_PO})) AS has_po`;
 
 /** Tope del export (B1). */
 const EXPORT_MAX_ROWS = 20_000;
@@ -461,7 +464,8 @@ export class MaximoRecordsService {
   private async prWindow(
     query: MaximoContractQueryDto,
   ): Promise<MaximoPrFolioWindow | null> {
-    if (query.sin_oc !== 'true') return null;
+    if (query.sin_oc !== 'true' && query.contrato_sin_oc !== 'true')
+      return null;
     if (query.year) {
       return loadMaximoPrFolioWindow(
         this.prisma,
@@ -488,9 +492,13 @@ export class MaximoRecordsService {
     // G3: PR pendientes de gestionar; el periodo va por folio
     if (query.sin_oc === 'true') {
       conditions.push(maximoPrWithoutPo('c'));
-      if (window) {
-        conditions.push(Prisma.sql`true ${andMaximoPrInWindow('c', window)}`);
-      }
+    }
+    // I8: las de contrato sin OC (la OC se genera en automático), aparte
+    if (query.contrato_sin_oc === 'true') {
+      conditions.push(maximoContractPrWithoutPo('c'));
+    }
+    if (window) {
+      conditions.push(Prisma.sql`true ${andMaximoPrInWindow('c', window)}`);
     }
     if (query.status && query.status.length > 0) {
       conditions.push(Prisma.sql`c.status IN (${Prisma.join(query.status)})`);
@@ -517,7 +525,7 @@ export class MaximoRecordsService {
     }
     // Con `sin_oc` el año ya va en la ventana de folios (las PR sin
     // contrato no tienen fecha en Maximo)
-    if (query.year && query.sin_oc !== 'true') {
+    if (query.year && !window) {
       conditions.push(
         Prisma.sql`true ${andYear('c.created_at_source', query.year)}`,
       );
@@ -588,7 +596,14 @@ export class MaximoRecordsService {
       (a, b) => (b.revisionnum ?? -1) - (a.revisionnum ?? -1),
     );
     const current = sorted[0];
-    const [view] = await this.enrichContracts([this.mapContractRow(current)]);
+    // I8: ¿alguna OC vigente usa la PR? (en el listado sale del SELECT)
+    const withPo = current.prnum
+      ? await this.prisma.$queryRaw<Array<{ has_po: boolean }>>(Prisma.sql`
+          SELECT ${current.prnum} IN (${MAXIMO_PRS_WITH_PO}) AS has_po`)
+      : null;
+    const [view] = await this.enrichContracts([
+      this.mapContractRow({ ...current, has_po: withPo?.[0]?.has_po === true }),
+    ]);
     return {
       current: {
         ...view,
@@ -842,6 +857,7 @@ export class MaximoRecordsService {
           ? null
           : Math.round((contractValue - consumed) * 100) / 100,
       purchview_count: row.purchview_count,
+      has_po: row.has_po === true,
       has_contract: row.has_contract,
       last_changed_at: row.last_changed_at,
       last_seen_at: row.last_seen_at,

@@ -42,7 +42,15 @@ describe('PurchaseDashboardService.getSummary', () => {
       // G3: SAP sin OC (12 meses / sin límite)
       .mockResolvedValueOnce([{ pendientes: 5, sin_limite: 9 }])
       // G3: Maximo PR sin OC ni contrato (12 meses / sin límite)
-      .mockResolvedValueOnce([{ pendientes: 2, sin_limite: 40 }])
+      // I8: PR de contrato sin OC, aparte
+      .mockResolvedValueOnce([
+        {
+          pendientes: 2,
+          sin_limite: 40,
+          de_contrato: 3,
+          de_contrato_sin_limite: 83,
+        },
+      ])
       // sapPr total
       .mockResolvedValueOnce([{ total: 309 }])
       // sapPo por moneda (la consulta ya excluye las migradas que existen en Maximo)
@@ -112,7 +120,13 @@ describe('PurchaseDashboardService.getSummary', () => {
       pendientes: 7,
       por_fuente: {
         sap: { total: 309, pendientes: 5, pendientes_sin_limite: 9 },
-        maximo: { total: 6, pendientes: 2, pendientes_sin_limite: 40 },
+        maximo: {
+          total: 6,
+          pendientes: 2,
+          pendientes_sin_limite: 40,
+          de_contrato: 3,
+          de_contrato_sin_limite: 83,
+        },
         abent: { total: 0, pendientes: 0 },
       },
       pendientes_periodo: {
