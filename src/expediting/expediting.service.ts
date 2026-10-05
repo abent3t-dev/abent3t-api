@@ -40,6 +40,7 @@ import {
 import { EXPEDITING_FILTER_COLUMNS } from './expediting.columns';
 import { maximoBuyer, NO_BUYER } from '../common/utils/buyer.util';
 import type { Buyer, BuyerKind } from '../common/utils/buyer.util';
+import { CURRENT_MAXIMO_POS } from '../common/sql/erp-views.sql';
 
 /**
  * Fase Expeditación — Seguimiento de entregas de purchase_orders PROPIAS
@@ -147,11 +148,6 @@ function closedInMaximo(item: {
       item.closed_by === 'cancelada_maximo')
   );
 }
-
-const CURRENT_MAXIMO_POS = Prisma.sql`
-  SELECT DISTINCT ON (ponum, coalesce(siteid, '')) *
-  FROM maximo_purchase_orders
-  ORDER BY ponum, coalesce(siteid, ''), coalesce(revisionnum, 0) DESC`;
 
 const PO_INCLUDE = {
   suppliers: { select: { id: true, legal_name: true, email: true } },

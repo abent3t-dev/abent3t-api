@@ -15,6 +15,18 @@ import {
  * de esta carpeta; no hay red ni base real: Prisma se simula en memoria con
  * el subconjunto de la API que usa el engine. (El archivo compila a dist sin
  * efecto: nada de producción lo importa.)
+ *
+ * Filtros `where` que entiende la tabla falsa: igualdad, `{ in: [...] }`,
+ * `{ lt }` sobre fechas (solo `updateMany`) y `{ campo: null }` = IS NULL.
+ * K8 (2026-10-05): IS NULL también acepta una fila que nunca escribió ese
+ * campo (aquí `undefined`), igual que Postgres, donde una columna omitida en
+ * el INSERT vale NULL; así `count({ where: { superseded_at: null } })` cuenta
+ * las filas que se crearon sin él. Es para TODAS las specs que usan
+ * `FakeTable`: un `where` con `siteid: null` también encuentra filas sin el
+ * campo. Ojo: en la base, una columna con DEFAULT no nulo (p. ej.
+ * `has_contract`) no sería NULL aunque se omita; la tabla falsa no conoce los
+ * DEFAULT, así que una prueba que filtre por null una columna así debe sembrar
+ * el valor explícito.
  */
 
 type Row = Record<string, unknown> & { id: string };
@@ -32,6 +44,9 @@ function matches(row: Row, where: Record<string, unknown>): boolean {
     ) {
       return ((cond as { in: unknown[] }).in ?? []).includes(row[key]);
     }
+    // K8: `{ campo: null }` es IS NULL; una columna que nunca se escribió
+    // vale NULL en Postgres (aquí, undefined), p. ej. superseded_at.
+    if (cond === null) return row[key] === null || row[key] === undefined;
     return row[key] === cond;
   });
 }
@@ -169,6 +184,7 @@ export class FakePrisma {
   maximo_purchase_orders = new FakeTable();
   maximo_contracts = new FakeTable();
   maximo_po_status_history = new FakeTable();
+  maximo_pr_status_history = new FakeTable();
 
   /**
    * Forma "batch" de Prisma: las operaciones ya se dispararon al construir

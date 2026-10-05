@@ -6,6 +6,8 @@ import { PaginatedResponse } from '../common/interfaces/paginated-response.inter
 import {
   andMaximoPrInWindow,
   andYear,
+  CURRENT_MAXIMO_CONTRACTS,
+  CURRENT_MAXIMO_POS,
   loadMaximoPrFolioWindow,
   MAXIMO_PRS_WITH_PO,
   maximoContractPrWithoutPo,
@@ -45,6 +47,7 @@ import {
   MaximoContractDetail,
   MaximoContractView,
   MaximoLastSyncRun,
+  MaximoPrStatusEntry,
   MaximoPurchaseOrderDetail,
   MaximoPurchaseOrderView,
   MaximoStatusCount,
@@ -65,6 +68,8 @@ import {
  * la revisión vigente ni paginar en SQL. Los ORDER BY de las CTEs calzan con
  * los índices únicos de clave natural de `0005_maximo_staging.sql`
  * (expresiones coalesce idénticas), así que no hizo falta índice nuevo.
+ * Bloque K (2026-10-05): las vistas se importan de common/sql/erp-views
+ * (una sola definición); la de contratos ya excluye las obsoletas (K8).
  *
  * Bloque 2026-09-23:
  *  - D4: `year` (created_at_source) en listados y resumen.
@@ -89,19 +94,6 @@ import {
  *    export lo usan; `proveedor` (llave) + `from`/`to` filtran desde el top
  *    de Reportes. Los contratos aplican el cruce por código.
  */
-
-/** Vista actual de POs: mayor revisionnum por (ponum, siteid). */
-const CURRENT_POS = Prisma.sql`
-  SELECT DISTINCT ON (ponum, coalesce(siteid, '')) *
-  FROM maximo_purchase_orders
-  ORDER BY ponum, coalesce(siteid, ''), coalesce(revisionnum, 0) DESC`;
-
-/** Vista actual de contratos: mayor revisionnum por (prnum, contractnum). */
-const CURRENT_CONTRACTS = Prisma.sql`
-  SELECT DISTINCT ON (coalesce(prnum, ''), coalesce(contractnum, '')) *
-  FROM maximo_contracts
-  ORDER BY coalesce(prnum, ''), coalesce(contractnum, ''),
-    coalesce(revisionnum, 0) DESC`;
 
 /** Columnas del listado de POs (excluye `raw`: solo viaja en el detalle). */
 const PO_LIST_COLUMNS = Prisma.sql`
@@ -272,14 +264,14 @@ export class MaximoRecordsService {
 
     const [rows, counts] = await Promise.all([
       this.prisma.$queryRaw<PoSqlRow[]>(Prisma.sql`
-        WITH current AS (${CURRENT_POS})
+        WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT ${PO_LIST_COLUMNS}
         FROM current c
         ${where}
         ORDER BY c.approved_at DESC NULLS LAST, c.ponum ASC
         LIMIT ${limit} OFFSET ${(page - 1) * limit}`),
       this.prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
-        WITH current AS (${CURRENT_POS})
+        WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT count(*)::int AS count FROM current c ${where}`),
     ]);
 
@@ -313,7 +305,7 @@ export class MaximoRecordsService {
   ): Promise<{ rows: MaximoPurchaseOrderView[]; truncated: boolean }> {
     const where = this.poWhere(query);
     const rows = await this.prisma.$queryRaw<PoSqlRow[]>(Prisma.sql`
-        WITH current AS (${CURRENT_POS})
+        WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT ${PO_LIST_COLUMNS}
         FROM current c
         ${where}
@@ -405,7 +397,7 @@ export class MaximoRecordsService {
   ): Promise<{ rows: MaximoContractView[]; truncated: boolean }> {
     const where = this.contractWhere(query, await this.prWindow(query));
     const rows = await this.prisma.$queryRaw<ContractSqlRow[]>(Prisma.sql`
-        WITH current AS (${CURRENT_CONTRACTS})
+        WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
         SELECT ${CONTRACT_LIST_COLUMNS}
         FROM current c
         ${where}
@@ -553,7 +545,7 @@ export class MaximoRecordsService {
 
     const [rows, counts] = await Promise.all([
       this.prisma.$queryRaw<ContractSqlRow[]>(Prisma.sql`
-        WITH current AS (${CURRENT_CONTRACTS})
+        WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
         SELECT ${CONTRACT_LIST_COLUMNS}
         FROM current c
         ${where}
@@ -561,7 +553,7 @@ export class MaximoRecordsService {
           coalesce(c.prnum, '') ASC, coalesce(c.contractnum, '') ASC
         LIMIT ${limit} OFFSET ${(page - 1) * limit}`),
       this.prisma.$queryRaw<Array<{ count: number }>>(Prisma.sql`
-        WITH current AS (${CURRENT_CONTRACTS})
+        WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
         SELECT count(*)::int AS count FROM current c ${where}`),
     ]);
 
@@ -577,6 +569,12 @@ export class MaximoRecordsService {
    * Detalle por clave: `key` es el prnum, o el contractnum para las filas de
    * contrato directo que no traen PR (existen en Maximo real y en el seed) —
    * la ruta del doc era `/:prnum`, pero con prnum null serían inalcanzables.
+   *
+   * K3/K8 (2026-10-05): como las vistas, ignora las revisiones obsoletas
+   * (`superseded_at`): `current` es la revisión más alta vigente y la lista
+   * de revisiones solo trae las vigentes. Líneas e historial del contrato
+   * salen del raw canonizado (el de prod es anidado); el historial de la PR,
+   * de `maximo_pr_status_history`, con el nombre por alias (D6).
    */
   async getContract(
     key: string,
@@ -587,20 +585,24 @@ export class MaximoRecordsService {
         OR: [{ prnum: key }, { AND: [{ prnum: null }, { contractnum: key }] }],
       },
     });
-    if (rows.length === 0) {
+    const vigentes = rows.filter((row) => !row.superseded_at);
+    if (vigentes.length === 0) {
       throw new NotFoundException(
         `Contrato/PR ${key} no existe en staging Maximo`,
       );
     }
-    const sorted = [...rows].sort(
+    const sorted = [...vigentes].sort(
       (a, b) => (b.revisionnum ?? -1) - (a.revisionnum ?? -1),
     );
     const current = sorted[0];
-    // I8: ¿alguna OC vigente usa la PR? (en el listado sale del SELECT)
-    const withPo = current.prnum
-      ? await this.prisma.$queryRaw<Array<{ has_po: boolean }>>(Prisma.sql`
-          SELECT ${current.prnum} IN (${MAXIMO_PRS_WITH_PO}) AS has_po`)
-      : null;
+    const [withPo, prStatusHistory] = await Promise.all([
+      // I8: ¿alguna OC vigente usa la PR? (en el listado sale del SELECT)
+      current.prnum
+        ? this.prisma.$queryRaw<Array<{ has_po: boolean }>>(Prisma.sql`
+            SELECT ${current.prnum} IN (${MAXIMO_PRS_WITH_PO}) AS has_po`)
+        : null,
+      this.prStatusHistory(current.prnum),
+    ]);
     const [view] = await this.enrichContracts([
       this.mapContractRow({ ...current, has_po: withPo?.[0]?.has_po === true }),
     ]);
@@ -629,7 +631,35 @@ export class MaximoRecordsService {
         current.contractnum,
         current.revisionnum,
       ),
+      prStatusHistory,
     };
+  }
+
+  /**
+   * K3: historial PRSTATUS de la PR, una vez por PR (lo escriben staging y
+   * remap), en el orden de `seq` (CHANGEDATE, desempate PRSTATUSID). Sin
+   * prnum (contrato directo) no hay PR: lista vacía.
+   */
+  private async prStatusHistory(
+    prnum: string | null,
+  ): Promise<MaximoPrStatusEntry[]> {
+    if (!prnum) return [];
+    const rows = await this.prisma.maximo_pr_status_history.findMany({
+      where: { prnum },
+      orderBy: { seq: 'asc' },
+      select: { status: true, change_date: true, changed_by: true, memo: true },
+    });
+    const names = await this.aliases.resolveMany(
+      'maximo',
+      rows.map((r) => r.changed_by),
+    );
+    return rows.map((r) => ({
+      status: r.status,
+      changedAt: r.change_date,
+      changedBy: r.changed_by,
+      changedByName: r.changed_by ? (names.get(r.changed_by) ?? null) : null,
+      memo: r.memo,
+    }));
   }
 
   // ── Summary ─────────────────────────────────────────────────────────────
@@ -639,14 +669,14 @@ export class MaximoRecordsService {
     const [poByStatus, contractGroups, lastPoRun, lastContractRun] =
       await Promise.all([
         this.prisma.$queryRaw<MaximoStatusCount[]>(Prisma.sql`
-          WITH current AS (${CURRENT_POS})
+          WITH current AS (${CURRENT_MAXIMO_POS})
           SELECT status, count(*)::int AS count FROM current
           WHERE true ${inYear}
           GROUP BY status ORDER BY count DESC`),
         this.prisma.$queryRaw<
           Array<{ status: string | null; has_contract: boolean; count: number }>
         >(Prisma.sql`
-          WITH current AS (${CURRENT_CONTRACTS})
+          WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
           SELECT status, has_contract, count(*)::int AS count FROM current
           WHERE true ${inYear}
           GROUP BY status, has_contract ORDER BY count DESC`),
@@ -706,6 +736,7 @@ export class MaximoRecordsService {
         finished_at: true,
         records_inserted: true,
         records_updated: true,
+        records_remapped: true,
         records_unchanged: true,
         records_failed: true,
       },

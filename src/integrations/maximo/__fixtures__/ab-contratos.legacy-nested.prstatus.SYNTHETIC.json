@@ -1,0 +1,877 @@
+{
+  "QueryAB_CONTRATOSResponse": {
+    "rsStart": 0,
+    "rsCount": 7,
+    "AB_CONTRATOSSet": {
+      "PR": [
+        {
+          "rowstamp": "990100001",
+          "Attributes": {
+            "ISSUEDATE": {
+              "content": "2026-09-02T16:20:05+00:00"
+            },
+            "PRNUM": {
+              "content": "PR990001"
+            },
+            "REQUESTEDBY": {
+              "content": "USR021"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "STATUSDATE": {
+              "content": "2026-09-09T17:20:00+00:00"
+            },
+            "TOTALCOST": {
+              "content": 1500.05
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "990109021",
+                "Attributes": {
+                  "DEPARTMENT": {
+                    "content": "Mantenimiento"
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 21"
+                  },
+                  "PERSONID": {
+                    "content": "USR021"
+                  }
+                }
+              }
+            ],
+            "PRSTATUS": [
+              {
+                "rowstamp": "990100013",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR024"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-09T17:20:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990013,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100012",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR023"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-02T16:20:05+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990012,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100011",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR021"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-02T16:20:05+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990011,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990100002",
+          "Attributes": {
+            "ISSUEDATE": {
+              "content": "2026-09-14T15:00:00+00:00"
+            },
+            "PRNUM": {
+              "content": "PR990002"
+            },
+            "REQUESTEDBY": {
+              "content": "USR025"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "APPR"
+            },
+            "STATUSDATE": {
+              "content": "2026-09-18T13:15:00+00:00"
+            },
+            "TOTALCOST": {
+              "content": 3200.0
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "990109025",
+                "Attributes": {
+                  "DEPARTMENT": {
+                    "content": "Producción"
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 25"
+                  },
+                  "PERSONID": {
+                    "content": "USR025"
+                  }
+                }
+              }
+            ],
+            "PRSTATUS": [
+              {
+                "rowstamp": "990100024",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR026"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-18T13:15:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990024,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100021",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR025"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-14T15:00:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990021,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100022",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR023"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-15T09:00:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990022,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100023",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR023"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-16T11:45:00+00:00"
+                  },
+                  "MEMO": {
+                    "content": "Comentario de prueba: regresa a aprobación"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990023,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990100003",
+          "Attributes": {
+            "ISSUEDATE": {
+              "content": "2026-08-20T13:00:00+00:00"
+            },
+            "PRNUM": {
+              "content": "PR990003"
+            },
+            "REQUESTEDBY": {
+              "content": "USR027"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CAN"
+            },
+            "STATUSDATE": {
+              "content": "2026-08-28T16:40:00+00:00"
+            },
+            "TOTALCOST": {
+              "content": 880.0
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "990109027",
+                "Attributes": {
+                  "DEPARTMENT": {
+                    "content": "Calidad"
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 27"
+                  },
+                  "PERSONID": {
+                    "content": "USR027"
+                  }
+                }
+              }
+            ],
+            "PRSTATUS": [
+              {
+                "rowstamp": "990100033",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR024"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-08-28T16:40:00+00:00"
+                  },
+                  "MEMO": {
+                    "content": "Comentario de prueba: cancelada por duplicado"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990033,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "CAN"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100031",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR027"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-08-20T13:00:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990031,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100032",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR023"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-08-21T09:10:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990032,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990100004",
+          "Attributes": {
+            "ISSUEDATE": {
+              "content": "2026-07-10T12:00:00+00:00"
+            },
+            "PRNUM": {
+              "content": "PR990004"
+            },
+            "REQUESTEDBY": {
+              "content": "USR028"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CAN"
+            },
+            "STATUSDATE": {
+              "content": "2026-07-15T10:00:00+00:00"
+            },
+            "TOTALCOST": {
+              "content": 410.0
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "990109028",
+                "Attributes": {
+                  "DEPARTMENT": {
+                    "content": "Almacén"
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 28"
+                  },
+                  "PERSONID": {
+                    "content": "USR028"
+                  }
+                }
+              }
+            ],
+            "PRSTATUS": [
+              {
+                "rowstamp": "990100041",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR028"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-07-10T12:00:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990041,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990100005",
+          "Attributes": {
+            "ISSUEDATE": {
+              "content": "2026-09-29T15:30:00+00:00"
+            },
+            "PRNUM": {
+              "content": "PR990005"
+            },
+            "REQUESTEDBY": {
+              "content": "USR029"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "WAPPR"
+            },
+            "STATUSDATE": {
+              "content": "2026-09-29T15:30:00+00:00"
+            },
+            "TOTALCOST": {
+              "content": 12500.0
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "990109029",
+                "Attributes": {
+                  "DEPARTMENT": {
+                    "content": "Seguridad"
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 29"
+                  },
+                  "PERSONID": {
+                    "content": "USR029"
+                  }
+                }
+              }
+            ],
+            "PRSTATUS": [
+              {
+                "rowstamp": "990100051",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR029"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-29T15:30:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990051,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990100006",
+          "Attributes": {
+            "ISSUEDATE": {
+              "content": "2026-06-10T14:00:00+00:00"
+            },
+            "PRNUM": {
+              "content": "PR990006"
+            },
+            "REQUESTEDBY": {
+              "content": "USR030"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "STATUSDATE": {
+              "content": "2026-06-15T12:00:00+00:00"
+            },
+            "TOTALCOST": {
+              "content": 96000.0
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "990109030",
+                "Attributes": {
+                  "DEPARTMENT": {
+                    "content": "Mantenimiento"
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 30"
+                  },
+                  "PERSONID": {
+                    "content": "USR030"
+                  }
+                }
+              }
+            ],
+            "PRSTATUS": [
+              {
+                "rowstamp": "990100062",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR023"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-06-11T09:00:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990062,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100063",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR024"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-06-15T12:00:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990063,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100061",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR030"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-06-10T14:00:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990061,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ],
+            "PURCHVIEW": [
+              {
+                "rowstamp": "990160000",
+                "Attributes": {
+                  "CONTRACTNUM": {
+                    "content": "9906"
+                  },
+                  "CURRENCYCODE": {
+                    "content": "MXN"
+                  },
+                  "ENDDATE": {
+                    "content": "2026-12-31T00:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "REVISIONNUM": {
+                    "content": 0
+                  },
+                  "STARTDATE": {
+                    "content": "2026-07-01T00:00:00+00:00"
+                  },
+                  "TOTALCOST": {
+                    "content": 96000.0
+                  }
+                },
+                "RelatedMbos": {
+                  "COMPANIES": [
+                    {
+                      "rowstamp": "990169001",
+                      "Attributes": {
+                        "COMPANY": {
+                          "content": "0009990006"
+                        },
+                        "NAME": {
+                          "content": "Proveedor Demo Contrato SA de CV"
+                        },
+                        "ORGID": {
+                          "content": "N28"
+                        }
+                      }
+                    }
+                  ],
+                  "CONTRACTSTATUS": [
+                    {
+                      "rowstamp": "990160601",
+                      "Attributes": {
+                        "CHANGEDATE": {
+                          "content": "2026-06-15T12:00:00+00:00"
+                        },
+                        "CONTRACTSTATUSID": {
+                          "content": 990601,
+                          "resourceid": true
+                        },
+                        "STATUS": {
+                          "content": "DRAFT"
+                        }
+                      }
+                    },
+                    {
+                      "rowstamp": "990160602",
+                      "Attributes": {
+                        "CHANGEDATE": {
+                          "content": "2026-06-16T10:00:00+00:00"
+                        },
+                        "CONTRACTSTATUSID": {
+                          "content": 990602,
+                          "resourceid": true
+                        },
+                        "STATUS": {
+                          "content": "APPR"
+                        }
+                      }
+                    },
+                    {
+                      "rowstamp": "990160604",
+                      "Attributes": {
+                        "CHANGEDATE": {
+                          "content": "2026-08-01T09:00:00+00:00"
+                        },
+                        "CONTRACTSTATUSID": {
+                          "content": 990604,
+                          "resourceid": true
+                        },
+                        "STATUS": {
+                          "content": "REVISD"
+                        }
+                      }
+                    }
+                  ],
+                  "CONTRACTLINE": [
+                    {
+                      "rowstamp": "990160701",
+                      "Attributes": {
+                        "CONTRACTLINENUM": {
+                          "content": 1
+                        },
+                        "DESCRIPTION": {
+                          "content": "Servicio demo de suministro mensual"
+                        },
+                        "ITEMNUM": {
+                          "content": "9990001"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "rowstamp": "990160001",
+                "Attributes": {
+                  "CONTRACTNUM": {
+                    "content": "9906"
+                  },
+                  "CURRENCYCODE": {
+                    "content": "MXN"
+                  },
+                  "ENDDATE": {
+                    "content": "2026-12-31T00:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "REVISIONNUM": {
+                    "content": 1
+                  },
+                  "STARTDATE": {
+                    "content": "2026-07-01T00:00:00+00:00"
+                  },
+                  "TOTALCOST": {
+                    "content": 104000.0
+                  }
+                },
+                "RelatedMbos": {
+                  "COMPANIES": [
+                    {
+                      "rowstamp": "990169001",
+                      "Attributes": {
+                        "COMPANY": {
+                          "content": "0009990006"
+                        },
+                        "NAME": {
+                          "content": "Proveedor Demo Contrato SA de CV"
+                        },
+                        "ORGID": {
+                          "content": "N28"
+                        }
+                      }
+                    }
+                  ],
+                  "CONTRACTSTATUS": [
+                    {
+                      "rowstamp": "990160605",
+                      "Attributes": {
+                        "CHANGEDATE": {
+                          "content": "2026-08-02T11:00:00+00:00"
+                        },
+                        "CONTRACTSTATUSID": {
+                          "content": 990605,
+                          "resourceid": true
+                        },
+                        "STATUS": {
+                          "content": "APPR"
+                        }
+                      }
+                    },
+                    {
+                      "rowstamp": "990160603",
+                      "Attributes": {
+                        "CHANGEDATE": {
+                          "content": "2026-08-01T09:00:00+00:00"
+                        },
+                        "CONTRACTSTATUSID": {
+                          "content": 990603,
+                          "resourceid": true
+                        },
+                        "STATUS": {
+                          "content": "PNDREV"
+                        }
+                      }
+                    }
+                  ],
+                  "CONTRACTLINE": [
+                    {
+                      "rowstamp": "990160701",
+                      "Attributes": {
+                        "CONTRACTLINENUM": {
+                          "content": 1
+                        },
+                        "DESCRIPTION": {
+                          "content": "Servicio demo de suministro mensual"
+                        },
+                        "ITEMNUM": {
+                          "content": "9990001"
+                        }
+                      }
+                    },
+                    {
+                      "rowstamp": "990160702",
+                      "Attributes": {
+                        "CONTRACTLINENUM": {
+                          "content": 2
+                        },
+                        "DESCRIPTION": {
+                          "content": "Servicio demo adicional"
+                        },
+                        "ITEMNUM": {
+                          "content": "9990002"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990100007",
+          "Attributes": {
+            "ISSUEDATE": {
+              "content": "2026-09-03T14:00:00+00:00"
+            },
+            "PRNUM": {
+              "content": "PR990007"
+            },
+            "REQUESTEDBY": {
+              "content": "USR022"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "STATUSDATE": {
+              "content": "2026-09-09T17:21:30+00:00"
+            },
+            "TOTALCOST": {
+              "content": 254.95
+            }
+          },
+          "RelatedMbos": {
+            "PERSON": [
+              {
+                "rowstamp": "990109022",
+                "Attributes": {
+                  "DEPARTMENT": {
+                    "content": "Producción"
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 22"
+                  },
+                  "PERSONID": {
+                    "content": "USR022"
+                  }
+                }
+              }
+            ],
+            "PRSTATUS": [
+              {
+                "rowstamp": "990100072",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR023"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-04T10:30:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990072,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100073",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR024"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-09T17:21:30+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990073,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990100071",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR022"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-03T14:00:00+00:00"
+                  },
+                  "PRSTATUSID": {
+                    "content": 990071,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -10,6 +10,7 @@
  *   Tipo de compra       = PO.AB_TIPOCOMP   · Ahorro = PO.AB_AHORRO
  *   Solicitante / PR     = POLINE→PRLINE→PR (REQUESTEDBY, ISSUEDATE, STATUSDATE)
  *   Proveedor            = COMPANIES.NAME   · Comprador = PERSON.DISPLAYNAME
+ *   Integración con SAP  = PO.PO5 (literal) · Subtotal sin IVA = Σ POLINE.LINECOST
  *
  * Todo campo que Maximo pueda omitir es `null` explícito (nunca `undefined`).
  */
@@ -60,6 +61,11 @@ export interface MaximoPurchaseOrderLineDto {
   receiptsComplete: boolean | null;
   /** I1b: POLINE.RECEIVEDQTY. */
   receivedQty: number | null;
+  /**
+   * K6 (2026-10-05): POLINE.LINECOST, importe de la línea antes de impuestos
+   * en la moneda de la OC (pendiente que CIISA lo confirme). null = no viene.
+   */
+  lineCost: number | null;
 }
 
 export interface MaximoPurchaseOrderDto {
@@ -94,10 +100,25 @@ export interface MaximoPurchaseOrderDto {
 
   vendorDeliveryDate: string | null;
   currencyCode: string | null;
-  /** PO.PRETAXTOTAL → valor sin IVA. */
+  /**
+   * PO.PRETAXTOTAL tal como llega. Isaac (CIISA): no es persistente, así que
+   * no se guarda ni se usa como monto sin IVA; ese es `subtotal` (K6).
+   */
   pretaxTotal: number | null;
   /** PO.TOTALCOST → valor con IVA. */
   totalCost: number | null;
+  /**
+   * K6 (2026-10-05): sin IVA = suma de POLINE.LINECOST redondeada a 2
+   * decimales, en la moneda de la OC. null si no hay líneas o a alguna le
+   * falta LINECOST; nunca se estima con PRETAXTOTAL ni con TOTALCOST/1.16.
+   */
+  subtotal: number | null;
+  /**
+   * K2 (2026-10-05): estado de integración con SAP = PO.PO5 literal, recortado
+   * y en mayúsculas (PROCESADO, ACTUALIZAR, ERROR, AGREGAR…), sin interpretar.
+   * null = sin dato.
+   */
+  integrationStatus: string | null;
 
   abAhorro: number | null;
   abTipoComp: string | null;
@@ -113,7 +134,10 @@ export interface MaximoPurchaseOrderDto {
   buyer: MaximoPersonDto | null;
   vendor: MaximoVendorDto | null;
 
-  /** Derivados de la primera línea con PR (conveniencia para reportes). */
+  /**
+   * Derivados de la primera línea con PR por POLINENUM (conveniencia para
+   * reportes; K3: las líneas se ordenan antes de derivarlos).
+   */
   prnum: string | null;
   requestedBy: string | null;
   /**
@@ -126,10 +150,12 @@ export interface MaximoPurchaseOrderDto {
   prNums: string[];
   /**
    * I1b (2026-09-30): recepción de la OC — RECEIPTS (NONE / PARTIAL /
-   * COMPLETE) o derivada de las líneas. null = AB_COMPRAS no la trae (hoy).
+   * COMPLETE) o derivada de las líneas. null = sin dato en la cabecera ni en
+   * las líneas.
    */
   receiptStatus: string | null;
 
+  /** Líneas ordenadas por POLINENUM ascendente (sin número al final). */
   lines: MaximoPurchaseOrderLineDto[];
   rowstamp: string | null;
 }

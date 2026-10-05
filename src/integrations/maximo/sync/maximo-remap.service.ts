@@ -8,7 +8,12 @@ import {
   toPurchaseOrder,
 } from '../maximo.mapper';
 import { MaximoSyncTarget } from './maximo-sync.types';
-import { poRequestColumns, replacePoStatusHistory } from './maximo-po-history';
+import { poMappedColumns, replacePoStatusHistory } from './maximo-po-history';
+import {
+  contractMappedColumns,
+  replacePrStatusHistory,
+} from './maximo-pr-history';
+import { maximoRawHash } from './maximo-staging.service';
 
 export interface MaximoRemapResult {
   target: MaximoSyncTarget;
@@ -22,16 +27,37 @@ export interface MaximoRemapResult {
 const BATCH_SIZE = 200;
 const MAX_ERRORS = 20;
 
+/** K8: lo que hace falta para elegir la fila vigente de cada PR. */
+interface ContractCandidate {
+  id: string;
+  prnum: string | null;
+  has_contract: boolean;
+  revisionnum: number | null;
+  last_seen_at: Date | null;
+  superseded_at: Date | null;
+}
+
 /**
  * Re-mapeo sin red (Fase INT-3): re-ejecuta el mapper de Int-2 sobre el `raw`
  * JSONB de cada fila de staging y actualiza las columnas mapeadas +
- * `mapper_version`. Es el retorno de inversión del `raw`: cuando Isaac
- * confirme equivalencias (§20.A.2/7), basta cambiar el mapper y correr
- * `npm run maximo:remap` — sin re-descargar nada de Maximo.
+ * `mapper_version`. Es el retorno de inversión del `raw`: basta cambiar el
+ * mapper y correr `npm run maximo:remap`, sin re-descargar nada de Maximo.
  *
  * NO depende de `MaximoClient`: cero llamadas de red por construcción.
- * No toca `raw`, `first_seen_at`, `last_seen_at` ni `last_sync_run_id`.
  * G6 (2026-09-28): también reescribe el historial POSTATUS de cada OC.
+ *
+ * K8 (2026-10-05): queda para dev y emergencias; en un deploy el primer full
+ * del sync re-mapea como 'remapped' sin pasos manuales.
+ *   - Usa las mismas funciones de columnas que staging (`poMappedColumns`,
+ *     `contractMappedColumns`) y recalcula `raw_hash` con el hash estable.
+ *   - No toca `raw`, `first_seen_at`, `last_seen_at`, `last_changed_at`,
+ *     `last_sync_run_id` ni `superseded_at` (ese solo lo escribe el sync).
+ *   - Escribe el historial PRSTATUS de cada PR SOLO desde su fila vigente
+ *     (mismo orden que `CURRENT_MAXIMO_PRS`: no obsoleta, con contrato, la
+ *     revisión más alta y la más reciente), no desde la última que recorre:
+ *     el recorrido va por `id`, un uuid al azar.
+ *   - No correrlo con una corrida del sync en curso: el delete + createMany
+ *     del historial concurrente choca con el UNIQUE (prnum, seq).
  */
 @Injectable()
 export class MaximoRemapService {
@@ -79,34 +105,15 @@ export class MaximoRemapService {
         result.scanned += 1;
         try {
           const dto = toPurchaseOrder(row.raw);
-          const update = this.prisma.maximo_purchase_orders.update({
-            where: { id: row.id },
-            data: {
-              status: dto.status,
-              description: dto.description,
-              vendor_id: dto.vendor?.company ?? null,
-              vendor_name: dto.vendor?.name ?? null,
-              total_cost: dto.totalCost,
-              currency: dto.currencyCode,
-              ab_ahorro: dto.abAhorro,
-              ab_tipocomp: dto.abTipoComp,
-              ab_clasfpo: dto.abClasfPo,
-              requested_by: dto.requestedBy,
-              department: dto.area,
-              purchase_agent: dto.purchaseAgent,
-              purchase_agent_name: dto.purchaseAgentName,
-              created_by: dto.createdBy,
-              approved_at: toDate(dto.approvedDate),
-              approved_by: dto.approvedBy,
-              waiting_approval_at: toDate(dto.waitingApprovalDate),
-              created_at_source: toDate(dto.orderDate),
-              ...poRequestColumns(dto),
-              rowstamp: dto.rowstamp,
-              mapper_version: MAXIMO_MAPPER_VERSION,
-            },
-          });
           await this.prisma.$transaction([
-            update,
+            this.prisma.maximo_purchase_orders.update({
+              where: { id: row.id },
+              data: {
+                ...poMappedColumns(dto),
+                raw_hash: maximoRawHash(row.raw),
+                mapper_version: MAXIMO_MAPPER_VERSION,
+              },
+            }),
             ...replacePoStatusHistory(this.prisma, row.id, dto),
           ]);
           result.remapped += 1;
@@ -118,6 +125,7 @@ export class MaximoRemapService {
   }
 
   private async remapContracts(result: MaximoRemapResult): Promise<void> {
+    const currentByPr = await this.currentRowByPr();
     let cursor: string | null = null;
     for (;;) {
       const rows: Array<{
@@ -146,55 +154,69 @@ export class MaximoRemapService {
         try {
           // El raw guarda el registro PR completo (todas las revisiones, T3):
           // se re-mapea todo y se elige el DTO cuya clave natural coincide
-          // con la fila.
+          // con la fila (con la misma normalización '' → null de staging).
           const dtos = toContracts(row.raw);
           const dto =
             dtos.length === 1
               ? dtos[0]
               : (dtos.find(
                   (d) =>
-                    d.contractNum === row.contractnum &&
+                    emptyToNull(d.contractNum) === row.contractnum &&
                     d.revisionNum === row.revisionnum &&
-                    d.prnum === row.prnum,
+                    emptyToNull(d.prnum) === row.prnum,
                 ) ?? null);
           if (!dto) {
             throw new Error(
               `el raw ya no contiene la revisión (contractnum=${row.contractnum ?? '-'}, revisionnum=${row.revisionnum ?? '-'})`,
             );
           }
-          await this.prisma.maximo_contracts.update({
-            where: { id: row.id },
-            data: {
-              status: dto.status,
-              maxvol: dto.maxVol,
-              total_cost: dto.totalCost,
-              currency: dto.currencyCode,
-              start_date: toDate(dto.startDate),
-              end_date: toDate(dto.endDate),
-              vendor_id: dto.vendor?.company ?? null,
-              vendor_name: dto.vendor?.name ?? null,
-              requested_by: dto.requestedBy,
-              department: dto.area,
-              approved_at: toDate(dto.approvedDate),
-              approved_by: dto.approvedBy,
-              created_at_source: toDate(dto.createdDate),
-              contract_ref_num: dto.contractRefNum,
-              contract_value: dto.contractValue,
-              pr_total: dto.prTotal,
-              consumed_value: dto.consumedValue,
-              purchview_count: dto.purchviewCount,
-              has_contract: dto.hasContract,
-              pr_rowstamp: dto.rowstamp,
-              contract_rowstamp: dto.contractRowstamp,
-              mapper_version: MAXIMO_MAPPER_VERSION,
-            },
-          });
+          const isCurrent =
+            row.prnum !== null && currentByPr.get(row.prnum) === row.id;
+          await this.prisma.$transaction([
+            this.prisma.maximo_contracts.update({
+              where: { id: row.id },
+              data: {
+                ...contractMappedColumns(dto),
+                raw_hash: maximoRawHash(row.raw),
+                mapper_version: MAXIMO_MAPPER_VERSION,
+              },
+            }),
+            // K8: historial de la PR solo desde su fila vigente
+            ...(isCurrent ? replacePrStatusHistory(this.prisma, dto) : []),
+          ]);
           result.remapped += 1;
         } catch (error: unknown) {
           this.recordFailure(result, row.id, error);
         }
       }
     }
+  }
+
+  /**
+   * K8: id de la fila vigente de cada PR, con el orden de `CURRENT_MAXIMO_PRS`
+   * entre las no obsoletas: `has_contract` desc, `revisionnum` desc (null =
+   * 0), `last_seen_at` desc. En JS y sin SQL crudo (precarga sin `raw`).
+   */
+  private async currentRowByPr(): Promise<Map<string, string>> {
+    const candidates: ContractCandidate[] =
+      await this.prisma.maximo_contracts.findMany({
+        select: {
+          id: true,
+          prnum: true,
+          has_contract: true,
+          revisionnum: true,
+          last_seen_at: true,
+          superseded_at: true,
+        },
+      });
+    const best = new Map<string, ContractCandidate>();
+    for (const row of candidates) {
+      // `== null`: en el testkit una fila sin el campo trae undefined
+      if (row.prnum === null || row.superseded_at != null) continue;
+      const current = best.get(row.prnum);
+      if (!current || ranksBefore(row, current)) best.set(row.prnum, row);
+    }
+    return new Map([...best].map(([prnum, row]) => [prnum, row.id]));
   }
 
   private recordFailure(
@@ -210,8 +232,19 @@ export class MaximoRemapService {
   }
 }
 
-function toDate(value: string | null): Date | null {
-  if (value === null) return null;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? null : new Date(parsed);
+/** true si `a` va antes que `b` en el orden de CURRENT_MAXIMO_PRS. */
+function ranksBefore(a: ContractCandidate, b: ContractCandidate): boolean {
+  if (a.has_contract !== b.has_contract) return a.has_contract;
+  const revA = a.revisionnum ?? 0;
+  const revB = b.revisionnum ?? 0;
+  if (revA !== revB) return revA > revB;
+  return timeOf(a.last_seen_at) > timeOf(b.last_seen_at);
+}
+
+function timeOf(value: Date | null): number {
+  return value ? value.getTime() : Number.NEGATIVE_INFINITY;
+}
+
+function emptyToNull(value: string | null): string | null {
+  return value === '' ? null : value;
 }

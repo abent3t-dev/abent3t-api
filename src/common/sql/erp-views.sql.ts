@@ -11,6 +11,11 @@ import { Prisma } from '@prisma/client';
  *    los totales combinados: se descuenta del lado de SAP (Maximo la tiene
  *    con su historial de aprobación). Si el PONUM no existe en Maximo
  *    (captura manual con referencia inventada) la OC sí cuenta.
+ *
+ * Bloque K (2026-10-05): las vistas de Maximo viven SOLO aquí (se borraron
+ * las copias de maximo-records, purchase-reports y expeditación). Las de
+ * contratos excluyen las revisiones obsoletas (`superseded_at`, K8) y hay
+ * una vista por PR (`CURRENT_MAXIMO_PRS`, K3).
  */
 
 export const CURRENT_MAXIMO_POS = Prisma.sql`
@@ -18,11 +23,33 @@ export const CURRENT_MAXIMO_POS = Prisma.sql`
   FROM maximo_purchase_orders
   ORDER BY ponum, coalesce(siteid, ''), coalesce(revisionnum, 0) DESC`;
 
+/**
+ * Vista actual de contratos: mayor revisionnum por (prnum, contractnum),
+ * sin las filas obsoletas (K8: la revisión ya no viene en el registro de su
+ * PR, p. ej. la fila sin contrato de una PR que después tuvo contrato).
+ */
 export const CURRENT_MAXIMO_CONTRACTS = Prisma.sql`
   SELECT DISTINCT ON (coalesce(prnum, ''), coalesce(contractnum, '')) *
   FROM maximo_contracts
+  WHERE superseded_at IS NULL
   ORDER BY coalesce(prnum, ''), coalesce(contractnum, ''),
     coalesce(revisionnum, 0) DESC`;
+
+/**
+ * K3 (2026-10-05): vista POR PR de Maximo, una fila por `prnum` y sin las
+ * obsoletas. Con contrato gana la revisión más alta; los `pr_*` (estatus,
+ * fechas y quién, de la raíz de AB_CONTRATOS) son iguales en todas las
+ * revisiones. `de_contrato` = alguna fila vigente de la PR tiene contrato y
+ * solo existe en esta vista. `last_seen_at` va al final del orden: cada
+ * revisión recibe su propio `new Date()` en la sync y, si fuera antes,
+ * ganaría la última procesada según el orden de PURCHVIEW.
+ * Todo conteo por PR usa esta vista.
+ */
+export const CURRENT_MAXIMO_PRS = Prisma.sql`
+  SELECT DISTINCT ON (prnum) *, bool_or(has_contract) OVER (PARTITION BY prnum) AS de_contrato
+  FROM maximo_contracts
+  WHERE prnum IS NOT NULL AND superseded_at IS NULL
+  ORDER BY prnum, has_contract DESC, coalesce(revisionnum, 0) DESC, last_seen_at DESC`;
 
 /**
  * Condición "la OC de SAP está duplicada en Maximo" para una tabla/alias
@@ -54,9 +81,11 @@ export function andYear(column: string, year: number | null | undefined) {
 
 /**
  * G2/G3 (2026-09-28): folio numérico de una PR de Maximo (PR104531 → 104531).
- * Maximo numera las PR en orden, así que el folio ubica en el tiempo a las
- * PR que no traen fecha (AB_CONTRATOS no expone ISSUEDATE; solo la conocemos
- * por las OC que las usan).
+ * Maximo numera las PR en orden; el folio ubicaba en el tiempo a las PR sin
+ * fecha conocida. Desde el 2-oct AB_CONTRATOS trae ISSUEDATE, STATUSDATE y
+ * el historial PRSTATUS en la raíz de la PR (K3: `pr_issue_date`,
+ * `pr_approved_at`… en `maximo_contracts`), así que la fecha real de la PR
+ * reemplaza a esta aproximación (K4).
  */
 export function maximoPrFolio(column: string): Prisma.Sql {
   const col = Prisma.raw(column);

@@ -5,7 +5,9 @@ Respuestas REALES capturadas en producción/test de IBM Maximo (validaciones del
 en la raíz del repo), **sanitizadas** y, en algunos casos, recortadas. Los usan
 los tests (`*.spec.ts`) y el seed de desarrollo de Int-3
 (`npm run maximo:seed-fixtures`, T5 — guard `NODE_ENV!=production` y no se
-copian a `dist`); en producción nunca se leen.
+copian a `dist`); en producción nunca se leen. El seed no pisa datos reales:
+si la OC o la PR de un fixture ya tiene filas de una corrida real, la salta
+completa (`skipped`).
 
 ## Sanitización aplicada
 
@@ -28,6 +30,11 @@ copian a `dist`); en producción nunca se leen.
 - Se mantienen intactos: números de PO/PR/contrato, importes, fechas, estatus,
   `rowstamp`, departamentos y la ESTRUCTURA completa (incluidos campos omitidos).
 
+Los `*.SYNTHETIC.json` no salen de una captura: se construyeron a mano con la
+forma real y los mismos valores dummy (usuarios `USRnnn`, `Persona Demo N`,
+notas `Comentario de prueba…`). Los del bloque K (2026-10-05) usan además
+proveedores, artículos y descripciones de demo.
+
 ## Inventario
 
 | Archivo | Origen | Forma | Caso que cubre |
@@ -45,6 +52,9 @@ copian a `dist`); en producción nunca se leen.
 | `ab-contratos.legacy-compact.purchview-root.v1.json` | `resultados/ab_contratos_1040.json` | legacy compacto | Estructura PREVIA (raíz PURCHVIEW, con `MAXVOL`) |
 | `ab-contratos.legacy-compact.wappr.SYNTHETIC.json` | construido a mano sobre PR102828 | legacy compacto | **SINTÉTICO**: historial DRAFT → WAPPR → APPR en la estructura ACTUAL raíz PR (donde WAPPR no aparece en la evidencia, 0/25; en la estructura previa sí existe — ver `purchview-root.v1`, rev 1: PNDREV → WAPPR). PR104531 no existe en la evidencia |
 | `ab-compras.oslc.page.SYNTHETIC.json` | construido sobre C1 (2 miembros) | OSLC | **SINTÉTICO**: `responseInfo.nextPage`/`totalCount` (paginación OSLC NO validada en prod) |
+| `ab-compras.legacy-nested.po5-linecost.SYNTHETIC.json` | construido a mano (bloque K, 2026-10-05) | legacy anidado | **SINTÉTICO** (K2/K6): PO104896, la OC que se busca en dev (copia en SAP: 6337, EUR). INPRG, `PO5`=PROCESADO, `RECEIPTS`=COMPLETE, EUR, `TOTALCOST` 1755.00 = Σ `POLINE.LINECOST` (OC exenta). `POLINE` llega en orden 3, 1, 2, con `RECEIVEDQTY`, `RECEIPTSCOMPLETE` y `PRNUM`: la línea 3 es de PR990007 (USR022) y las 1 y 2 de PR990001 (USR021), así que `prnum`/`requestedBy` deben salir de la línea 1. `POSTATUS` desordenado |
+| `ab-contratos.legacy-nested.prstatus.SYNTHETIC.json` | construido a mano (bloque K, 2026-10-05) | legacy anidado | **SINTÉTICO** (K3): 7 PR con `STATUS`, `STATUSDATE`, `ISSUEDATE` y `TOTALCOST` en la raíz y `PRSTATUS` desordenado. Ver la tabla de abajo |
+| `ab-contratos.legacy-compact.prstatus.SYNTHETIC.json` | el mismo contenido que el anterior | legacy compacto | **SINTÉTICO** (K3): par compacto del anidado; las dos formas dan los mismos DTO y el mismo `raw_hash` |
 | `oslc.error.bmxaa8781e.json` | `resultados_v2/C3_oslc_contratos_contractrefnum.json` | OSLC | Error `BMXAA8781E` (propiedad inválida en `oslc.where`) |
 
 Generador: script de sesión (no versionado) que aplica las reglas anteriores sobre
@@ -55,3 +65,27 @@ la evidencia. Al regenerar, volver a verificar:
    confirmar que ningún segmento `PERSON/<id>` trae un id fuera de
    `USRnnn`/`MAXADMIN` — el test "sanidad de los fixtures" de
    `maximo.mapper.spec.ts` lo automatiza.
+4. Usuarios (`PERSONID`, `REQUESTEDBY`, `PURCHASEAGENT`, `CHANGEBY`,
+   `SUPERVISOR`, `DELEGATE`) en `USRnnn`/`MAXADMIN`, `DISPLAYNAME` en
+   `Persona Demo N` y `MEMO` en `Comentario de prueba…`, en las tres formas —
+   también lo automatiza "sanidad de los fixtures".
+
+### PR de los fixtures `prstatus` (K3)
+
+Los PRNUM `PR9900nn` no existen en la evidencia ni en dev. Usuarios `USR021`–`USR031`
+y notas `Comentario de prueba: …`, todos ficticios.
+
+| PRNUM | STATUS | Historial (`PRSTATUS`, ordenado) | Caso |
+|---|---|---|---|
+| PR990001 | CLOSE | WAPPR → APPR → CLOSE | WAPPR y APPR en el mismo segundo (desempata `PRSTATUSID`; llegan al revés). La usan las líneas 1 y 2 de PO104896 |
+| PR990002 | APPR | WAPPR → APPR → WAPPR → APPR | Regresa a aprobación y se re-aprueba: `pr_approved_at` = la PRIMERA APPR. Sin contrato y sin OC: la **única** pendiente de gestionar (smoke de K4) |
+| PR990003 | CAN | WAPPR → APPR → CAN | `MEMO` en la CAN: `pr_cancelled_at` / `pr_cancelled_by` de esa fila |
+| PR990004 | CAN | WAPPR | STATUS CAN sin fila CAN: `pr_cancelled_at` null (sin respaldo por `STATUSDATE`) y sin APPR |
+| PR990005 | WAPPR | WAPPR | La **única** en aprobación (smoke de K4) |
+| PR990006 | CLOSE | WAPPR → APPR → CLOSE | Con contrato 9906 en dos revisiones (rev 0 DRAFT → APPR → REVISD; rev 1 PNDREV → APPR): contrato en APPR con la PR en CLOSE; no es pendiente en ningún conteo |
+| PR990007 | CLOSE | WAPPR → APPR → CLOSE | La usa la línea 3 de PO104896 (otro solicitante) |
+
+Ninguna OC de los fixtures apunta a PR990002 (lo verifica `maximo.mapper.spec.ts`).
+Los tres se generaron con un script de sesión (no versionado) a partir de un solo
+modelo de datos, para que el anidado y el compacto tengan exactamente el mismo
+contenido.

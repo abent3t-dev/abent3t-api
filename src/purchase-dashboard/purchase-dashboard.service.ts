@@ -8,6 +8,7 @@ import {
   andYear,
   CURRENT_MAXIMO_CONTRACTS,
   CURRENT_MAXIMO_POS,
+  CURRENT_MAXIMO_PRS,
   loadMaximoPrFolioWindow,
   pendingWindowStart,
   sapPoDuplicatedInMaximo,
@@ -267,12 +268,15 @@ export class PurchaseDashboardService {
                (SELECT min(created_at_source) FROM maximo_purchase_orders) AS maximo_desde,
                (SELECT max(finished_at) FROM sap_sync_runs WHERE status = 'success') AS sap_sync,
                (SELECT max(finished_at) FROM maximo_sync_runs WHERE status = 'success') AS maximo_sync`),
+      // K4.3: las PR de Maximo entran al selector por su creación
+      // (ISSUEDATE) en la vista por PR, sin las revisiones obsoletas; antes
+      // era la fecha del contrato y la PR sin contrato no tenía año.
       this.prisma.$queryRaw<YearRow[]>(Prisma.sql`
         SELECT DISTINCT extract(year FROM d)::int AS year FROM (
           SELECT doc_date AS d FROM sap_purchase_orders
           UNION ALL SELECT doc_date FROM sap_purchase_requests
           UNION ALL SELECT created_at_source FROM maximo_purchase_orders
-          UNION ALL SELECT created_at_source FROM maximo_contracts
+          UNION ALL SELECT pr_issue_date FROM (${CURRENT_MAXIMO_PRS}) prs
         ) t WHERE d IS NOT NULL ORDER BY 1 DESC`),
     ]);
 

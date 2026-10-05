@@ -61,6 +61,12 @@ export interface SapPurchaseOrderDto extends SapDocumentBaseDto {
   cardName: string | null;
   /** Total con IVA en la moneda del documento (DocTotal o DocTotalFc). */
   docTotal: number | null;
+  /**
+   * Subtotal sin IVA en la moneda del documento (K6): suma de
+   * `lines[].lineTotal` a 2 decimales. null si no hay líneas o a alguna le
+   * falta el importe.
+   */
+  subtotal: number | null;
   currency: string | null;
   /**
    * Saldo disponible: parte del total aún no recibida/facturada, con IVA y

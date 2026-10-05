@@ -1,6 +1,7 @@
 import { SapStagingService } from './sap-staging.service';
 import { PrismaService } from '../../../prisma/prisma.service';
 import {
+  SAP_MAPPER_VERSION,
   sapRawHash,
   toSapPurchaseOrder,
   toSapPurchaseRequest,
@@ -149,6 +150,50 @@ describe('SapStagingService — upsert por doc_entry + raw_hash', () => {
     expect(outcome).toBe('updated');
     expect(h.rows[0].mapper_version).not.toBe('1.0.0');
     expect(h.rows[0].raw_hash).toBe(sapRawHash(raw));
+  });
+
+  it('K6: escribe el subtotal sin IVA; null si no hay líneas', async () => {
+    const h = makeHarness();
+    const raw = rawDoc({
+      DocCurrency: 'MXN',
+      DocTotal: 406.58,
+      DocumentLines: [
+        { LineNum: 0, LineTotal: 100 },
+        { LineNum: 1, LineTotal: 250.5 },
+      ],
+    });
+    await h.service.upsertPurchaseOrder(toSapPurchaseOrder(raw), raw, 'run-1');
+    expect(h.rows[0].subtotal).toBe(350.5);
+    expect(h.rows[0].doc_total).toBe(406.58);
+
+    const sinLineas = rawDoc({ DocEntry: 9001 });
+    await h.service.upsertPurchaseOrder(
+      toSapPurchaseOrder(sinLineas),
+      sinLineas,
+      'run-1',
+    );
+    expect(h.rows[1].subtotal).toBeNull();
+  });
+
+  it('K6: el full tras subir a 1.3.0 llena el subtotal de una fila vieja con el mismo raw', async () => {
+    const h = makeHarness();
+    const raw = rawDoc({
+      DocCurrency: 'USD',
+      DocTotalFc: 22620,
+      DocumentLines: [{ LineNum: 0, LineTotal: 363388.35, RowTotalFC: 19500 }],
+    });
+    await h.service.upsertPurchaseOrder(toSapPurchaseOrder(raw), raw, 'run-1');
+    // fila escrita por el mapper 1.2.0: sin la columna
+    h.rows[0].mapper_version = '1.2.0';
+    h.rows[0].subtotal = null;
+    const outcome = await h.service.upsertPurchaseOrder(
+      toSapPurchaseOrder(raw),
+      raw,
+      'run-2',
+    );
+    expect(outcome).toBe('updated');
+    expect(h.rows[0].subtotal).toBe(19500);
+    expect(h.rows[0].mapper_version).toBe(SAP_MAPPER_VERSION);
   });
 
   it('purchase_requests: mismo contrato de upsert', async () => {

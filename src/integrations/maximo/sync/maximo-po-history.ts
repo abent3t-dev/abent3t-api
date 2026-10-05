@@ -6,9 +6,9 @@ import { MaximoPurchaseOrderDto } from '../dto/maximo-po.dto';
  * G6 (2026-09-28) — Historial POSTATUS persistido por fila de staging
  * (`maximo_po_status_history`, migración 0016). El mapper ya lo entrega
  * ordenado (CHANGEDATE ascendente, desempate POSTATUSID); `seq` conserva ese
- * orden. Lo escriben staging (alta/cambio de la OC) y remap, siempre
- * reemplazando el historial completo de la fila dentro de la misma
- * transacción que actualiza la OC.
+ * orden. Lo escriben staging (alta, cambio y 'remapped' de la OC, K8) y
+ * remap, siempre reemplazando el historial completo de la fila dentro de la
+ * misma transacción que actualiza la OC.
  */
 
 export function poStatusHistoryRows(
@@ -49,14 +49,40 @@ export function replacePoStatusHistory(
 }
 
 /**
- * Columnas de la OC derivadas de sus líneas: PR (G2/G3) y recepción (I1b).
- * Las usan staging y remap por igual.
+ * K8 (2026-10-05): TODAS las columnas mapeadas de la OC, en un solo lugar
+ * (antes se repetían en staging y en remap). Las usan staging (alta, cambio y
+ * 'remapped') y remap por igual. No incluye `raw`, `raw_hash`,
+ * `mapper_version` ni las columnas de auditoría del sync: esas las escribe
+ * cada camino.
  */
-export function poRequestColumns(dto: MaximoPurchaseOrderDto) {
+export function poMappedColumns(dto: MaximoPurchaseOrderDto) {
   return {
+    status: dto.status,
+    description: dto.description,
+    vendor_id: dto.vendor?.company ?? null,
+    vendor_name: dto.vendor?.name ?? null,
+    total_cost: dto.totalCost,
+    currency: dto.currencyCode,
+    ab_ahorro: dto.abAhorro,
+    ab_tipocomp: dto.abTipoComp,
+    ab_clasfpo: dto.abClasfPo,
+    requested_by: dto.requestedBy,
+    department: dto.area,
+    purchase_agent: dto.purchaseAgent,
+    purchase_agent_name: dto.purchaseAgentName,
+    created_by: dto.createdBy,
+    approved_at: toDate(dto.approvedDate),
+    approved_by: dto.approvedBy,
+    waiting_approval_at: toDate(dto.waitingApprovalDate),
+    created_at_source: toDate(dto.orderDate),
+    // G2/G3: PR de las líneas; I1b: recepción
     pr_issue_date: toDate(dto.prIssueDate),
     pr_nums: dto.prNums,
     receipt_status: dto.receiptStatus,
+    // K2: PO5 literal; K6: Σ LINECOST sin IVA (null si falta en alguna línea)
+    integration_status: dto.integrationStatus,
+    subtotal: dto.subtotal,
+    rowstamp: dto.rowstamp,
   };
 }
 

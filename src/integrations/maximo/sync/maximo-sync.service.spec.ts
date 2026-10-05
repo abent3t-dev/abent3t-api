@@ -32,6 +32,7 @@ type PoPage = MaximoFetchResult<MaximoPurchaseOrderDto>;
 interface Harness {
   service: MaximoSyncService;
   prisma: FakePrisma;
+  staging: MaximoStagingService;
   client: {
     fetchPurchaseOrders: jest.Mock;
     fetchContracts: jest.Mock;
@@ -66,15 +67,16 @@ function makeService(
     maxRetries: 0,
     ...overrides.maximo,
   };
+  const staging = new MaximoStagingService(prisma.asService());
   const service = new MaximoSyncService(
     prisma.asService(),
     client as unknown as MaximoClient,
-    new MaximoStagingService(prisma.asService()),
+    staging,
     syncConfig,
     maximoConfig,
     silentLogger(lines),
   );
-  return { service, prisma, client, lines };
+  return { service, prisma, staging, client, lines };
 }
 
 /** Divide los 3 POs del fixture de rango en páginas de 2 con rsTotal real. */
@@ -99,6 +101,7 @@ const summaryOf = (r: MaximoSyncRunSummary) => ({
   status: r.status,
   inserted: r.recordsInserted,
   updated: r.recordsUpdated,
+  remapped: r.recordsRemapped,
   unchanged: r.recordsUnchanged,
   failed: r.recordsFailed,
 });
@@ -116,6 +119,7 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
       status: 'success',
       inserted: 3,
       updated: 0,
+      remapped: 0,
       unchanged: 0,
       failed: 0,
     });
@@ -156,6 +160,7 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
       status: 'success',
       inserted: 0,
       updated: 0,
+      remapped: 0,
       unchanged: 3,
       failed: 0,
     });
@@ -190,6 +195,7 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
       status: 'success',
       inserted: 0,
       updated: 1,
+      remapped: 0,
       unchanged: 0,
       failed: 0,
     });
@@ -200,8 +206,8 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
     expect(row.last_changed_at).toBeDefined();
   });
 
-  it('I9: mismo rowstamp con un campo nuevo (RECEIPTS) → updated, raw reescrito y receipt_status mapeado', async () => {
-    const { service, prisma, client } = makeService({
+  it('I9/K8: mismo rowstamp con un campo nuevo (RECEIPTS) → remapped por hash, raw reescrito y receipt_status mapeado, sin last_changed_at', async () => {
+    const { service, prisma, client, lines } = makeService({
       sync: { pageSize: 100 },
     });
     const base = poPageFromLegacyFixture(
@@ -231,7 +237,8 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
     expect(summaryOf(second)).toEqual({
       status: 'success',
       inserted: 0,
-      updated: 1,
+      updated: 0,
+      remapped: 1,
       unchanged: 0,
       failed: 0,
     });
@@ -239,6 +246,12 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
     expect(row.receipt_status).toBe('COMPLETE');
     expect((row.raw as Record<string, unknown>).RECEIPTS).toBe('COMPLETE');
     expect(row.raw_hash).not.toBe(before.raw_hash);
+    // K8: no es un cambio real en Maximo
+    expect(row.last_changed_at).toBeUndefined();
+    expect(row.last_sync_run_id).toBe(second.runId);
+    expect(lines.join('\n')).toContain(
+      'por mapper=0, por hash=1 ej.: PO102249|',
+    );
 
     // El mismo payload otra vez → unchanged
     const again = poPageFromLegacyFixture(
@@ -248,11 +261,15 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
     again.records = [toPurchaseOrder(rawWithReceipts)];
     client.fetchPurchaseOrders.mockResolvedValueOnce(again);
     const third = await service.syncPurchaseOrders('manual');
-    expect(summaryOf(third)).toMatchObject({ updated: 0, unchanged: 1 });
+    expect(summaryOf(third)).toMatchObject({
+      updated: 0,
+      remapped: 0,
+      unchanged: 1,
+    });
   });
 
-  it('I9: filas previas a 0017 (sin raw_hash) o de otro mapper se reescriben UNA vez y luego quedan unchanged', async () => {
-    const { service, prisma, client } = makeService({
+  it('I9/K8: filas previas a 0017 (sin raw_hash) o de otro mapper se re-mapean UNA vez (por hash / por mapper) y luego quedan unchanged', async () => {
+    const { service, prisma, client, lines } = makeService({
       sync: { pageSize: 100 },
     });
     const page = () =>
@@ -265,13 +282,27 @@ describe('MaximoSyncService — AB_COMPRAS', () => {
 
     client.fetchPurchaseOrders.mockResolvedValueOnce(page());
     const second = await service.syncPurchaseOrders('cron');
-    expect(summaryOf(second)).toMatchObject({ updated: 2, unchanged: 1 });
+    expect(summaryOf(second)).toMatchObject({
+      updated: 0,
+      remapped: 2,
+      unchanged: 1,
+    });
     expect(a.raw_hash).toEqual(expect.any(String));
     expect(b.mapper_version).toBe(MAXIMO_MAPPER_VERSION);
+    expect(lines.join('\n')).toContain('remapped=2 (por mapper=1, por hash=1');
+    const run = prisma.maximo_sync_runs.rows.find(
+      (r) => r.id === second.runId,
+    )!;
+    expect(run.records_remapped).toBe(2);
+    expect(run.records_updated).toBe(0);
 
     client.fetchPurchaseOrders.mockResolvedValueOnce(page());
     const third = await service.syncPurchaseOrders('cron');
-    expect(summaryOf(third)).toMatchObject({ updated: 0, unchanged: 3 });
+    expect(summaryOf(third)).toMatchObject({
+      updated: 0,
+      remapped: 0,
+      unchanged: 3,
+    });
   });
 
   it('I9: el hash no depende de la forma de la API (legacy ≡ OSLC) pero sí detecta campos y valores nuevos', () => {
@@ -516,6 +547,7 @@ describe('MaximoSyncService — AB_CONTRATOS (T3)', () => {
       status: 'success',
       inserted: 3,
       updated: 0,
+      remapped: 0,
       unchanged: 0,
       failed: 0,
     });
@@ -558,3 +590,559 @@ function parseNoContractRecord(): unknown {
   };
   return body.QueryAB_CONTRATOSResponse.AB_CONTRATOSSet.PR[0];
 }
+
+// ---------------------------------------------------------------------------
+// K8 (2026-10-05): re-mapeo sin "cambio", hash estable y filas obsoletas
+// ---------------------------------------------------------------------------
+
+const PO5_FIXTURE = 'ab-compras.legacy-nested.po5-linecost.SYNTHETIC.json';
+
+/** Forma legacy anidada (Attributes / RelatedMbos) del fixture de PO104896. */
+interface NestedMbo {
+  rowstamp?: string;
+  Attributes: Record<string, { content: unknown }>;
+  RelatedMbos?: Record<string, NestedMbo[]>;
+}
+
+function po5Raw(): NestedMbo {
+  return structuredClone(
+    poPageFromLegacyFixture(PO5_FIXTURE).raw[0],
+  ) as NestedMbo;
+}
+
+function related(mbo: NestedMbo, key: string): NestedMbo[] {
+  const list = mbo.RelatedMbos?.[key];
+  if (!list) throw new Error(`el fixture no trae ${key}`);
+  return list;
+}
+
+/** Página de una sola OC (sin rsTotal: termina por página corta). */
+function poPageOf(raw: unknown): PoPage {
+  const page = poPageFromLegacyFixture(PO5_FIXTURE);
+  page.raw = [raw];
+  page.records = [toPurchaseOrder(raw)];
+  page.legacyPage = { rsStart: 0, rsCount: 1, rsTotal: null };
+  return page;
+}
+
+/** Página de contratos con registros compactos armados en la prueba. */
+function contractPageOf(...raws: unknown[]): MaximoFetchResult<unknown> {
+  const page = contractPageFromFixture(
+    'ab-contratos.legacy-compact.pr102828.json',
+  );
+  page.raw = raws;
+  page.legacyPage = { rsStart: 0, rsCount: raws.length, rsTotal: raws.length };
+  return page;
+}
+
+/** PR compacta sin contrato; `withContract` le agrega una o más revisiones. */
+function prRecord(
+  prnum: string,
+  options: { rowstamp?: string; revisions?: number[] } = {},
+): Record<string, unknown> {
+  const record: Record<string, unknown> = {
+    rowstamp: options.rowstamp ?? `${prnum}-ROOT-1`,
+    PRNUM: prnum,
+    SITEID: 'A3T',
+    STATUS: 'APPR',
+    ISSUEDATE: '2026-09-01T10:00:00+00:00',
+    PRSTATUS: [
+      {
+        rowstamp: `${prnum}-S2`,
+        STATUS: 'APPR',
+        CHANGEDATE: '2026-09-02T10:00:00+00:00',
+        CHANGEBY: 'USR023',
+        PRSTATUSID: 2,
+      },
+      {
+        rowstamp: `${prnum}-S1`,
+        STATUS: 'WAPPR',
+        CHANGEDATE: '2026-09-01T10:00:00+00:00',
+        CHANGEBY: 'USR021',
+        PRSTATUSID: 1,
+      },
+    ],
+  };
+  if (options.revisions) {
+    record.PURCHVIEW = options.revisions.map((rev) => ({
+      rowstamp: `${prnum}-PV-${rev}`,
+      CONTRACTNUM: 'C1',
+      REVISIONNUM: rev,
+      TOTALCOST: 100 + rev,
+    }));
+  }
+  return record;
+}
+
+describe('K8 — hash estable (maximoRawHash)', () => {
+  it('reordenar hijos, cambiar el rowstamp de un hijo o un campo de PERSON/COMPANIES fuera de la proyección NO cambia el hash', () => {
+    const hash = maximoRawHash(po5Raw());
+
+    const reordered = po5Raw();
+    related(reordered, 'POLINE').reverse();
+    related(reordered, 'POSTATUS').reverse();
+    expect(maximoRawHash(reordered)).toBe(hash);
+
+    const childRowstamp = po5Raw();
+    related(childRowstamp, 'POLINE')[0].rowstamp = '111111111';
+    related(related(childRowstamp, 'POLINE')[0], 'PRLINE')[0].rowstamp =
+      '222222222';
+    expect(maximoRawHash(childRowstamp)).toBe(hash);
+
+    // Editar el maestro de la persona o del proveedor (campos que el mapper
+    // no lee) no re-mapea sus OC
+    const person = po5Raw();
+    related(person, 'PERSON')[0].Attributes.STATUS = { content: 'INACTIVE' };
+    related(person, 'PERSON')[0].Attributes.PRIMARYEMAIL = {
+      content: 'persona@demo.test',
+    };
+    related(person, 'PERSON')[0].rowstamp = '333333333';
+    expect(maximoRawHash(person)).toBe(hash);
+
+    const company = po5Raw();
+    related(company, 'COMPANIES')[0].Attributes.ADDRESS1 = {
+      content: 'Calle demo 1',
+    };
+    expect(maximoRawHash(company)).toBe(hash);
+  });
+
+  it('un cambio en STATUS, LINECOST, PO5 o en un campo proyectado de PERSON SÍ cambia el hash', () => {
+    const hash = maximoRawHash(po5Raw());
+
+    const status = po5Raw();
+    status.Attributes.STATUS = { content: 'CLOSE' };
+    expect(maximoRawHash(status)).not.toBe(hash);
+
+    const lineCost = po5Raw();
+    related(lineCost, 'POLINE')[0].Attributes.LINECOST = { content: 1 };
+    expect(maximoRawHash(lineCost)).not.toBe(hash);
+
+    const po5 = po5Raw();
+    po5.Attributes.PO5 = { content: 'ERROR' };
+    expect(maximoRawHash(po5)).not.toBe(hash);
+
+    const displayName = po5Raw();
+    related(displayName, 'PERSON')[0].Attributes.DISPLAYNAME = {
+      content: 'Otra Persona Demo',
+    };
+    expect(maximoRawHash(displayName)).not.toBe(hash);
+  });
+
+  it('las dos formas del fixture prstatus (anidada y compacta) dan el mismo hash por PR', () => {
+    const nested = contractPageFromFixture(
+      'ab-contratos.legacy-nested.prstatus.SYNTHETIC.json',
+    ).raw;
+    const compact = contractPageFromFixture(
+      'ab-contratos.legacy-compact.prstatus.SYNTHETIC.json',
+    ).raw;
+    expect(nested.map(maximoRawHash)).toEqual(compact.map(maximoRawHash));
+  });
+});
+
+describe('K8 — re-mapeo sin "cambio" (AB_COMPRAS)', () => {
+  it('mapper nuevo con el mismo rowstamp → remapped por mapper, sin last_changed_at; luego unchanged; un cambio solo en un hijo → remapped por hash; un rowstamp nuevo → updated', async () => {
+    const { service, prisma, client, lines } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(po5Raw()));
+    const first = await service.syncPurchaseOrders('manual');
+    expect(summaryOf(first)).toMatchObject({ inserted: 1, failed: 0 });
+    const row = prisma.maximo_purchase_orders.rows[0];
+    // K2/K6: columnas nuevas desde poMappedColumns
+    expect(row.integration_status).toBe('PROCESADO');
+    expect(row.subtotal).toBe(1755);
+    expect(row.receipt_status).toBe('COMPLETE');
+
+    // Fila escrita por el mapper anterior (sin las columnas de K2/K6)
+    row.mapper_version = '2026.10.01-1';
+    row.integration_status = null;
+    row.subtotal = null;
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(po5Raw()));
+    const second = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(second)).toEqual({
+      status: 'success',
+      inserted: 0,
+      updated: 0,
+      remapped: 1,
+      unchanged: 0,
+      failed: 0,
+    });
+    expect(row.mapper_version).toBe(MAXIMO_MAPPER_VERSION);
+    expect(row.integration_status).toBe('PROCESADO');
+    expect(row.subtotal).toBe(1755);
+    expect(row.last_changed_at).toBeUndefined();
+    expect(row.last_sync_run_id).toBe(second.runId);
+    expect(lines.join('\n')).toContain('remapped=1 (por mapper=1, por hash=0)');
+    // el historial POSTATUS se reescribe, sin duplicar
+    expect(
+      prisma.maximo_po_status_history.rows.filter((h) => h.po_id === row.id),
+    ).toHaveLength(3);
+    const run = prisma.maximo_sync_runs.rows.find(
+      (r) => r.id === second.runId,
+    )!;
+    expect(run.records_remapped).toBe(1);
+
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(po5Raw()));
+    const third = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(third)).toMatchObject({ remapped: 0, unchanged: 1 });
+
+    // Recepción parcial en una línea: cambia POLINE, no el rowstamp de la OC
+    const childOnly = po5Raw();
+    related(childOnly, 'POLINE')[0].Attributes.RECEIVEDQTY = { content: 0.5 };
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(childOnly));
+    const fourth = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(fourth)).toMatchObject({ updated: 0, remapped: 1 });
+    expect(row.last_changed_at).toBeUndefined();
+    expect(lines.join('\n')).toContain(
+      'remapped=1 (por mapper=0, por hash=1 ej.: PO104896|A3T|0)',
+    );
+
+    // Cambio real: Maximo mueve el rowstamp de la OC
+    const realChange = structuredClone(childOnly);
+    realChange.rowstamp = '990104897';
+    realChange.Attributes.STATUS = { content: 'CLOSE' };
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(realChange));
+    const fifth = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(fifth)).toMatchObject({ updated: 1, remapped: 0 });
+    expect(row.status).toBe('CLOSE');
+    expect(row.last_changed_at).toBeDefined();
+  });
+});
+
+describe('K3/K8 — AB_CONTRATOS: historial de la PR y filas obsoletas', () => {
+  it('K3: escribe los pr_* y UN historial por PR; una PR con dos revisiones queda con un historial completo', async () => {
+    const { service, prisma, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageFromFixture(
+        'ab-contratos.legacy-nested.prstatus.SYNTHETIC.json',
+      ),
+    );
+    const first = await service.syncContracts('manual');
+    if (isSyncSkipped(first)) throw new Error('no debió omitirse');
+    // 7 PR; PR990006 con dos revisiones del contrato 9906
+    expect(summaryOf(first)).toMatchObject({ inserted: 8, failed: 0 });
+
+    const pr6 = prisma.maximo_contracts.rows.filter(
+      (r) => r.prnum === 'PR990006',
+    );
+    expect(pr6.map((r) => r.revisionnum).sort()).toEqual([0, 1]);
+    for (const row of pr6) {
+      expect(row.pr_status).toBe('CLOSE');
+      expect(row.pr_issue_date).toEqual(new Date('2026-06-10T14:00:00+00:00'));
+      expect(row.pr_approved_at).toEqual(new Date('2026-06-11T09:00:00+00:00'));
+      expect(row.pr_approved_by).toBe('USR023');
+      expect(row.pr_closed_at).toEqual(new Date('2026-06-15T12:00:00+00:00'));
+      expect(row.superseded_at).toBeNull();
+    }
+    // Estado final: un solo historial, completo y en orden
+    const history6 = prisma.maximo_pr_status_history.rows
+      .filter((h) => h.prnum === 'PR990006')
+      .sort((a, b) => Number(a.seq) - Number(b.seq));
+    expect(history6.map((h) => [h.seq, h.status, h.changed_by])).toEqual([
+      [0, 'WAPPR', 'USR030'],
+      [1, 'APPR', 'USR023'],
+      [2, 'CLOSE', 'USR024'],
+    ]);
+    expect(history6[0].change_date).toEqual(
+      new Date('2026-06-10T14:00:00+00:00'),
+    );
+
+    // CAN con MEMO y quién canceló
+    const pr3 = prisma.maximo_contracts.rows.find(
+      (r) => r.prnum === 'PR990003',
+    )!;
+    expect(pr3.pr_status).toBe('CAN');
+    expect(pr3.pr_cancelled_at).toEqual(new Date('2026-08-28T16:40:00+00:00'));
+    expect(pr3.pr_cancelled_by).toBe('USR024');
+    const can = prisma.maximo_pr_status_history.rows.find(
+      (h) => h.prnum === 'PR990003' && h.status === 'CAN',
+    )!;
+    expect(can.memo).toEqual(expect.any(String));
+
+    // Sin duplicados: (prnum, seq) único, como uq_maximo_pr_status_history
+    const keys = prisma.maximo_pr_status_history.rows.map(
+      (h) => `${String(h.prnum)}|${String(h.seq)}`,
+    );
+    expect(new Set(keys).size).toBe(keys.length);
+    const historyCount = keys.length;
+
+    // La forma compacta del mismo registro: todo unchanged, historial igual
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageFromFixture(
+        'ab-contratos.legacy-compact.prstatus.SYNTHETIC.json',
+      ),
+    );
+    const second = await service.syncContracts('cron');
+    if (isSyncSkipped(second)) throw new Error('no debió omitirse');
+    expect(summaryOf(second)).toMatchObject({
+      inserted: 0,
+      updated: 0,
+      remapped: 0,
+      unchanged: 8,
+    });
+    expect(prisma.maximo_pr_status_history.rows).toHaveLength(historyCount);
+  });
+
+  it('K8: contrato con mapper nuevo y los mismos rowstamps → remapped; un STATUS nuevo de la PR (otro pr_rowstamp) → updated', async () => {
+    const { service, prisma, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(prRecord('PR-K8R', { revisions: [0] })),
+    );
+    await service.syncContracts('manual');
+    const [row] = prisma.maximo_contracts.rows;
+    row.mapper_version = '2026.10.01-1';
+
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(prRecord('PR-K8R', { revisions: [0] })),
+    );
+    const second = await service.syncContracts('cron');
+    if (isSyncSkipped(second)) throw new Error('no debió omitirse');
+    expect(summaryOf(second)).toMatchObject({ updated: 0, remapped: 1 });
+    expect(row.last_changed_at).toBeUndefined();
+    expect(row.last_sync_run_id).toBe(second.runId);
+
+    // La PR cambia (mismo contract_rowstamp, otro rowstamp de la raíz)
+    const closed = prRecord('PR-K8R', {
+      revisions: [0],
+      rowstamp: 'PR-K8R-ROOT-2',
+    });
+    closed.STATUS = 'CLOSE';
+    client.fetchContracts.mockResolvedValueOnce(contractPageOf(closed));
+    const third = await service.syncContracts('cron');
+    if (isSyncSkipped(third)) throw new Error('no debió omitirse');
+    expect(summaryOf(third)).toMatchObject({ updated: 1, remapped: 0 });
+    expect(row.pr_status).toBe('CLOSE');
+    expect(row.last_changed_at).toBeDefined();
+  });
+
+  it('K8: un contract_rowstamp nuevo con la misma raíz y el mismo hash → updated; sin contrato (los dos nulos) y la misma raíz → unchanged', async () => {
+    const { service, prisma, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    const withContract = () => prRecord('PR-K8C', { revisions: [0] });
+    const noContract = () => prRecord('PR-K8S');
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(withContract(), noContract()),
+    );
+    await service.syncContracts('manual');
+    const row = prisma.maximo_contracts.rows.find((r) => r.prnum === 'PR-K8C')!;
+    const bare = prisma.maximo_contracts.rows.find(
+      (r) => r.prnum === 'PR-K8S',
+    )!;
+    expect(row.contract_rowstamp).toBe('PR-K8C-PV-0');
+    expect(bare.contract_rowstamp).toBeNull();
+
+    // Solo se mueve el rowstamp del PURCHVIEW: la raíz y el hash (que no
+    // lleva ROWSTAMP) quedan iguales, así que decide contract_rowstamp
+    const moved = withContract();
+    (moved.PURCHVIEW as Array<Record<string, unknown>>)[0].rowstamp =
+      'PR-K8C-PV-0-B';
+    expect(maximoRawHash(moved)).toBe(row.raw_hash);
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(moved, noContract()),
+    );
+    const second = await service.syncContracts('cron');
+    if (isSyncSkipped(second)) throw new Error('no debió omitirse');
+    expect(summaryOf(second)).toMatchObject({
+      updated: 1,
+      remapped: 0,
+      unchanged: 1,
+      failed: 0,
+    });
+    expect(row.contract_rowstamp).toBe('PR-K8C-PV-0-B');
+    expect(row.last_changed_at).toBeDefined();
+    expect(bare.last_changed_at).toBeUndefined();
+  });
+
+  it.each([
+    ['sin rowstamp en ninguna de las dos capturas', null],
+    ['con rowstamp en la captura nueva', 'PR-K8N-ROOT-1'],
+  ])(
+    'K8: una fila con pr_rowstamp null nunca es "mismo rowstamp" (%s) → updated aunque el hash y el contrato sean iguales',
+    async (_caso, nextRowstamp) => {
+      const { service, prisma, client } = makeService({
+        sync: { pageSize: 100 },
+      });
+      const record = (rowstamp: string | null) => {
+        const pr = prRecord('PR-K8N', { revisions: [0] });
+        if (rowstamp === null) delete pr.rowstamp;
+        else pr.rowstamp = rowstamp;
+        return pr;
+      };
+      client.fetchContracts.mockResolvedValueOnce(contractPageOf(record(null)));
+      await service.syncContracts('manual');
+      const [row] = prisma.maximo_contracts.rows;
+      expect(row.pr_rowstamp).toBeNull();
+      expect(row.contract_rowstamp).toBe('PR-K8N-PV-0');
+
+      const next = record(nextRowstamp);
+      expect(maximoRawHash(next)).toBe(row.raw_hash);
+      client.fetchContracts.mockResolvedValueOnce(contractPageOf(next));
+      const second = await service.syncContracts('cron');
+      if (isSyncSkipped(second)) throw new Error('no debió omitirse');
+      expect(summaryOf(second)).toMatchObject({
+        updated: 1,
+        remapped: 0,
+        unchanged: 0,
+        failed: 0,
+      });
+      expect(row.pr_rowstamp).toBe(nextRowstamp);
+      expect(row.last_changed_at).toBeDefined();
+    },
+  );
+
+  it('K8: una PR que pasa de sin contrato a con contrato deja la fila vieja superseded (fuera del conteo vigente); si la llave reaparece igual, se limpia', async () => {
+    const { service, prisma, client, lines } = makeService({
+      sync: { pageSize: 100 },
+    });
+    const vigentes = () =>
+      prisma.maximo_contracts.count({
+        where: { prnum: 'PR-K8', superseded_at: null },
+      });
+
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(prRecord('PR-K8')),
+    );
+    await service.syncContracts('manual');
+    const old = prisma.maximo_contracts.rows.find(
+      (r) => r.prnum === 'PR-K8' && r.contractnum === null,
+    )!;
+    expect(old.superseded_at).toBeNull();
+
+    const withContract = () =>
+      prRecord('PR-K8', { rowstamp: 'PR-K8-ROOT-2', revisions: [0] });
+    client.fetchContracts.mockResolvedValueOnce(contractPageOf(withContract()));
+    const second = await service.syncContracts('cron');
+    if (isSyncSkipped(second)) throw new Error('no debió omitirse');
+    expect(summaryOf(second)).toMatchObject({ inserted: 1, failed: 0 });
+    const current = prisma.maximo_contracts.rows.find(
+      (r) => r.prnum === 'PR-K8' && r.contractnum === 'C1',
+    )!;
+    expect(old.superseded_at).toEqual(expect.any(Object));
+    expect(current.superseded_at).toBeNull();
+    expect(await vigentes()).toBe(1);
+    expect(lines.join('\n')).toContain('superseded=1');
+
+    // La siguiente corrida no reescribe la fecha de la obsoleta (fecha fija
+    // para no depender del reloj)
+    const supersededAt = new Date('2026-10-01T00:00:00Z');
+    old.superseded_at = supersededAt;
+    client.fetchContracts.mockResolvedValueOnce(contractPageOf(withContract()));
+    const third = await service.syncContracts('cron');
+    if (isSyncSkipped(third)) throw new Error('no debió omitirse');
+    expect(summaryOf(third)).toMatchObject({ unchanged: 1, failed: 0 });
+    expect(old.superseded_at).toBe(supersededAt);
+    expect(prisma.maximo_contracts.updateMany).toHaveBeenCalledTimes(1);
+
+    // La llave vieja reaparece con el mismo raw → unchanged y se limpia; la
+    // del contrato, que ya no viene, queda obsoleta
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(prRecord('PR-K8')),
+    );
+    const fourth = await service.syncContracts('cron');
+    if (isSyncSkipped(fourth)) throw new Error('no debió omitirse');
+    expect(summaryOf(fourth)).toMatchObject({ unchanged: 1, failed: 0 });
+    expect(old.superseded_at).toBeNull();
+    expect(current.superseded_at).toEqual(expect.any(Object));
+    expect(await vigentes()).toBe(1);
+  });
+
+  it('K8: un registro con prnum null (raíz PURCHVIEW) no marca nada', async () => {
+    const { service, prisma, staging, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    // Contrato sin PR de OTRO registro: con `where: { prnum: null }` se marcaría
+    await prisma.maximo_contracts.create({
+      data: {
+        prnum: null,
+        contractnum: '7777',
+        revisionnum: 0,
+        superseded_at: null,
+      },
+    });
+    const supersede = jest.spyOn(staging, 'supersedeMissingRevisions');
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageFromFixture(
+        'ab-contratos.legacy-compact.purchview-root.v1.json',
+      ),
+    );
+    const result = await service.syncContracts('manual');
+    if (isSyncSkipped(result)) throw new Error('no debió omitirse');
+    expect(result.recordsFailed).toBe(0);
+    expect(supersede).toHaveBeenCalledWith(null, expect.any(Array));
+    expect(prisma.maximo_contracts.updateMany).not.toHaveBeenCalled();
+    expect(
+      prisma.maximo_contracts.rows.every((r) => r.superseded_at === null),
+    ).toBe(true);
+    await expect(staging.supersedeMissingRevisions('', [])).resolves.toBe(0);
+  });
+
+  it('K8: con un upsert fallido en el registro no se marca nada', async () => {
+    const { service, prisma, staging, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(prRecord('PR-K8F')),
+    );
+    await service.syncContracts('manual');
+
+    const original = staging.upsertContract.bind(staging);
+    jest
+      .spyOn(staging, 'upsertContract')
+      .mockImplementation((dto, raw, runId) =>
+        dto.revisionNum === 1
+          ? Promise.reject(new Error('fallo simulado'))
+          : original(dto, raw, runId),
+      );
+    const supersede = jest.spyOn(staging, 'supersedeMissingRevisions');
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(
+        prRecord('PR-K8F', { rowstamp: 'PR-K8F-ROOT-2', revisions: [0, 1] }),
+      ),
+    );
+    const result = await service.syncContracts('cron');
+    if (isSyncSkipped(result)) throw new Error('no debió omitirse');
+    expect(summaryOf(result)).toMatchObject({
+      status: 'partial',
+      inserted: 1,
+      failed: 1,
+    });
+    expect(supersede).not.toHaveBeenCalled();
+    expect(
+      prisma.maximo_contracts.rows.every((r) => r.superseded_at === null),
+    ).toBe(true);
+  });
+
+  it('K8: una excepción en supersedeMissingRevisions cuenta un fallo y la página sigue', async () => {
+    const { service, prisma, staging, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    jest
+      .spyOn(staging, 'supersedeMissingRevisions')
+      .mockRejectedValueOnce(new Error('BD caída'));
+    client.fetchContracts.mockResolvedValueOnce(
+      contractPageOf(prRecord('PR-K8A'), prRecord('PR-K8B')),
+    );
+    const result = await service.syncContracts('manual');
+    if (isSyncSkipped(result)) throw new Error('no debió omitirse');
+    expect(summaryOf(result)).toEqual({
+      status: 'partial',
+      inserted: 2,
+      updated: 0,
+      remapped: 0,
+      unchanged: 0,
+      failed: 1,
+    });
+    expect(result.pagesOk).toBe(1);
+    expect(result.pagesFailed).toBe(0);
+    expect(result.errorSummary).toContain('obsoletas de PR-K8A: BD caída');
+    expect(prisma.maximo_contracts.rows.map((r) => r.prnum)).toEqual([
+      'PR-K8A',
+      'PR-K8B',
+    ]);
+  });
+});

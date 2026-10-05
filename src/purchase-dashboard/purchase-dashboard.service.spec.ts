@@ -200,6 +200,27 @@ describe('PurchaseDashboardService.getSummary', () => {
     }
   });
 
+  it('K4.3: el selector de años toma las PR de Maximo por pr_issue_date de la vista por PR (sin obsoletas)', async () => {
+    const { service, queryRaw } = makeService();
+    queryRaw.mockResolvedValue([]);
+    await service.getSummary();
+    const calls = queryRaw.mock.calls as unknown as Array<
+      [{ strings?: string[] } | string]
+    >;
+    const sqlTexts = calls.map(([first]) =>
+      typeof first === 'string' ? first : (first.strings?.join('?') ?? ''),
+    );
+    const yearQueries = sqlTexts.filter((t) =>
+      t.includes('extract(year FROM d)'),
+    );
+    expect(yearQueries).toHaveLength(1);
+    const [years] = yearQueries;
+    expect(years).toContain('SELECT pr_issue_date FROM');
+    expect(years).toContain('superseded_at IS NULL');
+    expect(years).toContain('DISTINCT ON (prnum)');
+    expect(years).not.toContain('created_at_source FROM maximo_contracts');
+  });
+
   it('acepta la bandera de sync como string (sin Joi en tests)', async () => {
     const { service, queryRaw } = makeService('true');
     queryRaw.mockResolvedValue([]);

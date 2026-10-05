@@ -1,7 +1,9 @@
+import { canonicalize } from '../../common/maximo/maximo-canonical';
 import {
   MAXIMO_CONTRACT_EXPENSE_TYPE,
   MaximoContractDto,
   MaximoContractLineDto,
+  MaximoPrStatusChangeDto,
 } from './dto/maximo-contract.dto';
 import {
   MAXIMO_ERP,
@@ -15,7 +17,6 @@ import {
 import {
   MaximoCanonicalRecord,
   MaximoObjectStructure,
-  MaximoRawScalar,
 } from './dto/maximo-raw.types';
 import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
 
@@ -27,7 +28,7 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
  * `maximo:remap` para re-derivar las filas ya sincronizadas.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.10.01-1'; // 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
+export const MAXIMO_MAPPER_VERSION = '2026.10.05-1'; // 10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas; 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -42,70 +43,22 @@ export const MAXIMO_MAPPER_VERSION = '2026.10.01-1'; // 10.01-1: receiptStatus (
 // Normalización
 // ---------------------------------------------------------------------------
 
-const NULL_TOKEN = '~null~';
-const OSLC_META_KEYS = new Set(['href', 'localref']);
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Desenvuelve `{ content: X }`, `"~null~"` y tipos no escalares → null. */
-function unwrapScalar(value: unknown): MaximoRawScalar {
-  if (isPlainObject(value)) {
-    return 'content' in value ? unwrapScalar(value.content) : null;
-  }
-  if (value === undefined || value === null) return null;
-  if (typeof value === 'string') return value === NULL_TOKEN ? null : value;
-  if (typeof value === 'number' || typeof value === 'boolean') return value;
-  return null;
-}
-
 /**
- * Normaliza un registro de cualquiera de las tres formas. Claves UPPERCASE,
+ * Normaliza un registro de cualquiera de las tres formas con el canonizador
+ * común (`common/maximo/maximo-canonical.ts`, K3.7): claves UPPERCASE,
  * escalares desenvueltos, hijos como arrays canónicos, `rowstamp`/`_rowstamp`
- * → `ROWSTAMP`, metadatos OSLC descartados.
+ * → `ROWSTAMP`, metadatos OSLC descartados. A diferencia del común, aquí un
+ * registro que no es objeto LANZA: el mapper lo rechaza y el sync lo cuenta
+ * como fallido.
  */
 export function toCanonical(raw: unknown): MaximoCanonicalRecord {
-  if (!isPlainObject(raw)) {
-    throw new MaximoMappingError('el registro no es un objeto', '$');
-  }
-  const out: MaximoCanonicalRecord = {};
-
-  // Forma 1: legacy anidado (Attributes / RelatedMbos)
-  const attrs = raw.Attributes;
-  const related = raw.RelatedMbos;
-  if (isPlainObject(attrs) || isPlainObject(related)) {
-    if (typeof raw.rowstamp === 'string') out.ROWSTAMP = raw.rowstamp;
-    if (isPlainObject(attrs)) {
-      for (const [key, value] of Object.entries(attrs)) {
-        out[key.toUpperCase()] = unwrapScalar(value);
-      }
-    }
-    if (isPlainObject(related)) {
-      for (const [key, value] of Object.entries(related)) {
-        if (Array.isArray(value)) {
-          out[key.toUpperCase()] = value.filter(isPlainObject).map(toCanonical);
-        }
-      }
-    }
-    return out;
-  }
-
-  // Formas 2 (legacy compacto) y 3 (OSLC lean)
-  for (const [key, value] of Object.entries(raw)) {
-    const lower = key.toLowerCase();
-    if (OSLC_META_KEYS.has(lower) || lower.endsWith('_collectionref')) continue;
-    const name =
-      lower === '_rowstamp' || lower === 'rowstamp'
-        ? 'ROWSTAMP'
-        : key.toUpperCase();
-    if (Array.isArray(value)) {
-      out[name] = value.filter(isPlainObject).map(toCanonical);
-      continue;
-    }
-    out[name] = unwrapScalar(value);
-  }
-  return out;
+  const r = canonicalize(raw);
+  if (!r) throw new MaximoMappingError('el registro no es un objeto', '$');
+  return r;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,35 +105,29 @@ function hasKey(rec: MaximoCanonicalRecord | null, key: string): boolean {
 // Sub-mapeos compartidos
 // ---------------------------------------------------------------------------
 
+interface StatusRow<T extends MaximoStatusChangeDto> {
+  dto: T;
+  /** Id monótono de la fila de Maximo (desempate de CHANGEDATE). */
+  id: number | null;
+}
+
 /**
- * Historial de estatus ordenado por CHANGEDATE ascendente (nulos al final).
- * Maximo NO devuelve las filas ordenadas (86/100 POs de la evidencia llegan
- * desordenados) y hay cambios en el mismo segundo: el desempate es el id
- * monótono de la fila (POSTATUSID / CONTRACTSTATUSID).
+ * Orden de cualquier historial de estatus: CHANGEDATE ascendente (nulos al
+ * final). Maximo NO devuelve las filas ordenadas (86/100 POs de la evidencia
+ * llegan desordenados) y hay cambios en el mismo segundo: el desempate es el
+ * id monótono de la fila (POSTATUSID / CONTRACTSTATUSID / PRSTATUSID).
  */
-function mapStatusHistory(
-  rows: MaximoCanonicalRecord[],
-): MaximoStatusChangeDto[] {
-  return rows
-    .map((row) => ({
-      dto: {
-        status: str(row, 'STATUS'),
-        changeDate: str(row, 'CHANGEDATE'),
-        changedBy: str(row, 'CHANGEBY'),
-      },
-      id: num(row, 'POSTATUSID') ?? num(row, 'CONTRACTSTATUSID'),
-    }))
-    .filter(
-      (row): row is { dto: MaximoStatusChangeDto; id: number | null } =>
-        row.dto.status !== null,
-    )
+function orderStatusRows<T extends MaximoStatusChangeDto>(
+  rows: StatusRow<T>[],
+): T[] {
+  return [...rows]
     .sort((a, b) => {
       const da = a.dto.changeDate;
       const db = b.dto.changeDate;
       if (da !== db) {
         if (da === null) return 1;
         if (db === null) return -1;
-        if (da !== db) return da < db ? -1 : 1;
+        return da < db ? -1 : 1;
       }
       if (a.id !== null && b.id !== null && a.id !== b.id) {
         return a.id - b.id;
@@ -188,6 +135,81 @@ function mapStatusHistory(
       return 0;
     })
     .map((row) => row.dto);
+}
+
+/** Campos comunes de una fila de historial; null si no trae STATUS. */
+function statusRowOf(
+  row: MaximoCanonicalRecord,
+): StatusRow<MaximoStatusChangeDto> | null {
+  const status = str(row, 'STATUS');
+  if (status === null) return null;
+  return {
+    dto: {
+      status,
+      changeDate: str(row, 'CHANGEDATE'),
+      changedBy: str(row, 'CHANGEBY'),
+    },
+    id:
+      num(row, 'POSTATUSID') ??
+      num(row, 'CONTRACTSTATUSID') ??
+      num(row, 'PRSTATUSID'),
+  };
+}
+
+/** Historial de estatus de la OC (POSTATUS) o del contrato (CONTRACTSTATUS). */
+function mapStatusHistory(
+  rows: MaximoCanonicalRecord[],
+): MaximoStatusChangeDto[] {
+  return orderStatusRows(
+    rows
+      .map(statusRowOf)
+      .filter((row): row is StatusRow<MaximoStatusChangeDto> => row !== null),
+  );
+}
+
+/**
+ * K3 (2026-10-05): historial PRSTATUS de la PR (hijo de la raíz de
+ * AB_CONTRATOS), con el mismo orden que los demás historiales más el MEMO de
+ * cada cambio (p. ej. el motivo de la cancelación). MEMO en blanco → null.
+ */
+function mapPrStatusHistory(
+  rows: MaximoCanonicalRecord[],
+): MaximoPrStatusChangeDto[] {
+  const out: StatusRow<MaximoPrStatusChangeDto>[] = [];
+  for (const row of rows) {
+    const base = statusRowOf(row);
+    if (!base) continue;
+    const memo = str(row, 'MEMO');
+    out.push({
+      dto: { ...base.dto, memo: memo && memo.trim() !== '' ? memo : null },
+      id: base.id,
+    });
+  }
+  return orderStatusRows(out);
+}
+
+/**
+ * K3: primer / último cambio CON FECHA al estatus indicado (historial ya
+ * ordenado; las filas sin CHANGEDATE van al final y no cuentan, para que la
+ * fecha y el usuario salgan siempre de la misma fila).
+ */
+function firstDatedChange<T extends MaximoStatusChangeDto>(
+  history: T[],
+  status: string,
+): T | null {
+  return (
+    history.find((h) => h.status === status && h.changeDate !== null) ?? null
+  );
+}
+
+function lastDatedChange<T extends MaximoStatusChangeDto>(
+  history: T[],
+  status: string,
+): T | null {
+  return (
+    history.findLast((h) => h.status === status && h.changeDate !== null) ??
+    null
+  );
 }
 
 /** Primera fecha de cambio con el estatus indicado (historial ya ordenado). */
@@ -282,7 +304,51 @@ function mapPurchaseOrderLine(
     pr: mapPurchaseRequestRef(prline, prnum),
     receiptsComplete: flag(line, 'RECEIPTSCOMPLETE'),
     receivedQty: num(line, 'RECEIVEDQTY'),
+    lineCost: num(line, 'LINECOST'),
   };
+}
+
+/**
+ * K3 (2026-10-05): líneas por POLINENUM ascendente, sin número al final.
+ * Maximo no garantiza el orden de POLINE y de la primera línea salen `prnum`,
+ * `requestedBy` y `prStatusDate` de la OC. El sort es estable: dos líneas sin
+ * número conservan el orden de llegada.
+ */
+function sortLinesByNum(
+  lines: MaximoPurchaseOrderLineDto[],
+): MaximoPurchaseOrderLineDto[] {
+  return [...lines].sort((a, b) => {
+    if (a.lineNum === b.lineNum) return 0;
+    if (a.lineNum === null) return 1;
+    if (b.lineNum === null) return -1;
+    return a.lineNum - b.lineNum;
+  });
+}
+
+/**
+ * K6 (2026-10-05): subtotal sin IVA de la OC = suma de POLINE.LINECOST
+ * redondeada a 2 decimales, en la moneda de la OC. null si no hay líneas o a
+ * alguna le falta LINECOST: no se estima con PRETAXTOTAL (Isaac: no es
+ * persistente) ni con TOTALCOST/1.16.
+ */
+export function subtotalOf(lines: MaximoPurchaseOrderLineDto[]): number | null {
+  if (lines.length === 0) return null;
+  let sum = 0;
+  for (const line of lines) {
+    if (line.lineCost === null) return null;
+    sum += line.lineCost;
+  }
+  return Math.round(sum * 100) / 100;
+}
+
+/**
+ * K2 (2026-10-05): estado de integración con SAP = PO.PO5 literal, recortado
+ * y en mayúsculas (PROCESADO, ACTUALIZAR, ERROR, AGREGAR…); vacío → null. Se
+ * guarda sin interpretar: las etiquetas viven en Expeditación y en el front.
+ */
+function integrationStatusOf(header: MaximoCanonicalRecord): string | null {
+  const po5 = str(header, 'PO5')?.trim().toUpperCase() ?? '';
+  return po5 === '' ? null : po5;
 }
 
 /** Bandera de Maximo ("1"/"0", true/false, "Y"/"N"); null si no viene. */
@@ -297,8 +363,8 @@ function flag(rec: MaximoCanonicalRecord | null, key: string): boolean | null {
 /**
  * I1b (2026-09-30): recepción de la OC. RECEIPTS de la cabecera si viene
  * (NONE / PARTIAL / COMPLETE); si solo llega por línea, se deriva de
- * POLINE.RECEIPTSCOMPLETE / RECEIVEDQTY. Hoy AB_COMPRAS no trae ninguno:
- * null, y Expeditación sigue como siempre hasta que CIISA lo exponga.
+ * POLINE.RECEIPTSCOMPLETE / RECEIVEDQTY. AB_COMPRAS trae RECEIPTS en todas
+ * las OC desde el 2-oct; sin cabecera ni líneas con dato → null.
  */
 export function receiptStatusOf(
   header: MaximoCanonicalRecord | null,
@@ -327,7 +393,8 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
 
   const history = mapStatusHistory(children(r, 'POSTATUS'));
   const buyerPerson = first(r, 'PERSON');
-  const lines = children(r, 'POLINE').map(mapPurchaseOrderLine);
+  // K3: ordenadas ANTES de derivar la PR de la OC (primera línea por número).
+  const lines = sortLinesByNum(children(r, 'POLINE').map(mapPurchaseOrderLine));
   const firstPr = lines.find((l) => l.pr !== null)?.pr ?? null;
   // G2/G3 (2026-09-28): todas las PR de la OC y la fecha de la más antigua
   // (la gestión empieza con la primera solicitud; misma regla que SAP D3).
@@ -362,6 +429,8 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
     currencyCode: str(r, 'CURRENCYCODE'),
     pretaxTotal: num(r, 'PRETAXTOTAL'),
     totalCost: num(r, 'TOTALCOST'),
+    subtotal: subtotalOf(lines),
+    integrationStatus: integrationStatusOf(r),
 
     abAhorro: num(r, 'AB_AHORRO'),
     abTipoComp: str(r, 'AB_TIPOCOMP'),
@@ -520,9 +589,12 @@ function prTotalOf(pr: MaximoCanonicalRecord | null): number | null {
   return Math.round(costs.reduce((sum, c) => sum + c, 0) * 100) / 100;
 }
 
-/** D2: estatus de la PR en su raíz (nunca PERSON.STATUS, que es un hijo). */
+/**
+ * D2 / K3: estatus de la PR = STATUS de su raíz (nunca PERSON.STATUS, que es
+ * un hijo). PRSTATUS ya no es respaldo: desde el 2-oct es el hijo historial.
+ */
 function prStatusOf(pr: MaximoCanonicalRecord | null): string | null {
-  return str(pr, 'STATUS') ?? str(pr, 'PRSTATUS');
+  return str(pr, 'STATUS');
 }
 
 function buildContractDto(
@@ -536,6 +608,14 @@ function buildContractDto(
   const history = mapStatusHistory(children(pv, 'CONTRACTSTATUS'));
   const createdDate = firstChangeDate(history, 'WAPPR');
   const prStatus = prStatusOf(pr);
+  // K3 (2026-10-05): campos de la PR (raíz de AB_CONTRATOS); se repiten igual
+  // en cada revisión del contrato. APPR = llegada a Compras: la PRIMERA (no se
+  // mueve si la PR regresa a WAPPR y se re-aprueba). CLOSE y CAN, la ÚLTIMA.
+  // La CAN sale solo del historial (sin respaldo por STATUSDATE) y no se
+  // infiere APPR cuando falta.
+  const prHistory = mapPrStatusHistory(children(pr, 'PRSTATUS'));
+  const prApproved = firstDatedChange(prHistory, 'APPR');
+  const prCancelled = lastDatedChange(prHistory, 'CAN');
 
   // §20.2 RESUELTA (Isaac, correo 2026-09; registrado en HANDOFF 2026-09-21):
   // CONTRACTVALUE ≡ TOTALCOST y CONTRACTREFNUM ≡ CONTRACTNUM. Si algún día la
@@ -577,9 +657,17 @@ function buildContractDto(
     consumedValue: firstNum(pv, CONSUMED_KEYS),
     prTotal: prTotalOf(pr),
     prStatus,
+    prIssueDate: str(pr, 'ISSUEDATE'),
+    prStatusDate: str(pr, 'STATUSDATE'),
+    prStatusHistory: prHistory,
+    prApprovedDate: prApproved?.changeDate ?? null,
+    prApprovedBy: prApproved?.changedBy ?? null,
+    prClosedDate: lastDatedChange(prHistory, 'CLOSE')?.changeDate ?? null,
+    prCancelledDate: prCancelled?.changeDate ?? null,
+    prCancelledBy: prCancelled?.changedBy ?? null,
 
     // Último estatus del CONTRATO (historial ordenado). Sin contrato, el de
-    // la PR si la OS lo expone. Nunca PERSON.STATUS.
+    // la PR (STATUS de su raíz). Nunca PERSON.STATUS.
     status: history.length
       ? history[history.length - 1].status
       : pv === null

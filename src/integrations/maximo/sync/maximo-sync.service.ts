@@ -27,6 +27,7 @@ import {
   MaximoSyncSkipped,
   MaximoSyncTarget,
   MaximoSyncTrigger,
+  MaximoUpsertResult,
 } from './maximo-sync.types';
 
 /**
@@ -47,6 +48,11 @@ import {
  *   (el gate del cron vive en el scheduler; este es el gate de servicio).
  * - Contratos con `MAXIMO_CONTRACTS_ENABLED=false` → skip con log informativo
  *   (sin corrida, sin error).
+ * - K8 (2026-10-05): 'remapped' (mismo rowstamp, otro mapper u otro hash) se
+ *   cuenta aparte de 'updated'; el log separa "por mapper" y "por hash", con
+ *   llaves de ejemplo de las "por hash". En contratos, al terminar cada
+ *   registro se marcan como obsoletas (`superseded_at`) las revisiones de la
+ *   PR que ya no vienen.
  */
 
 const MAX_PAGES_GUARD = 1_000;
@@ -54,6 +60,8 @@ const ERROR_ITEM_MAX_CHARS = 300;
 const ERROR_SUMMARY_MAX_CHARS = 2_000;
 /** Con fallos consecutivos y sin total conocido, corta el escaneo. */
 const MAX_CONSECUTIVE_PAGE_FAILURES = 3;
+/** K8: llaves de ejemplo de los re-mapeos "por hash" en el log de la corrida. */
+const REMAP_HASH_SAMPLE_KEYS = 5;
 
 interface RunState extends MaximoSyncCounters {
   runId: string;
@@ -61,6 +69,12 @@ interface RunState extends MaximoSyncCounters {
   triggeredBy: MaximoSyncTrigger;
   filterWarnings: unknown[];
   errors: string[];
+  /** K8: desglose de recordsRemapped para el log (no va a la bitácora). */
+  remappedByMapper: number;
+  remappedByHash: number;
+  remappedHashKeys: string[];
+  /** K8: revisiones de contrato marcadas como obsoletas en esta corrida. */
+  recordsSuperseded: number;
 }
 
 @Injectable()
@@ -226,10 +240,15 @@ export class MaximoSyncService implements OnModuleInit {
         recordsFetched: 0,
         recordsInserted: 0,
         recordsUpdated: 0,
+        recordsRemapped: 0,
         recordsUnchanged: 0,
         recordsFailed: 0,
         filterWarnings: [],
         errors: [],
+        remappedByMapper: 0,
+        remappedByHash: 0,
+        remappedHashKeys: [],
+        recordsSuperseded: 0,
       };
     } catch (error) {
       this.running.delete(target);
@@ -278,9 +297,27 @@ export class MaximoSyncService implements OnModuleInit {
           this.pushError(state, `mapeo de contrato: ${message(error)}`);
           continue;
         }
+        let allOk = true;
         for (const dto of dtos) {
-          await this.upsertOne(state, () =>
+          const ok = await this.upsertOne(state, () =>
             this.staging.upsertContract(dto, raw, state.runId),
+          );
+          allOk = allOk && ok;
+        }
+        // K8: obsoletas, solo si TODAS las revisiones del registro quedaron
+        // escritas (si falló la llave nueva, marcar la vieja dejaría la PR
+        // fuera de todas las vistas). Dentro de try/catch: una excepción aquí
+        // saldría del callback y la página entera contaría como fallida.
+        if (!allOk) continue;
+        const prnum = dtos[0]?.prnum ?? null;
+        try {
+          state.recordsSuperseded +=
+            await this.staging.supersedeMissingRevisions(prnum, dtos);
+        } catch (error: unknown) {
+          state.recordsFailed += 1;
+          this.pushError(
+            state,
+            `obsoletas de ${prnum ?? '-'}: ${message(error)}`,
           );
         }
       }
@@ -377,18 +414,30 @@ export class MaximoSyncService implements OnModuleInit {
     }
   }
 
+  /** Cuenta el desenlace de un upsert; regresa false si falló. */
   private async upsertOne(
     state: RunState,
-    upsert: () => Promise<'inserted' | 'updated' | 'unchanged'>,
-  ): Promise<void> {
+    upsert: () => Promise<MaximoUpsertResult>,
+  ): Promise<boolean> {
     try {
-      const outcome = await upsert();
+      const { outcome, reason, key } = await upsert();
       if (outcome === 'inserted') state.recordsInserted += 1;
       else if (outcome === 'updated') state.recordsUpdated += 1;
-      else state.recordsUnchanged += 1;
+      else if (outcome === 'remapped') {
+        state.recordsRemapped += 1;
+        if (reason === 'mapper') state.remappedByMapper += 1;
+        else {
+          state.remappedByHash += 1;
+          if (state.remappedHashKeys.length < REMAP_HASH_SAMPLE_KEYS) {
+            state.remappedHashKeys.push(key);
+          }
+        }
+      } else state.recordsUnchanged += 1;
+      return true;
     } catch (error: unknown) {
       state.recordsFailed += 1;
       this.pushError(state, `upsert: ${message(error)}`);
+      return false;
     }
   }
 
@@ -423,6 +472,7 @@ export class MaximoSyncService implements OnModuleInit {
         records_fetched: state.recordsFetched,
         records_inserted: state.recordsInserted,
         records_updated: state.recordsUpdated,
+        records_remapped: state.recordsRemapped,
         records_unchanged: state.recordsUnchanged,
         records_failed: state.recordsFailed,
         filter_warnings: state.filterWarnings.length
@@ -432,8 +482,17 @@ export class MaximoSyncService implements OnModuleInit {
       },
     });
 
+    // K8: "por mapper" debe ser 0 salvo en el primer full tras subir el
+    // mapper; las llaves "por hash" sirven para revisar qué cambió en hijos.
+    const hashKeys = state.remappedHashKeys.length
+      ? ` ej.: ${state.remappedHashKeys.join(', ')}`
+      : '';
+    const superseded =
+      state.target === 'contracts'
+        ? ` superseded=${state.recordsSuperseded}`
+        : '';
     this.logger.log(
-      `Corrida ${state.runId} (${state.target}, ${state.triggeredBy}) → ${status}: fetched=${state.recordsFetched} inserted=${state.recordsInserted} updated=${state.recordsUpdated} unchanged=${state.recordsUnchanged} failed=${state.recordsFailed} pagesOk=${state.pagesOk}/${state.pagesTotal ?? '-'} pagesFailed=${state.pagesFailed}`,
+      `Corrida ${state.runId} (${state.target}, ${state.triggeredBy}) → ${status}: fetched=${state.recordsFetched} inserted=${state.recordsInserted} updated=${state.recordsUpdated} remapped=${state.recordsRemapped} (por mapper=${state.remappedByMapper}, por hash=${state.remappedByHash}${hashKeys}) unchanged=${state.recordsUnchanged} failed=${state.recordsFailed}${superseded} pagesOk=${state.pagesOk}/${state.pagesTotal ?? '-'} pagesFailed=${state.pagesFailed}`,
     );
 
     return {
@@ -447,6 +506,7 @@ export class MaximoSyncService implements OnModuleInit {
       recordsFetched: state.recordsFetched,
       recordsInserted: state.recordsInserted,
       recordsUpdated: state.recordsUpdated,
+      recordsRemapped: state.recordsRemapped,
       recordsUnchanged: state.recordsUnchanged,
       recordsFailed: state.recordsFailed,
       filterWarnings: state.filterWarnings,

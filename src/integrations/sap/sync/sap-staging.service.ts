@@ -46,6 +46,7 @@ export class SapStagingService {
       card_code: dto.cardCode,
       card_name: dto.cardName,
       doc_total: dto.docTotal,
+      subtotal: dto.subtotal, // K6: sin IVA; null = no disponible
       currency: dto.currency,
       lines_total: dto.linesTotal,
       lines_classified: dto.linesClassified,

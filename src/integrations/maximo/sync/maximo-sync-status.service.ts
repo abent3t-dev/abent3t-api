@@ -28,7 +28,8 @@ export class MaximoSyncStatusService {
         this.lastRun('purchase_orders'),
         this.lastRun('contracts'),
         this.prisma.maximo_purchase_orders.count(),
-        this.prisma.maximo_contracts.count(),
+        // K8: sin las revisiones obsoletas (las vistas también las excluyen)
+        this.prisma.maximo_contracts.count({ where: { superseded_at: null } }),
       ]);
 
     return {

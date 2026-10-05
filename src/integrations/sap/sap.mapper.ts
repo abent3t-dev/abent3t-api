@@ -28,10 +28,13 @@ import { SapMappingError } from './sap.errors';
  */
 // 1.1.0: Cancelled/AuthorizationStatus/ClosingDate (A6); 1.1.1: approvers en
 // snake_case (B5); 1.2.0: importes en la moneda del documento (DocTotalFc /
-// RowTotalFC), saldo disponible, solicitudes base y UserSign. Un cambio de
-// versión fuerza el re-mapeo aunque el raw no cambie (ver SapStagingService),
-// así que basta un sync full tras desplegar.
-export const SAP_MAPPER_VERSION = '1.2.0';
+// RowTotalFC), saldo disponible, solicitudes base y UserSign; 1.3.0: subtotal
+// sin IVA de la OC = suma estricta de sus líneas (K6). Un cambio de versión
+// fuerza el re-mapeo aunque el raw no cambie (ver SapStagingService), así que
+// basta un sync full tras desplegar. La versión es una sola para todas las
+// entidades: solicitudes, socios y autorizaciones también salen 'updated' una
+// vez, cuando se vuelven a leer.
+export const SAP_MAPPER_VERSION = '1.3.0';
 
 /**
  * Moneda local de la sociedad (PRD_ABENT, validado 2026-09-23). `DocTotal`,
@@ -72,6 +75,8 @@ export function toSapPurchaseOrder(raw: unknown): SapPurchaseOrderDto {
     cardCode: toTextOrNull(doc.CardCode),
     cardName: toTextOrNull(doc.CardName),
     docTotal,
+    // K6: sin IVA y en la misma moneda que docTotal; null = no disponible.
+    subtotal: strictLineSubtotal(lines),
     currency,
     openTotal: openTotal(lines, docTotal),
     userSign: toIntOrNull(doc.UserSign),
@@ -365,6 +370,35 @@ function openTotal(
   return round2((docTotal * pending) / gross);
 }
 
+/**
+ * Subtotal sin IVA de una OC (K6), en la moneda del documento: la suma de
+ * `lineTotal` (LineTotal en MXN, RowTotalFC en USD/EUR; ver mapLines)
+ * redondeada a 2 decimales. Regla estricta, la misma que LINECOST en Maximo:
+ * null si la OC no trae líneas o si a alguna le falta el importe, porque una
+ * suma parcial subestimaría la OC sin que se note. No se estima con DocTotal
+ * ni con VatSum (no se pide en PO_SELECT). Validado en la copia de dev al
+ * 1-oct: DocTotal = Σ líneas + Σ impuesto en el 100% de las 3,350 OC no
+ * canceladas.
+ */
+function strictLineSubtotal(lines: SapDocumentLineDto[]): number | null {
+  if (lines.length === 0) return null;
+  let sum = 0;
+  for (const line of lines) {
+    if (line.lineTotal === null) return null;
+    sum += line.lineTotal;
+  }
+  return round2(sum);
+}
+
+/**
+ * Importe de una SOLICITUD: suma las líneas que traen importe aunque falten
+ * otras (null solo si ninguna lo trae). No sigue la regla estricta de
+ * strictLineSubtotal a propósito (K6): es el único importe que hay de la
+ * solicitud (el SL no deja pedir DocTotal), no hay total con IVA junto al
+ * cual pueda quedar como "No disponible", y volverla estricta dejaría sin
+ * monto, en pantallas y en la serie de Reportes, a solicitudes que hoy lo
+ * tienen.
+ */
 function sumLineTotals(lines: SapDocumentLineDto[]): number | null {
   const withTotal = lines.filter((l) => l.lineTotal !== null);
   if (withTotal.length === 0) return null;

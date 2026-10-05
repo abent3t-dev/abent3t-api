@@ -1,3 +1,5 @@
+import { canonicalize } from '../common/maximo/maximo-canonical';
+import type { CanonicalMaximoRecord } from '../common/maximo/maximo-canonical';
 import {
   MaximoContractLine,
   MaximoContractStatusEntry,
@@ -5,26 +7,32 @@ import {
 
 /**
  * Fase INT-5 — Derivación de líneas e historial desde el `raw` JSONB de
- * `maximo_contracts`, con las dos formas reales que persiste el sync (Int-3):
+ * `maximo_contracts`, con las dos formas de registro que persiste el sync
+ * (Int-3):
  *
- *  1. Registro PR con `PURCHVIEW` anidado (legacy compacto): la revisión se
- *     localiza por (CONTRACTNUM, REVISIONNUM) dentro del arreglo.
+ *  1. Registro PR con `PURCHVIEW` anidado: la revisión se localiza por
+ *     (CONTRACTNUM, REVISIONNUM) dentro del arreglo.
  *  2. Registro de contrato directo en la raíz (CONTRACTNUM/CONTRACTLINE/
  *     CONTRACTSTATUS al primer nivel).
+ *
+ * K3.7 (2026-10-05): el raw se canoniza ANTES de buscar (`canonicalize`, de
+ * common/maximo, sin depender de la capa de integración). El `raw` de prod
+ * es legacy ANIDADO (`Attributes`/`RelatedMbos`): sin canonizar, el detalle
+ * de contrato salía sin líneas ni historial. También acepta el compacto y
+ * el OSLC.
  *
  * Todo es mejor-esfuerzo sobre datos externos: campo ausente o con forma
  * inesperada → null / lista vacía, nunca una excepción (el raw es de Maximo,
  * no nuestro).
  */
 
-type RawRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is RawRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function asRecordArray(value: unknown): RawRecord[] {
-  return Array.isArray(value) ? value.filter(isRecord) : [];
+function asRecordArray(value: unknown): CanonicalMaximoRecord[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (v): v is CanonicalMaximoRecord =>
+          typeof v === 'object' && v !== null && !Array.isArray(v),
+      )
+    : [];
 }
 
 function asString(value: unknown): string | null {
@@ -41,14 +49,18 @@ function asNumber(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Localiza el registro de contrato de UNA revisión dentro del raw. */
+/**
+ * Localiza el registro de contrato de UNA revisión dentro del raw (ya
+ * canonizado: claves en mayúsculas, escalares desenvueltos).
+ */
 export function findContractRecord(
   raw: unknown,
   contractnum: string | null,
   revisionnum: number | null,
-): RawRecord | null {
-  if (!isRecord(raw)) return null;
-  const purchview = asRecordArray(raw.PURCHVIEW);
+): CanonicalMaximoRecord | null {
+  const record = canonicalize(raw);
+  if (!record) return null;
+  const purchview = asRecordArray(record.PURCHVIEW);
   if (purchview.length === 1) return purchview[0];
   if (purchview.length > 1) {
     return (
@@ -60,7 +72,7 @@ export function findContractRecord(
     );
   }
   // Forma 2: el raw ES el registro de contrato.
-  if (raw.CONTRACTNUM !== undefined) return raw;
+  if (record.CONTRACTNUM !== undefined) return record;
   return null;
 }
 

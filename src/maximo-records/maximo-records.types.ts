@@ -147,11 +147,29 @@ export interface MaximoContractStatusEntry {
   changedAt: string | null;
 }
 
+/**
+ * K3 (2026-10-05): cambio de estatus de la PR (PRSTATUS), leído de
+ * `maximo_pr_status_history` (una vez por PR), no del raw.
+ */
+export interface MaximoPrStatusEntry {
+  status: string;
+  changedAt: Date | null;
+  /** Usuario de Maximo (CHANGEBY). */
+  changedBy: string | null;
+  /** D6: nombre según los alias de Maximo; null = sin alias. */
+  changedByName: string | null;
+  /** MEMO (p. ej. el motivo de la cancelación). */
+  memo: string | null;
+}
+
 export interface MaximoContractDetail {
   current: MaximoContractView;
   revisions: MaximoContractRevision[];
   lines: MaximoContractLine[];
+  /** Historial del CONTRATO (raw.CONTRACTSTATUS); vacío sin contrato. */
   statusHistory: MaximoContractStatusEntry[];
+  /** K3: historial de la PR, por fecha y PRSTATUSID; vacío sin prnum. */
+  prStatusHistory: MaximoPrStatusEntry[];
 }
 
 export interface MaximoStatusCount {
@@ -166,6 +184,8 @@ export interface MaximoLastSyncRun {
   finished_at: Date | null;
   records_inserted: number;
   records_updated: number;
+  /** K8: mismo rowstamp, re-mapeadas por mapper o hash nuevos (no es cambio). */
+  records_remapped: number;
   records_unchanged: number;
   records_failed: number;
 }

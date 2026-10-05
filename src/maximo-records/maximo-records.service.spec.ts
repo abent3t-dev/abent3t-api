@@ -19,8 +19,9 @@ import {
  * Fase INT-5. Service probado con Prisma MOCKEADO — cero red, cero BD.
  * Los raw de contratos son copias inline sanitizadas con la MISMA forma que
  * persiste el sync de Int-3 (PR con PURCHVIEW anidado y registro de contrato
- * directo); no se leen fixtures de otras carpetas para que este módulo no
- * referencie la capa de integración ni por ruta (criterio por grep).
+ * directo; K3.7: también el legacy ANIDADO de prod, Attributes/RelatedMbos);
+ * no se leen fixtures de otras carpetas para que este módulo no referencie
+ * la capa de integración ni por ruta (criterio por grep).
  */
 
 /** Forma 1: registro PR legacy-compacto con PURCHVIEW anidado. */
@@ -59,10 +60,135 @@ const RAW_CONTRACT_DIRECT = {
   ],
 };
 
+/** Escalar en la forma legacy anidada (`{ content }`). */
+const c = (content: unknown) => ({ content });
+
+/**
+ * K3.7: forma legacy ANIDADA (`Attributes`/`RelatedMbos`), la que guarda prod
+ * porque el listado no pide `_compact`. PR con dos revisiones del contrato en
+ * PURCHVIEW (líneas e historial desordenado anidados) y su PRSTATUS, que el
+ * detalle NO lee del raw (sale de maximo_pr_status_history). Valores dummy.
+ */
+const RAW_PR_NESTED = {
+  rowstamp: '990100006',
+  Attributes: {
+    PRNUM: c('PR990006'),
+    SITEID: c('A3T'),
+    STATUS: c('CLOSE'),
+  },
+  RelatedMbos: {
+    PRSTATUS: [
+      {
+        rowstamp: '990100061',
+        Attributes: {
+          STATUS: c('WAPPR'),
+          CHANGEDATE: c('2026-06-10T09:00:00+00:00'),
+          CHANGEBY: c('USR031'),
+          PRSTATUSID: { content: 990061, resourceid: true },
+        },
+      },
+    ],
+    PURCHVIEW: [
+      {
+        rowstamp: '990160000',
+        Attributes: { CONTRACTNUM: c('9906'), REVISIONNUM: c(0) },
+        RelatedMbos: {
+          CONTRACTLINE: [
+            {
+              rowstamp: '990160701',
+              Attributes: {
+                CONTRACTLINENUM: c(1),
+                ITEMNUM: c('9990001'),
+                DESCRIPTION: c('Servicio demo mensual'),
+              },
+            },
+          ],
+          CONTRACTSTATUS: [
+            {
+              rowstamp: '990160604',
+              Attributes: {
+                STATUS: c('REVISD'),
+                CHANGEDATE: c('2026-08-01T09:00:00+00:00'),
+              },
+            },
+          ],
+        },
+      },
+      {
+        rowstamp: '990160001',
+        Attributes: { CONTRACTNUM: c('9906'), REVISIONNUM: c(1) },
+        RelatedMbos: {
+          CONTRACTLINE: [
+            {
+              rowstamp: '990160701',
+              Attributes: {
+                CONTRACTLINENUM: c(1),
+                ITEMNUM: c('9990001'),
+                DESCRIPTION: c('Servicio demo mensual'),
+                ORDERQTY: c(12),
+                UNITCOST: c(8000),
+              },
+            },
+            {
+              rowstamp: '990160702',
+              Attributes: {
+                CONTRACTLINENUM: c(2),
+                ITEMNUM: c('9990002'),
+                DESCRIPTION: c('~null~'),
+              },
+            },
+          ],
+          CONTRACTSTATUS: [
+            {
+              rowstamp: '990160605',
+              Attributes: {
+                STATUS: c('APPR'),
+                CHANGEDATE: c('2026-08-02T11:00:00+00:00'),
+                CONTRACTSTATUSID: { content: 990605, resourceid: true },
+              },
+            },
+            {
+              rowstamp: '990160603',
+              Attributes: {
+                STATUS: c('PNDREV'),
+                CHANGEDATE: c('2026-08-01T09:00:00+00:00'),
+                CONTRACTSTATUSID: { content: 990603, resourceid: true },
+              },
+            },
+          ],
+        },
+      },
+    ],
+  },
+};
+
+/** Lo que el detalle debe derivar de RAW_PR_NESTED para la revisión 1. */
+const NESTED_REV1_LINES = [
+  {
+    lineNum: 1,
+    itemNum: '9990001',
+    description: 'Servicio demo mensual',
+    quantity: 12,
+    unitCost: 8000,
+  },
+  {
+    lineNum: 2,
+    itemNum: '9990002',
+    description: null,
+    quantity: null,
+    unitCost: null,
+  },
+];
+const NESTED_REV1_HISTORY = [
+  { status: 'PNDREV', changedAt: '2026-08-01T09:00:00+00:00' },
+  { status: 'APPR', changedAt: '2026-08-02T11:00:00+00:00' },
+];
+
 interface FakePrismaShape {
   $queryRaw: jest.Mock;
   maximo_purchase_orders: { findMany: jest.Mock };
   maximo_contracts: { findMany: jest.Mock };
+  maximo_pr_status_history: { findMany: jest.Mock };
   maximo_sync_runs: { findFirst: jest.Mock };
 }
 
@@ -95,6 +221,7 @@ function makeService(
     $queryRaw: jest.fn(),
     maximo_purchase_orders: { findMany: jest.fn().mockResolvedValue([]) },
     maximo_contracts: { findMany: jest.fn().mockResolvedValue([]) },
+    maximo_pr_status_history: { findMany: jest.fn().mockResolvedValue([]) },
     maximo_sync_runs: { findFirst: jest.fn().mockResolvedValue(null) },
   };
   const config = { get: (key: string) => env[key] } as ConfigService;
@@ -292,6 +419,163 @@ describe('MaximoRecordsService', () => {
       expect(detail.revisions).toHaveLength(2);
       expect(detail.lines[0].itemNum).toBe('TST1ACIDO');
       expect(detail.current.raw).toEqual(RAW_CONTRACT_DIRECT);
+      // K3: sin prnum no hay PR ni historial de la PR (y no se consulta)
+      expect(detail.prStatusHistory).toEqual([]);
+      expect(prisma.maximo_pr_status_history.findMany).not.toHaveBeenCalled();
+    });
+
+    it('K3.7: con el raw ANIDADO de prod muestra líneas e historial del contrato', async () => {
+      const { service, prisma } = makeService();
+      prisma.maximo_contracts.findMany.mockResolvedValue([
+        contractRow({
+          id: 'ct-r0',
+          prnum: 'PR990006',
+          contractnum: '9906',
+          revisionnum: 0,
+          status: 'REVISD',
+          raw: RAW_PR_NESTED,
+        }),
+        contractRow({
+          id: 'ct-r1',
+          prnum: 'PR990006',
+          contractnum: '9906',
+          revisionnum: 1,
+          status: 'APPR',
+          raw: RAW_PR_NESTED,
+        }),
+      ]);
+
+      const detail = await service.getContract('PR990006', false);
+      expect(detail.current.revisionnum).toBe(1);
+      // antes de K3.7 salían vacíos: findContractRecord solo leía el compacto
+      expect(detail.lines).toEqual(NESTED_REV1_LINES);
+      expect(detail.statusHistory).toEqual(NESTED_REV1_HISTORY);
+    });
+
+    it('K8: current = la revisión más alta NO superseded; las obsoletas no se listan', async () => {
+      const { service, prisma } = makeService();
+      const superseded = new Date('2026-10-05T12:00:00Z');
+      prisma.maximo_contracts.findMany.mockResolvedValue([
+        // fila vieja sin contrato de la PR que después tuvo contrato
+        contractRow({
+          id: 'ct-old',
+          prnum: 'PR990006',
+          contractnum: null,
+          revisionnum: null,
+          status: 'APPR',
+          has_contract: false,
+          superseded_at: superseded,
+          raw: { rowstamp: '1', Attributes: {}, RelatedMbos: {} },
+        }),
+        contractRow({
+          id: 'ct-r0',
+          prnum: 'PR990006',
+          contractnum: '9906',
+          revisionnum: 0,
+          status: 'REVISD',
+          superseded_at: null,
+          raw: RAW_PR_NESTED,
+        }),
+        // revisión retirada: más alta, pero obsoleta
+        contractRow({
+          id: 'ct-r2',
+          prnum: 'PR990006',
+          contractnum: '9906',
+          revisionnum: 2,
+          status: 'APPR',
+          superseded_at: superseded,
+          raw: RAW_PR_NESTED,
+        }),
+      ]);
+
+      const detail = await service.getContract('PR990006', false);
+      expect(detail.current.id).toBe('ct-r0');
+      expect(detail.current.status).toBe('REVISD');
+      expect(detail.revisions.map((r) => r.id)).toEqual(['ct-r0']);
+      expect(detail.lines.map((l) => l.itemNum)).toEqual(['9990001']);
+      expect(detail.statusHistory.map((s) => s.status)).toEqual(['REVISD']);
+    });
+
+    it('K8: si todas las filas de la clave son obsoletas → NotFoundException', async () => {
+      const { service, prisma } = makeService();
+      prisma.maximo_contracts.findMany.mockResolvedValue([
+        contractRow({ superseded_at: new Date('2026-10-05T12:00:00Z') }),
+      ]);
+      await expect(service.getContract('PR102828', false)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('K3: prStatusHistory sale de maximo_pr_status_history (por seq), con alias y MEMO, no del raw', async () => {
+      const { service, prisma, aliases } = makeService();
+      prisma.maximo_contracts.findMany.mockResolvedValue([
+        contractRow({
+          prnum: 'PR990006',
+          contractnum: '9906',
+          revisionnum: 1,
+          raw: RAW_PR_NESTED,
+        }),
+      ]);
+      prisma.maximo_pr_status_history.findMany.mockResolvedValue([
+        {
+          status: 'WAPPR',
+          change_date: new Date('2026-06-10T09:00:00Z'),
+          changed_by: 'USR031',
+          memo: null,
+        },
+        {
+          status: 'APPR',
+          change_date: new Date('2026-06-10T09:00:00Z'),
+          changed_by: 'USR032',
+          memo: null,
+        },
+        {
+          status: 'CLOSE',
+          change_date: new Date('2026-07-01T16:40:00Z'),
+          changed_by: 'USR031',
+          memo: 'Comentario de prueba',
+        },
+      ]);
+      aliases.resolveMany.mockResolvedValue(
+        new Map([['USR032', 'Persona Demo 32']]),
+      );
+
+      const detail = await service.getContract('PR990006', false);
+      expect(prisma.maximo_pr_status_history.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { prnum: 'PR990006' },
+          orderBy: { seq: 'asc' },
+        }),
+      );
+      // el raw solo trae un WAPPR: el historial completo es el de la tabla
+      expect(detail.prStatusHistory).toEqual([
+        {
+          status: 'WAPPR',
+          changedAt: new Date('2026-06-10T09:00:00Z'),
+          changedBy: 'USR031',
+          changedByName: null,
+          memo: null,
+        },
+        {
+          status: 'APPR',
+          changedAt: new Date('2026-06-10T09:00:00Z'),
+          changedBy: 'USR032',
+          changedByName: 'Persona Demo 32',
+          memo: null,
+        },
+        {
+          status: 'CLOSE',
+          changedAt: new Date('2026-07-01T16:40:00Z'),
+          changedBy: 'USR031',
+          changedByName: null,
+          memo: 'Comentario de prueba',
+        },
+      ]);
+      expect(aliases.resolveMany).toHaveBeenCalledWith('maximo', [
+        'USR031',
+        'USR032',
+        'USR031',
+      ]);
     });
 
     it('PR sin contrato: has_contract=false, líneas e historial vacíos', async () => {
@@ -311,6 +595,7 @@ describe('MaximoRecordsService', () => {
       expect(detail.current.has_contract).toBe(false);
       expect(detail.lines).toEqual([]);
       expect(detail.statusHistory).toEqual([]);
+      expect(detail.prStatusHistory).toEqual([]);
     });
   });
 
@@ -335,6 +620,7 @@ describe('MaximoRecordsService', () => {
           finished_at: new Date('2026-08-31T00:00:05Z'),
           records_inserted: 7,
           records_updated: 0,
+          records_remapped: 0,
           records_unchanged: 0,
           records_failed: 0,
         })
@@ -351,6 +637,37 @@ describe('MaximoRecordsService', () => {
       });
       expect(summary.lastSync.purchase_orders?.records_inserted).toBe(7);
       expect(summary.lastSync.contracts).toBeNull();
+    });
+
+    it('K8: la última corrida trae records_remapped (el primer full no se ve como ~0 / =0)', async () => {
+      const { service, prisma } = makeService();
+      prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      prisma.maximo_sync_runs.findFirst
+        .mockResolvedValueOnce({
+          status: 'success',
+          triggered_by: 'scheduler',
+          started_at: new Date('2026-10-06T06:00:30Z'),
+          finished_at: new Date('2026-10-06T06:05:10Z'),
+          records_inserted: 0,
+          records_updated: 3,
+          records_remapped: 5026,
+          records_unchanged: 0,
+          records_failed: 0,
+        })
+        .mockResolvedValueOnce(null);
+
+      const summary = await service.getSummary();
+      expect(summary.lastSync.purchase_orders).toMatchObject({
+        records_updated: 3,
+        records_remapped: 5026,
+        records_unchanged: 0,
+      });
+      // el select de Prisma pide la columna (sin ella llegaría undefined)
+      for (const [args] of prisma.maximo_sync_runs.findFirst.mock
+        .calls as Array<[{ select: Record<string, boolean> }]>) {
+        expect(args.select.records_remapped).toBe(true);
+      }
+      expect(prisma.maximo_sync_runs.findFirst).toHaveBeenCalledTimes(2);
     });
 
     it('sin flag en el env, syncEnabled=false', async () => {
@@ -383,10 +700,82 @@ describe('derivación pura del raw de contratos', () => {
   });
 
   it('formas inesperadas devuelven vacío sin lanzar', () => {
-    for (const raw of [null, 42, 'x', [], { PURCHVIEW: 'no-array' }]) {
+    for (const raw of [
+      null,
+      42,
+      'x',
+      [],
+      { PURCHVIEW: 'no-array' },
+      { Attributes: {}, RelatedMbos: { PURCHVIEW: 'no-array' } },
+      { RelatedMbos: { PURCHVIEW: [{ Attributes: 'x' }, 7] } },
+    ]) {
       expect(deriveContractLines(raw, '1', 0)).toEqual([]);
       expect(deriveContractStatusHistory(raw, '1', 0)).toEqual([]);
     }
+  });
+
+  it('K3.7: el raw ANIDADO se canoniza antes de buscar la revisión', () => {
+    const record = findContractRecord(RAW_PR_NESTED, '9906', 1);
+    expect(record?.REVISIONNUM).toBe(1);
+    expect(deriveContractLines(RAW_PR_NESTED, '9906', 1)).toEqual(
+      NESTED_REV1_LINES,
+    );
+    expect(deriveContractStatusHistory(RAW_PR_NESTED, '9906', 1)).toEqual(
+      NESTED_REV1_HISTORY,
+    );
+    expect(deriveContractLines(RAW_PR_NESTED, '9906', 0)).toHaveLength(1);
+    expect(deriveContractLines(RAW_PR_NESTED, '9906', 99)).toEqual([]);
+  });
+
+  it('K3.7: anidado y compacto del mismo registro dan lo mismo', () => {
+    // el mismo contrato (rev 1 de RAW_PR_NESTED) en forma compacta
+    const compact = {
+      PRNUM: 'PR990006',
+      rowstamp: '990100006',
+      PURCHVIEW: [
+        { CONTRACTNUM: '9906', REVISIONNUM: 0, CONTRACTLINE: [] },
+        {
+          CONTRACTNUM: '9906',
+          REVISIONNUM: 1,
+          rowstamp: '990160001',
+          CONTRACTLINE: [
+            {
+              CONTRACTLINENUM: 1,
+              ITEMNUM: '9990001',
+              DESCRIPTION: 'Servicio demo mensual',
+              ORDERQTY: 12,
+              UNITCOST: 8000,
+            },
+            { CONTRACTLINENUM: 2, ITEMNUM: '9990002', DESCRIPTION: '~null~' },
+          ],
+          CONTRACTSTATUS: [
+            { STATUS: 'APPR', CHANGEDATE: '2026-08-02T11:00:00+00:00' },
+            { STATUS: 'PNDREV', CHANGEDATE: '2026-08-01T09:00:00+00:00' },
+          ],
+        },
+      ],
+    };
+    expect(deriveContractLines(compact, '9906', 1)).toEqual(
+      deriveContractLines(RAW_PR_NESTED, '9906', 1),
+    );
+    expect(deriveContractStatusHistory(compact, '9906', 1)).toEqual(
+      deriveContractStatusHistory(RAW_PR_NESTED, '9906', 1),
+    );
+  });
+
+  it('K3.7: contrato directo en forma anidada (sin PURCHVIEW)', () => {
+    const raw = {
+      rowstamp: '300',
+      Attributes: { CONTRACTNUM: c('1040'), REVISIONNUM: c(1) },
+      RelatedMbos: {
+        CONTRACTLINE: [
+          { Attributes: { CONTRACTLINENUM: c(1), ITEMNUM: c('TST1ACIDO') } },
+        ],
+      },
+    };
+    expect(deriveContractLines(raw, '1040', 1).map((l) => l.itemNum)).toEqual([
+      'TST1ACIDO',
+    ]);
   });
 });
 

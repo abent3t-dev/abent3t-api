@@ -46,6 +46,10 @@ describe('MaximoSyncStatusService', () => {
     await prisma.maximo_purchase_orders.create({ data: { ponum: 'PO1' } });
     await prisma.maximo_purchase_orders.create({ data: { ponum: 'PO2' } });
     await prisma.maximo_contracts.create({ data: { prnum: 'PR1' } });
+    // K8: una revisión obsoleta no cuenta (las vistas también la excluyen)
+    await prisma.maximo_contracts.create({
+      data: { prnum: 'PR0', superseded_at: new Date('2026-10-01T00:00:00Z') },
+    });
 
     const status = await service.getStatus();
     expect(Object.keys(status).sort()).toEqual([

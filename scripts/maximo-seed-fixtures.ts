@@ -7,6 +7,8 @@
  *
  * - SOLO desarrollo: aborta si NODE_ENV=production (guard en el service).
  * - Idempotente: la segunda ejecución termina con 0 inserted / 0 updated.
+ * - No pisa datos reales: la OC o la PR que ya tiene filas de una corrida
+ *   real se salta completa (`skipped` en el resultado).
  * - No toca la red ni requiere MAXIMO_* (solo DATABASE_URL, que PrismaClient
  *   lee de .env automáticamente).
  */

@@ -10,6 +10,8 @@ import { maximoVendorAmounts, rankVendors, VendorAmount } from './vendor-tops';
 import {
   andMaximoPrInWindow,
   andSapPoCountedOnce,
+  CURRENT_MAXIMO_CONTRACTS,
+  CURRENT_MAXIMO_POS,
   loadMaximoPrFolioWindow,
   maximoInApproval,
   maximoStatusSince,
@@ -63,18 +65,6 @@ interface MonthCount {
   month: Date | null;
   count: number;
 }
-
-/** Vista actual del staging (misma definición que Int-5/maximo-records). */
-export const CURRENT_MAXIMO_POS = Prisma.sql`
-  SELECT DISTINCT ON (ponum, coalesce(siteid, '')) *
-  FROM maximo_purchase_orders
-  ORDER BY ponum, coalesce(siteid, ''), coalesce(revisionnum, 0) DESC`;
-
-export const CURRENT_MAXIMO_CONTRACTS = Prisma.sql`
-  SELECT DISTINCT ON (coalesce(prnum, ''), coalesce(contractnum, '')) *
-  FROM maximo_contracts
-  ORDER BY coalesce(prnum, ''), coalesce(contractnum, ''),
-    coalesce(revisionnum, 0) DESC`;
 
 function toNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value);

@@ -1,0 +1,320 @@
+{
+  "QueryAB_COMPRASResponse": {
+    "rsStart": 0,
+    "rsCount": 1,
+    "AB_COMPRASSet": {
+      "PO": [
+        {
+          "rowstamp": "990104896",
+          "Attributes": {
+            "CURRENCYCODE": {
+              "content": "EUR"
+            },
+            "DESCRIPTION": {
+              "content": "Servicio demo de mantenimiento a controlador"
+            },
+            "ORDERDATE": {
+              "content": "2026-09-09T17:20:00+00:00"
+            },
+            "PO5": {
+              "content": "PROCESADO"
+            },
+            "PONUM": {
+              "content": "PO104896"
+            },
+            "PURCHASEAGENT": {
+              "content": "USR024"
+            },
+            "RECEIPTS": {
+              "content": "COMPLETE"
+            },
+            "REVISIONNUM": {
+              "content": 0
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "INPRG"
+            },
+            "TOTALCOST": {
+              "content": 1755.0
+            },
+            "VENDELIVERYDATE": {
+              "content": "2026-09-14T00:00:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "POLINE": [
+              {
+                "rowstamp": "990148963",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Refacción demo para controlador"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-09-09T17:21:30+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 254.95
+                  },
+                  "POLINENUM": {
+                    "content": 3
+                  },
+                  "PRNUM": {
+                    "content": "PR990007"
+                  },
+                  "RECEIPTSCOMPLETE": {
+                    "content": true
+                  },
+                  "RECEIVEDQTY": {
+                    "content": 1
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "990148973",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 1
+                        },
+                        "PRNUM": {
+                          "content": "PR990007"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "990100007",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2026-09-03T14:00:00+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR022"
+                              },
+                              "STATUSDATE": {
+                                "content": "2026-09-09T17:21:30+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "rowstamp": "990148961",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Servicio demo de mantenimiento"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-09-09T17:20:00+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 1000.1
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "PRNUM": {
+                    "content": "PR990001"
+                  },
+                  "RECEIPTSCOMPLETE": {
+                    "content": true
+                  },
+                  "RECEIVEDQTY": {
+                    "content": 1
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "990148971",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 1
+                        },
+                        "PRNUM": {
+                          "content": "PR990001"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "990100001",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2026-09-02T16:20:05+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR021"
+                              },
+                              "STATUSDATE": {
+                                "content": "2026-09-09T17:20:00+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "rowstamp": "990148962",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Servicio demo de corrección de fallas"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-09-09T17:20:00+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 499.95
+                  },
+                  "POLINENUM": {
+                    "content": 2
+                  },
+                  "PRNUM": {
+                    "content": "PR990001"
+                  },
+                  "RECEIPTSCOMPLETE": {
+                    "content": true
+                  },
+                  "RECEIVEDQTY": {
+                    "content": 2
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "990148972",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 2
+                        },
+                        "PRNUM": {
+                          "content": "PR990001"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "990100001",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2026-09-02T16:20:05+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR021"
+                              },
+                              "STATUSDATE": {
+                                "content": "2026-09-09T17:20:00+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "COMPANIES": [
+              {
+                "rowstamp": "990149001",
+                "Attributes": {
+                  "COMPANY": {
+                    "content": "0009990001"
+                  },
+                  "NAME": {
+                    "content": "Proveedor Demo SL"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  }
+                }
+              }
+            ],
+            "PERSON": [
+              {
+                "rowstamp": "990109024",
+                "Attributes": {
+                  "DEPARTMENT": {
+                    "content": "Compras"
+                  },
+                  "DISPLAYNAME": {
+                    "content": "Persona Demo 24"
+                  },
+                  "PERSONID": {
+                    "content": "USR024"
+                  }
+                }
+              }
+            ],
+            "POSTATUS": [
+              {
+                "rowstamp": "990148982",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR031"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-09T18:05:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990902,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990148983",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR024"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-10T15:00:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990903,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990148981",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR024"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-09T17:20:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990901,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

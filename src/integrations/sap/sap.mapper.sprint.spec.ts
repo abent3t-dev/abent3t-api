@@ -15,7 +15,8 @@ import { SapMappingError } from './sap.errors';
 
 describe('sap.mapper — A6: Cancelled / AuthorizationStatus / ClosingDate', () => {
   it('sube la versión del mapper (las filas viejas se re-sincronizan con full)', () => {
-    expect(SAP_MAPPER_VERSION).toBe('1.2.0');
+    // 1.3.0 (K6): subtotal sin IVA de la OC
+    expect(SAP_MAPPER_VERSION).toBe('1.3.0');
   });
 
   it('tYES/tNO → boolean; una cancelada conserva DocumentStatus=bost_Close pero cancelled=true', () => {

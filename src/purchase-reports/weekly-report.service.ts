@@ -14,6 +14,8 @@ import { maximoStatusWithCode } from '../common/utils/maximo-status.util';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import {
   andMaximoPrInWindow,
+  CURRENT_MAXIMO_CONTRACTS,
+  CURRENT_MAXIMO_POS,
   loadMaximoPrFolioWindow,
   MAXIMO_PRS_WITH_PO,
 } from '../common/sql/erp-views.sql';
@@ -27,11 +29,7 @@ import type {
   SapPurchaseRequestRow,
 } from '../sap-records/sap-records.types';
 import { ReportPeriodDto } from './dto/report-period.dto';
-import {
-  CURRENT_MAXIMO_CONTRACTS,
-  CURRENT_MAXIMO_POS,
-  PurchaseReportsService,
-} from './purchase-reports.service';
+import { PurchaseReportsService } from './purchase-reports.service';
 import { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
 import {
   type AvancePage,

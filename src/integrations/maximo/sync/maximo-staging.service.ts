@@ -2,11 +2,20 @@ import { createHash, randomUUID } from 'crypto';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
+import { canonicalize } from '../../../common/maximo/maximo-canonical';
 import { MaximoContractDto } from '../dto/maximo-contract.dto';
 import { MaximoPurchaseOrderDto } from '../dto/maximo-po.dto';
-import { MAXIMO_MAPPER_VERSION, toCanonical } from '../maximo.mapper';
-import { MaximoUpsertOutcome } from './maximo-sync.types';
-import { poRequestColumns, replacePoStatusHistory } from './maximo-po-history';
+import { MAXIMO_MAPPER_VERSION } from '../maximo.mapper';
+import {
+  MaximoRemapReason,
+  MaximoUpsertOutcome,
+  MaximoUpsertResult,
+} from './maximo-sync.types';
+import { poMappedColumns, replacePoStatusHistory } from './maximo-po-history';
+import {
+  contractMappedColumns,
+  replacePrStatusHistory,
+} from './maximo-pr-history';
 
 /**
  * Upsert idempotente a staging (Fase INT-3, T3/T4). ÚNICO camino de escritura
@@ -18,20 +27,33 @@ import { poRequestColumns, replacePoStatusHistory } from './maximo-po-history';
  * doble insert se resuelve capturando P2002 y reintentando como update
  * (patrón ya usado en enrollments/platforms).
  *
- * Sin-cambio (T4): mismo `rowstamp` (PO) / `contract_rowstamp` (contrato) →
- * solo se toca `last_seen_at`/`last_sync_run_id`. Cambio → se actualizan
- * columnas mapeadas + `raw` + `mapper_version` + `last_changed_at`.
- *
  * G6 (2026-09-28): el alta o el cambio de una OC reescribe su historial
  * POSTATUS (`maximo_po_status_history`) en la MISMA transacción.
  *
  * I9 (2026-09-30): el rowstamp es por fila en Maximo y NO cambia cuando CIISA
  * agrega campos a la Object Structure. Por eso "sin cambio" exige además el
- * mismo `raw_hash` (hash del payload recibido) y la misma versión del mapper:
- * un campo nuevo, o un mapper nuevo, reescribe `raw` y re-mapea la fila en el
- * siguiente full, sin pasos manuales (misma regla que el staging de SAP). El
- * hash va sobre la forma canónica: el mismo registro por legacy u OSLC no
+ * mismo `raw_hash` (hash del payload recibido) y la misma versión del mapper.
+ * El hash va sobre la forma canónica: el mismo registro por legacy u OSLC no
  * cuenta como cambio.
+ *
+ * K8 (2026-10-05): tres desenlaces para una fila que ya existe:
+ *   - rowstamp distinto → 'updated' (cambio real en Maximo): columnas, `raw`,
+ *     historial y `last_changed_at`;
+ *   - mismo rowstamp, mismo hash y mismo mapper → 'unchanged': solo
+ *     `last_seen_at` / `last_sync_run_id`;
+ *   - mismo rowstamp con otro mapper ('mapper') u otro hash ('hash': campo
+ *     nuevo de CIISA o un cambio solo en hijos que no mueve el rowstamp de la
+ *     raíz, como RECEIVEDQTY de una POLINE) → 'remapped': se reescribe todo
+ *     igual que en 'updated', pero SIN tocar `last_changed_at`, que es lo que
+ *     ven las revisiones del detalle ("Cambió en Maximo").
+ * "Mismo rowstamp": en OC, `rowstamp` igual y no nulo; en contratos,
+ * `pr_rowstamp` igual y no nulo Y `contract_rowstamp` igual (o los dos nulos).
+ *
+ * K3/K8 (2026-10-05): el alta, el cambio y el 'remapped' de un contrato
+ * reescriben el historial PRSTATUS de su PR (`maximo_pr_status_history`) en
+ * la misma transacción. Las cuatro ramas de contratos escriben
+ * `superseded_at: null` (si la llave reaparece, se limpia) y
+ * `supersedeMissingRevisions` marca las revisiones que ya no vienen.
  */
 @Injectable()
 export class MaximoStagingService {
@@ -41,7 +63,7 @@ export class MaximoStagingService {
     dto: MaximoPurchaseOrderDto,
     raw: unknown,
     runId: string,
-  ): Promise<MaximoUpsertOutcome> {
+  ): Promise<MaximoUpsertResult> {
     const rawHash = maximoRawHash(raw);
     // Normalización de la clave natural: el índice único usa coalesce(x, ''),
     // que colapsa NULL y '' en la misma tupla; aquí se normaliza '' → null
@@ -52,31 +74,10 @@ export class MaximoStagingService {
       siteid: emptyToNull(dto.siteId),
       revisionnum: dto.revisionNum,
     };
-    const mapped = {
-      status: dto.status,
-      description: dto.description,
-      vendor_id: dto.vendor?.company ?? null,
-      vendor_name: dto.vendor?.name ?? null,
-      total_cost: dto.totalCost,
-      currency: dto.currencyCode,
-      ab_ahorro: dto.abAhorro,
-      ab_tipocomp: dto.abTipoComp,
-      ab_clasfpo: dto.abClasfPo,
-      requested_by: dto.requestedBy,
-      department: dto.area,
-      purchase_agent: dto.purchaseAgent,
-      purchase_agent_name: dto.purchaseAgentName,
-      created_by: dto.createdBy,
-      approved_at: toDate(dto.approvedDate),
-      approved_by: dto.approvedBy,
-      waiting_approval_at: toDate(dto.waitingApprovalDate),
-      created_at_source: toDate(dto.orderDate),
-      ...poRequestColumns(dto),
-      rowstamp: dto.rowstamp,
-      raw_hash: rawHash,
-    };
+    const key = naturalKey(where.ponum, where.siteid, where.revisionnum);
+    const mapped = { ...poMappedColumns(dto), raw_hash: rawHash };
 
-    const attempt = async (): Promise<MaximoUpsertOutcome> => {
+    const attempt = async (): Promise<MaximoUpsertResult> => {
       const existing = await this.prisma.maximo_purchase_orders.findFirst({
         where,
         select: {
@@ -102,19 +103,18 @@ export class MaximoStagingService {
           }),
           ...replacePoStatusHistory(this.prisma, id, dto),
         ]);
-        return 'inserted';
+        return { outcome: 'inserted', key };
       }
-      const unchanged =
-        existing.rowstamp !== null &&
-        existing.rowstamp === dto.rowstamp &&
-        existing.raw_hash === rawHash &&
-        existing.mapper_version === MAXIMO_MAPPER_VERSION;
-      if (unchanged) {
+      const sameRowstamp =
+        existing.rowstamp !== null && existing.rowstamp === dto.rowstamp;
+      const decision = existingOutcome(sameRowstamp, existing, rawHash);
+      const now = new Date();
+      if (decision.outcome === 'unchanged') {
         await this.prisma.maximo_purchase_orders.update({
           where: { id: existing.id },
-          data: { last_seen_at: new Date(), last_sync_run_id: runId },
+          data: { last_seen_at: now, last_sync_run_id: runId },
         });
-        return 'unchanged';
+        return { ...decision, key };
       }
       await this.prisma.$transaction([
         this.prisma.maximo_purchase_orders.update({
@@ -123,14 +123,15 @@ export class MaximoStagingService {
             ...mapped,
             raw: raw as Prisma.InputJsonValue,
             mapper_version: MAXIMO_MAPPER_VERSION,
-            last_seen_at: new Date(),
-            last_changed_at: new Date(),
+            last_seen_at: now,
+            // K8: solo un rowstamp nuevo es cambio real
+            ...(decision.outcome === 'updated' ? { last_changed_at: now } : {}),
             last_sync_run_id: runId,
           },
         }),
         ...replacePoStatusHistory(this.prisma, existing.id, dto),
       ]);
-      return 'updated';
+      return { ...decision, key };
     };
 
     return this.withUniqueRaceRetry(attempt);
@@ -140,7 +141,7 @@ export class MaximoStagingService {
     dto: MaximoContractDto,
     raw: unknown,
     runId: string,
-  ): Promise<MaximoUpsertOutcome> {
+  ): Promise<MaximoUpsertResult> {
     const rawHash = maximoRawHash(raw);
     // Ver nota de normalización en upsertPurchaseOrder ('' → null).
     const where = {
@@ -148,32 +149,10 @@ export class MaximoStagingService {
       contractnum: emptyToNull(dto.contractNum),
       revisionnum: dto.revisionNum,
     };
-    const mapped = {
-      status: dto.status,
-      maxvol: dto.maxVol,
-      total_cost: dto.totalCost,
-      currency: dto.currencyCode,
-      start_date: toDate(dto.startDate),
-      end_date: toDate(dto.endDate),
-      vendor_id: dto.vendor?.company ?? null,
-      vendor_name: dto.vendor?.name ?? null,
-      requested_by: dto.requestedBy,
-      department: dto.area,
-      approved_at: toDate(dto.approvedDate),
-      approved_by: dto.approvedBy,
-      created_at_source: toDate(dto.createdDate),
-      contract_ref_num: dto.contractRefNum, // §20.2 resuelta: = CONTRACTNUM
-      contract_value: dto.contractValue, //   = TOTALCOST
-      pr_total: dto.prTotal, // D7: null si la OS no lo expone
-      consumed_value: dto.consumedValue, // D8: null si la OS no lo expone
-      purchview_count: dto.purchviewCount,
-      has_contract: dto.hasContract,
-      pr_rowstamp: dto.rowstamp,
-      contract_rowstamp: dto.contractRowstamp,
-      raw_hash: rawHash,
-    };
+    const key = naturalKey(where.prnum, where.contractnum, where.revisionnum);
+    const mapped = { ...contractMappedColumns(dto), raw_hash: rawHash };
 
-    const attempt = async (): Promise<MaximoUpsertOutcome> => {
+    const attempt = async (): Promise<MaximoUpsertResult> => {
       const existing = await this.prisma.maximo_contracts.findFirst({
         where,
         select: {
@@ -185,54 +164,124 @@ export class MaximoStagingService {
         },
       });
       if (!existing) {
-        await this.prisma.maximo_contracts.create({
-          data: {
-            ...where,
-            ...mapped,
-            raw: raw as Prisma.InputJsonValue,
-            mapper_version: MAXIMO_MAPPER_VERSION,
-            last_sync_run_id: runId,
-          },
-        });
-        return 'inserted';
-      }
-      // T3: los cambios del contrato mutan la fila PURCHVIEW → contract_rowstamp.
-      // PR SIN contrato (ambos null): se compara el rowstamp de la cabecera PR.
-      const sameContractRow =
-        existing.contract_rowstamp !== null &&
-        existing.contract_rowstamp === dto.contractRowstamp;
-      const bothWithoutContract =
-        existing.contract_rowstamp === null && dto.contractRowstamp === null;
-      const samePrRow =
-        existing.pr_rowstamp !== null && existing.pr_rowstamp === dto.rowstamp;
-      // I9: y el mismo payload con el mismo mapper
-      const unchanged =
-        (sameContractRow || (bothWithoutContract && samePrRow)) &&
-        existing.raw_hash === rawHash &&
-        existing.mapper_version === MAXIMO_MAPPER_VERSION;
-      await this.prisma.maximo_contracts.update({
-        where: { id: existing.id },
-        data: unchanged
-          ? { last_seen_at: new Date(), last_sync_run_id: runId }
-          : {
+        await this.prisma.$transaction([
+          this.prisma.maximo_contracts.create({
+            data: {
+              ...where,
               ...mapped,
               raw: raw as Prisma.InputJsonValue,
               mapper_version: MAXIMO_MAPPER_VERSION,
-              last_seen_at: new Date(),
-              last_changed_at: new Date(),
               last_sync_run_id: runId,
+              superseded_at: null,
             },
-      });
-      return unchanged ? 'unchanged' : 'updated';
+          }),
+          ...replacePrStatusHistory(this.prisma, dto),
+        ]);
+        return { outcome: 'inserted', key };
+      }
+      // K8: la PR (STATUS, historial…) muta la raíz → pr_rowstamp; el
+      // contrato (estatus, consumo, líneas) muta su PURCHVIEW →
+      // contract_rowstamp. Mismo rowstamp = los dos iguales (en una PR sin
+      // contrato, contract_rowstamp es null en ambos lados).
+      const samePrRow =
+        existing.pr_rowstamp !== null && existing.pr_rowstamp === dto.rowstamp;
+      const sameContractRow =
+        existing.contract_rowstamp === dto.contractRowstamp;
+      const decision = existingOutcome(
+        samePrRow && sameContractRow,
+        existing,
+        rawHash,
+      );
+      const now = new Date();
+      if (decision.outcome === 'unchanged') {
+        await this.prisma.maximo_contracts.update({
+          where: { id: existing.id },
+          data: {
+            last_seen_at: now,
+            last_sync_run_id: runId,
+            superseded_at: null,
+          },
+        });
+        return { ...decision, key };
+      }
+      await this.prisma.$transaction([
+        this.prisma.maximo_contracts.update({
+          where: { id: existing.id },
+          data: {
+            ...mapped,
+            raw: raw as Prisma.InputJsonValue,
+            mapper_version: MAXIMO_MAPPER_VERSION,
+            last_seen_at: now,
+            // K8: solo un rowstamp nuevo es cambio real
+            ...(decision.outcome === 'updated' ? { last_changed_at: now } : {}),
+            last_sync_run_id: runId,
+            superseded_at: null,
+          },
+        }),
+        ...replacePrStatusHistory(this.prisma, dto),
+      ]);
+      return { ...decision, key };
     };
 
     return this.withUniqueRaceRetry(attempt);
   }
 
+  /**
+   * K8 (2026-10-05): marca `superseded_at` en las revisiones de la PR que ya
+   * no vienen en su registro (p. ej. la fila sin contrato de una PR que
+   * después tuvo contrato, o una revisión retirada). Las vistas las excluyen.
+   *
+   * - Con prnum null o '' no hace nada (raíz PURCHVIEW de la estructura
+   *   previa): en Prisma `where: { prnum: null }` es IS NULL y marcaría los
+   *   contratos sin PR de otros registros.
+   * - La comparación va en JS con la llave de `uq_maximo_contract_natural_key`
+   *   (`contractnum|revisionnum`, con coalesce): un `NOT {contractnum,
+   *   revisionnum}` en SQL dejaría fuera la fila sin contrato (NULL = 'C1' da
+   *   NULL).
+   * - Solo marca las que faltan y aún no estaban marcadas, para no reescribir
+   *   la fecha en cada corrida. Regresa cuántas marcó.
+   *
+   * El llamador la invoca SOLO si todos los upserts del registro salieron
+   * bien: si falló el alta de la llave nueva, marcar la vieja dejaría la PR
+   * fuera de todas las vistas.
+   */
+  async supersedeMissingRevisions(
+    prnum: string | null,
+    dtos: MaximoContractDto[],
+  ): Promise<number> {
+    if (prnum === null || prnum === '') return 0;
+    const present = new Set(
+      dtos.map((d) => revisionKey(emptyToNull(d.contractNum), d.revisionNum)),
+    );
+    const rows = await this.prisma.maximo_contracts.findMany({
+      where: { prnum },
+      select: {
+        id: true,
+        contractnum: true,
+        revisionnum: true,
+        superseded_at: true,
+      },
+    });
+    const ids = rows
+      .filter(
+        (row) =>
+          // `== null`: en el testkit una fila sin el campo trae undefined
+          row.superseded_at == null &&
+          !present.has(revisionKey(row.contractnum, row.revisionnum)),
+      )
+      .map((row) => row.id);
+    if (ids.length === 0) return 0;
+    const { count } = await this.prisma.maximo_contracts.updateMany({
+      where: { id: { in: ids } },
+      data: { superseded_at: new Date() },
+    });
+    return count;
+  }
+
   /** Carrera de doble insert (índice único de expresión) → P2002 → reintento. */
   private async withUniqueRaceRetry(
-    attempt: () => Promise<MaximoUpsertOutcome>,
-  ): Promise<MaximoUpsertOutcome> {
+    attempt: () => Promise<MaximoUpsertResult>,
+  ): Promise<MaximoUpsertResult> {
     try {
       return await attempt();
     } catch (error: unknown) {
@@ -248,35 +297,112 @@ export class MaximoStagingService {
 }
 
 /**
+ * K8: rama de una fila que ya existe. Con el mismo rowstamp, un mapper
+ * distinto manda sobre el hash (en el primer full tras un deploy cambian los
+ * dos y la razón es el mapper).
+ */
+function existingOutcome(
+  sameRowstamp: boolean,
+  existing: { raw_hash: string | null; mapper_version: string },
+  rawHash: string,
+): {
+  outcome: Exclude<MaximoUpsertOutcome, 'inserted'>;
+  reason?: MaximoRemapReason;
+} {
+  if (!sameRowstamp) return { outcome: 'updated' };
+  if (existing.mapper_version !== MAXIMO_MAPPER_VERSION) {
+    return { outcome: 'remapped', reason: 'mapper' };
+  }
+  if (existing.raw_hash !== rawHash) {
+    return { outcome: 'remapped', reason: 'hash' };
+  }
+  return { outcome: 'unchanged' };
+}
+
+/**
  * I9: hash del payload recibido sobre su forma canónica (claves en mayúsculas
  * y ordenadas, sin nulos): un campo o valor nuevo lo cambia; la forma de la
  * API (legacy anidado, legacy compacto u OSLC) no.
+ *
+ * K8 (2026-10-05), hash estable:
+ *   - los arreglos se ordenan, de forma recursiva: primero se estabiliza cada
+ *     elemento y después se ordena por su JSON (Maximo no garantiza el orden
+ *     de los hijos);
+ *   - sin la llave ROWSTAMP en ningún nivel: los rowstamp que importan se
+ *     comparan aparte (raíz de la OC; raíz de la PR y PURCHVIEW del contrato);
+ *   - PERSON y COMPANIES se proyectan a lo único que leen `mapPerson` y
+ *     `mapVendor` (HASH_PROJECTIONS). Sin esto, editar el maestro de una
+ *     persona o de un proveedor re-mapearía cientos de OC y PR.
  */
 export function maximoRawHash(raw: unknown): string {
-  let payload: unknown;
-  try {
-    payload = stableForHash(toCanonical(raw));
-  } catch {
-    payload = raw;
-  }
-  return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  const canonical = canonicalize(raw);
+  const payload = canonical === null ? (raw ?? null) : stableForHash(canonical);
+  return createHash('sha256')
+    .update(JSON.stringify(payload) ?? 'null')
+    .digest('hex');
 }
 
+/**
+ * K8: campos de PERSON y COMPANIES que entran al hash, en cualquier nivel. Es
+ * un contrato con el mapper: si algún día lee otro campo, se agrega aquí.
+ */
+const HASH_PROJECTIONS: Readonly<Record<string, readonly string[]>> = {
+  PERSON: ['PERSONID', 'DISPLAYNAME', 'DEPARTMENT'],
+  COMPANIES: ['COMPANY', 'NAME', 'ORGID'],
+};
+
 function stableForHash(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableForHash);
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        const stable = stableForHash(item);
+        return { stable, text: JSON.stringify(stable) ?? '' };
+      })
+      .sort((a, b) => (a.text < b.text ? -1 : a.text > b.text ? 1 : 0))
+      .map((entry) => entry.stable);
+  }
   if (value === null || typeof value !== 'object') return value;
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(value).sort()) {
+    if (key === 'ROWSTAMP') continue;
     const item = (value as Record<string, unknown>)[key];
-    if (item !== null) out[key] = stableForHash(item);
+    if (item === null || item === undefined) continue;
+    out[key] = stableForHash(projectForHash(key, item));
   }
   return out;
 }
 
-function toDate(value: string | null): Date | null {
-  if (value === null) return null;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? null : new Date(parsed);
+function projectForHash(key: string, value: unknown): unknown {
+  const fields = HASH_PROJECTIONS[key];
+  if (!fields || !Array.isArray(value)) return value;
+  return value.map((child: unknown) => {
+    if (child === null || typeof child !== 'object') return child;
+    const source = child as Record<string, unknown>;
+    const projected: Record<string, unknown> = {};
+    for (const field of fields) {
+      if (Object.prototype.hasOwnProperty.call(source, field)) {
+        projected[field] = source[field];
+      }
+    }
+    return projected;
+  });
+}
+
+/** Llave legible para el log (`a|b|rev`), con los nulos como en el índice. */
+function naturalKey(
+  first: string | null,
+  second: string | null,
+  revisionNum: number | null,
+): string {
+  return `${first ?? ''}|${second ?? ''}|${revisionNum ?? 0}`;
+}
+
+/** Llave de una revisión dentro de su PR (coalesce de la clave natural). */
+function revisionKey(
+  contractnum: string | null,
+  revisionnum: number | null,
+): string {
+  return `${contractnum ?? ''}|${revisionnum ?? 0}`;
 }
 
 function emptyToNull(value: string | null): string | null {
