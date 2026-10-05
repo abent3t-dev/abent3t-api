@@ -441,7 +441,7 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
     expect(kpis.clasificacion.nota).toContain('sin IVA');
   });
 
-  it('K6: CAPEX/OPEX de Maximo suma el subtotal (no TOTALCOST): misma base que SAP; sin "no lo expone"', async () => {
+  it('K6: CAPEX/OPEX de Maximo suma el subtotal (no TOTALCOST): misma base que SAP; sin el aviso viejo de la OS', async () => {
     const { service, queryRaw } = makeService();
     queryRaw.mockResolvedValue([]);
     const kpis = await service.getOrdersKpis(2026);
@@ -458,8 +458,8 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
     const sapClas = texts.find((t) => t.includes("line->>'U_Clas_gts'"));
     expect(sapClas).toContain("line->>'LineTotal'");
     expect(sapClas).not.toContain('doc_total');
-    // las notas ya no dicen que la Object Structure no lo expone
-    expect(kpis.ahorro.nota).not.toMatch(/no lo expone|aún no expone/);
+    // las notas ya no traen el aviso viejo de que la Object Structure no trae el campo
+    expect(kpis.ahorro.nota).not.toMatch(/(aún )?no (lo )?expone/);
     expect(kpis.clasificacion.nota).not.toContain('pendiente CIISA');
     expect(kpis.clasificacion.nota).toContain(
       '0 OC clasificadas no tienen subtotal',

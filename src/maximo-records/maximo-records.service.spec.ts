@@ -1,13 +1,31 @@
 import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
+import { buildExcel } from '../common/utils/excel-export.util';
+import {
+  MAXIMO_PR_STATUS_LABELS,
+  maximoPrStatusLabel,
+  maximoPrStatusWithCode,
+  maximoStatusWithCode,
+} from '../common/utils/maximo-status.util';
 import {
   deriveContractLines,
   deriveContractStatusHistory,
   findContractRecord,
 } from './maximo-contract-raw';
+import { derivePurchaseOrderLines } from './maximo-po-raw';
+import {
+  CONTRACT_COLUMNS,
+  PO_COLUMNS,
+  REQUEST_COLUMNS,
+} from './maximo-records.controller';
 import { MaximoRecordsService } from './maximo-records.service';
+import type {
+  MaximoContractView,
+  MaximoPurchaseOrderView,
+} from './maximo-records.types';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import {
   buildVendorXref,
@@ -190,6 +208,7 @@ interface FakePrismaShape {
   maximo_contracts: { findMany: jest.Mock };
   maximo_pr_status_history: { findMany: jest.Mock };
   maximo_sync_runs: { findFirst: jest.Mock };
+  sap_purchase_orders: { aggregate: jest.Mock };
 }
 
 /** G1: cruce de proveedores de prueba (por defecto, vacío = según Maximo). */
@@ -223,6 +242,10 @@ function makeService(
     maximo_contracts: { findMany: jest.fn().mockResolvedValue([]) },
     maximo_pr_status_history: { findMany: jest.fn().mockResolvedValue([]) },
     maximo_sync_runs: { findFirst: jest.fn().mockResolvedValue(null) },
+    // K7.1: OC de SAP del detalle (min(DocNum) de sus copias); sin copias
+    sap_purchase_orders: {
+      aggregate: jest.fn().mockResolvedValue({ _min: { doc_num: null } }),
+    },
   };
   const config = { get: (key: string) => env[key] } as ConfigService;
   const aliases = {
@@ -596,6 +619,31 @@ describe('MaximoRecordsService', () => {
       expect(detail.lines).toEqual([]);
       expect(detail.statusHistory).toEqual([]);
       expect(detail.prStatusHistory).toEqual([]);
+    });
+
+    it('K7: current trae el estatus y las fechas DE LA PR (de Prisma), aparte del contrato', async () => {
+      const { service, prisma } = makeService();
+      prisma.maximo_contracts.findMany.mockResolvedValue([
+        contractRow({
+          prnum: 'PR990006',
+          contractnum: '9906',
+          revisionnum: 1,
+          status: 'APPR',
+          pr_status: 'CLOSE',
+          pr_issue_date: new Date('2026-06-10T14:00:00Z'),
+          pr_status_date: new Date('2026-07-01T16:40:00Z'),
+          pr_approved_at: new Date('2026-06-11T09:00:00Z'),
+          raw: RAW_PR_NESTED,
+        }),
+      ]);
+      const detail = await service.getContract('PR990006', false);
+      expect(detail.current).toMatchObject({
+        status: 'APPR', // el del contrato
+        pr_status: 'CLOSE',
+        pr_issue_date: new Date('2026-06-10T14:00:00Z'),
+        pr_status_date: new Date('2026-07-01T16:40:00Z'),
+        pr_approved_at: new Date('2026-06-11T09:00:00Z'),
+      });
     });
   });
 
@@ -1414,5 +1462,536 @@ describe('Solicitudes Maximo (K4.4, vista=solicitudes)', () => {
     ]);
     const { text } = firstSql(prisma.$queryRaw);
     expect(text).not.toContain('DISTINCT ON (prnum)');
+  });
+});
+
+/**
+ * K7.1 (2026-10-05): OC de Maximo con dos sistemas a la vista. Raw de la OC
+ * INLINE en la forma legacy ANIDADA de prod (Attributes/RelatedMbos), con las
+ * líneas desordenadas, una sin número, un ITEM hijo y banderas en varias
+ * formas. Valores dummy.
+ */
+const RAW_PO_NESTED = {
+  rowstamp: '990104897',
+  Attributes: {
+    PONUM: c('PO990897'),
+    SITEID: c('A3T'),
+    STATUS: c('INPRG'),
+    RECEIPTS: c('PARTIAL'),
+    PO5: c('PROCESADO'),
+  },
+  RelatedMbos: {
+    POLINE: [
+      {
+        rowstamp: '990148903',
+        Attributes: {
+          POLINENUM: c(3),
+          ITEMNUM: c('~null~'),
+          DESCRIPTION: c('Servicio demo de calibración'),
+          RECEIVEDQTY: c(0),
+          LINECOST: c(500),
+          RECEIPTSCOMPLETE: c(false),
+        },
+      },
+      {
+        rowstamp: '990148909',
+        Attributes: {
+          DESCRIPTION: c('Línea demo sin número'),
+          LINECOST: c(10),
+        },
+      },
+      {
+        rowstamp: '990148901',
+        Attributes: {
+          POLINENUM: c(1),
+          ITEMNUM: c('9990001'),
+          DESCRIPTION: c('Refacción demo A'),
+          RECEIVEDQTY: c(2),
+          LINECOST: c(1000.1),
+          RECEIPTSCOMPLETE: c('1'),
+        },
+      },
+      {
+        rowstamp: '990148902',
+        Attributes: {
+          POLINENUM: c(2),
+          RECEIVEDQTY: c(1),
+          LINECOST: c(254.95),
+          RECEIPTSCOMPLETE: c('0'),
+        },
+        RelatedMbos: {
+          ITEM: [
+            {
+              rowstamp: '990148912',
+              Attributes: {
+                ITEMNUM: c('9990002'),
+                DESCRIPTION: c('Artículo demo B'),
+              },
+            },
+          ],
+        },
+      },
+    ],
+  },
+};
+
+/** Lo que el detalle debe derivar de RAW_PO_NESTED. */
+const RAW_PO_NESTED_LINES = [
+  {
+    line_num: 1,
+    item_num: '9990001',
+    description: 'Refacción demo A',
+    received_qty: 2,
+    line_cost: 1000.1,
+    receipts_complete: true,
+  },
+  {
+    line_num: 2,
+    item_num: '9990002',
+    description: 'Artículo demo B',
+    received_qty: 1,
+    line_cost: 254.95,
+    receipts_complete: false,
+  },
+  {
+    line_num: 3,
+    item_num: null,
+    description: 'Servicio demo de calibración',
+    received_qty: 0,
+    line_cost: 500,
+    receipts_complete: false,
+  },
+  {
+    line_num: null,
+    item_num: null,
+    description: 'Línea demo sin número',
+    received_qty: null,
+    line_cost: 10,
+    receipts_complete: null,
+  },
+];
+
+describe('Órdenes Maximo: recepción, integración, subtotal y OC de SAP (K7.1)', () => {
+  type SqlCall = [{ sql: string; values: unknown[] }];
+  const sqlOf = (mock: jest.Mock, i = 0) => {
+    const [arg] = mock.mock.calls[i] as SqlCall;
+    return { text: arg.sql.replace(/\s+/g, ' '), values: arg.values };
+  };
+
+  /** OC de prueba con los cuatro campos (PO104896 del seed de dev). */
+  const k7Rows = () => [
+    poRow({
+      id: 'a',
+      ponum: 'PO1',
+      receipt_status: 'COMPLETE',
+      integration_status: 'PROCESADO',
+      subtotal: '100.00',
+      oc_sap: 6337,
+    }),
+    poRow({
+      id: 'b',
+      ponum: 'PO2',
+      receipt_status: 'PARTIAL',
+      integration_status: 'ERROR',
+      subtotal: null,
+      oc_sap: null,
+    }),
+    poRow({
+      id: 'c',
+      ponum: 'PO3',
+      receipt_status: null,
+      integration_status: null,
+      subtotal: '300.00',
+      oc_sap: 10001,
+    }),
+    poRow({
+      id: 'd',
+      ponum: 'PO4',
+      receipt_status: 'COMPLETE',
+      integration_status: null,
+      subtotal: '50.00',
+      oc_sap: 6400,
+    }),
+  ];
+
+  it('la fila trae receipt_status, integration_status, subtotal (number) y oc_sap; el SELECT los pide', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        poRow({
+          ponum: 'PO104896',
+          total_cost: '1755.00',
+          receipt_status: 'COMPLETE',
+          integration_status: 'PROCESADO',
+          subtotal: '1755.00',
+          oc_sap: 6337,
+        }),
+        // sin los campos (filas previas al mapper de K2/K6): null, no undefined
+        poRow({ id: 'po-2', ponum: 'PO2' }),
+      ])
+      .mockResolvedValueOnce([{ count: 2 }]);
+    const { data } = await service.listPurchaseOrders({});
+    expect(data[0]).toMatchObject({
+      ponum: 'PO104896',
+      receipt_status: 'COMPLETE',
+      integration_status: 'PROCESADO',
+      subtotal: 1755,
+      oc_sap: 6337,
+      total_cost: 1755,
+    });
+    expect(data[1]).toMatchObject({
+      receipt_status: null,
+      integration_status: null,
+      subtotal: null,
+      oc_sap: null,
+    });
+    const { text } = sqlOf(prisma.$queryRaw);
+    expect(text).toContain('receipt_status, integration_status, subtotal,');
+    // la regla de Expeditación: min(DocNum) de las copias, sin columna nueva
+    expect(text).toContain(
+      '(SELECT min(s.doc_num) FROM sap_purchase_orders s WHERE s.maximo_ponum = c.ponum) AS oc_sap',
+    );
+  });
+
+  it('la búsqueda también encuentra por la OC de SAP (DocNum de sus copias)', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }]);
+    await service.listPurchaseOrders({ search: '6337' });
+    for (const i of [0, 1]) {
+      const { text, values } = sqlOf(prisma.$queryRaw, i);
+      expect(text).toContain(
+        '(c.ponum ILIKE ? OR c.description ILIKE ? OR EXISTS (SELECT 1 FROM sap_purchase_orders s WHERE s.maximo_ponum = c.ponum AND s.doc_num::text ILIKE ?))',
+      );
+      expect(values.filter((v) => v === '%6337%')).toHaveLength(3);
+    }
+  });
+
+  it('filtros por columna recepcion e integracion con las etiquetas de Expeditación', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw.mockResolvedValue(k7Rows());
+    const completa = await service.listPurchaseOrders({
+      filters: JSON.stringify({ recepcion: { in: ['Completa'] } }),
+    });
+    expect(completa.data.map((r) => r.ponum)).toEqual(['PO1', 'PO4']);
+    const sinDato = await service.listPurchaseOrders({
+      filters: JSON.stringify({ integracion: { in: ['Sin dato'] } }),
+    });
+    expect(sinDato.data.map((r) => r.ponum)).toEqual(['PO3', 'PO4']);
+    await expect(
+      service.purchaseOrderFacets({ column: 'recepcion' }),
+    ).resolves.toMatchObject({
+      type: 'text',
+      values: [
+        { value: 'Completa', count: 2 },
+        { value: 'No disponible', count: 1 },
+        { value: 'Parcial', count: 1 },
+      ],
+    });
+    await expect(
+      service.purchaseOrderFacets({ column: 'integracion' }),
+    ).resolves.toMatchObject({
+      values: [
+        { value: 'Sin dato', count: 2 },
+        { value: 'Error', count: 1 },
+        { value: 'Procesado', count: 1 },
+      ],
+    });
+  });
+
+  it('filtros por columna oc_sap (texto, orden numérico) y subtotal (rango)', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw.mockResolvedValue(k7Rows());
+    const porOc = await service.listPurchaseOrders({
+      filters: JSON.stringify({ oc_sap: { in: ['6337'] } }),
+    });
+    expect(porOc.data.map((r) => r.ponum)).toEqual(['PO1']);
+    const ordenadas = await service.listPurchaseOrders({ sort: 'oc_sap' });
+    // 6337 < 6400 < 10001 (no alfabético); sin OC al final
+    expect(ordenadas.data.map((r) => r.ponum)).toEqual([
+      'PO1',
+      'PO4',
+      'PO3',
+      'PO2',
+    ]);
+    const desde60 = await service.listPurchaseOrders({
+      filters: JSON.stringify({ subtotal: { min: 60 } }),
+    });
+    expect(desde60.data.map((r) => r.ponum)).toEqual(['PO1', 'PO3']);
+    const sinSubtotal = await service.listPurchaseOrders({
+      filters: JSON.stringify({ subtotal: { empty: true } }),
+    });
+    expect(sinSubtotal.data.map((r) => r.ponum)).toEqual(['PO2']);
+    await expect(
+      service.purchaseOrderFacets({ column: 'subtotal' }),
+    ).resolves.toMatchObject({ type: 'number', min: 50, max: 300, empty: 1 });
+    // el monto (TOTALCOST) sigue en su propia columna
+    await expect(
+      service.purchaseOrderFacets({ column: 'monto' }),
+    ).resolves.toMatchObject({ type: 'number', empty: 0 });
+  });
+
+  it('detalle: los cuatro campos, la OC de SAP de sus copias y las líneas del raw ANIDADO, por número', async () => {
+    const { service, prisma } = makeService();
+    prisma.maximo_purchase_orders.findMany.mockResolvedValue([
+      poRow({
+        id: 'po-r0',
+        ponum: 'PO990897',
+        revisionnum: 0,
+        receipt_status: 'PARTIAL',
+        integration_status: 'PROCESADO',
+        subtotal: '1765.05',
+        raw: { PONUM: 'PO990897' },
+      }),
+      poRow({
+        id: 'po-r1',
+        ponum: 'PO990897',
+        revisionnum: 1,
+        receipt_status: 'PARTIAL',
+        integration_status: 'PROCESADO',
+        subtotal: '1765.05',
+        raw: RAW_PO_NESTED,
+      }),
+    ]);
+    prisma.sap_purchase_orders.aggregate.mockResolvedValue({
+      _min: { doc_num: 6338 },
+    });
+
+    const detail = await service.getPurchaseOrder('PO990897', false);
+    expect(prisma.sap_purchase_orders.aggregate).toHaveBeenCalledWith({
+      where: { maximo_ponum: 'PO990897' },
+      _min: { doc_num: true },
+    });
+    expect(detail.current).toMatchObject({
+      revisionnum: 1,
+      receipt_status: 'PARTIAL',
+      integration_status: 'PROCESADO',
+      subtotal: 1765.05,
+      oc_sap: 6338,
+    });
+    // las de la revisión actual, aunque el raw no se mande (no es admin)
+    expect('raw' in detail.current).toBe(false);
+    expect(detail.lines).toEqual(RAW_PO_NESTED_LINES);
+  });
+
+  it('detalle sin copias en SAP ni POLINE: oc_sap null y sin líneas', async () => {
+    const { service, prisma } = makeService();
+    prisma.maximo_purchase_orders.findMany.mockResolvedValue([poRow()]);
+    const detail = await service.getPurchaseOrder('PO102249', false);
+    expect(detail.current.oc_sap).toBeNull();
+    expect(detail.lines).toEqual([]);
+  });
+});
+
+describe('derivación pura de las líneas de la OC (K7.1)', () => {
+  it('anidado y compacto del mismo registro dan lo mismo', () => {
+    const compact = {
+      PONUM: 'PO990897',
+      rowstamp: '990104897',
+      POLINE: [
+        {
+          POLINENUM: 3,
+          ITEMNUM: '~null~',
+          DESCRIPTION: 'Servicio demo de calibración',
+          RECEIVEDQTY: 0,
+          LINECOST: 500,
+          RECEIPTSCOMPLETE: false,
+        },
+        { DESCRIPTION: 'Línea demo sin número', LINECOST: 10 },
+        {
+          POLINENUM: 1,
+          ITEMNUM: '9990001',
+          DESCRIPTION: 'Refacción demo A',
+          RECEIVEDQTY: 2,
+          LINECOST: 1000.1,
+          RECEIPTSCOMPLETE: '1',
+        },
+        {
+          POLINENUM: 2,
+          RECEIVEDQTY: 1,
+          LINECOST: 254.95,
+          RECEIPTSCOMPLETE: '0',
+          ITEM: [{ ITEMNUM: '9990002', DESCRIPTION: 'Artículo demo B' }],
+        },
+      ],
+    };
+    expect(derivePurchaseOrderLines(compact)).toEqual(RAW_PO_NESTED_LINES);
+    expect(derivePurchaseOrderLines(RAW_PO_NESTED)).toEqual(
+      RAW_PO_NESTED_LINES,
+    );
+  });
+
+  it('la descripción de la línea gana a la del artículo; números en texto se leen', () => {
+    const raw = {
+      POLINE: [
+        {
+          POLINENUM: '7',
+          DESCRIPTION: 'Descripción de la OC',
+          RECEIVEDQTY: '1.5',
+          LINECOST: '99.90',
+          RECEIPTSCOMPLETE: 'Y',
+          ITEM: [{ ITEMNUM: 'X1', DESCRIPTION: 'Descripción del catálogo' }],
+        },
+      ],
+    };
+    expect(derivePurchaseOrderLines(raw)).toEqual([
+      {
+        line_num: 7,
+        item_num: 'X1',
+        description: 'Descripción de la OC',
+        received_qty: 1.5,
+        line_cost: 99.9,
+        receipts_complete: true,
+      },
+    ]);
+  });
+
+  it('formas inesperadas devuelven vacío sin lanzar', () => {
+    for (const raw of [
+      null,
+      42,
+      'x',
+      [],
+      { POLINE: 'no-array' },
+      { Attributes: {}, RelatedMbos: { POLINE: 'no-array' } },
+      { RelatedMbos: { POLINE: [] } },
+    ]) {
+      expect(derivePurchaseOrderLines(raw)).toEqual([]);
+    }
+    // hijos que no son objeto se ignoran
+    expect(
+      derivePurchaseOrderLines({ POLINE: [7, 'x', { POLINENUM: 1 }] }),
+    ).toHaveLength(1);
+  });
+});
+
+describe('Exports de Maximo y estatus de la PR (K7)', () => {
+  /** Vista de OC mínima para los exports (lo demás, null). */
+  const poView = (
+    overrides: Partial<MaximoPurchaseOrderView>,
+  ): MaximoPurchaseOrderView => ({
+    id: 'po',
+    ponum: 'PO104896',
+    siteid: 'A3T',
+    revisionnum: 0,
+    status: 'INPRG',
+    description: null,
+    vendor_id: null,
+    vendor_name: null,
+    total_cost: 2035.8,
+    currency: 'EUR',
+    ab_ahorro: null,
+    ab_tipocomp: null,
+    ab_clasfpo: null,
+    requested_by: null,
+    requested_by_name: null,
+    purchase_agent: null,
+    purchase_agent_name: null,
+    created_by: null,
+    buyer_name: null,
+    buyer_kind: null,
+    department: null,
+    approved_at: null,
+    approved_by: null,
+    approved_by_name: null,
+    waiting_approval_at: null,
+    created_at_source: null,
+    receipt_status: 'COMPLETE',
+    integration_status: 'PROCESADO',
+    subtotal: 1755,
+    oc_sap: 6337,
+    last_changed_at: null,
+    last_seen_at: new Date('2026-10-05T00:00:00Z'),
+    supplier_key: null,
+    supplier_code: null,
+    supplier_name: null,
+    supplier_source: null,
+    supplier_note: null,
+    ...overrides,
+  });
+
+  const readSheet = async (buffer: Buffer, name: string) => {
+    const book = new ExcelJS.Workbook();
+    await book.xlsx.load(buffer as unknown as ArrayBuffer);
+    const sheet = book.getWorksheet(name)!;
+    const header = (sheet.getRow(1).values as unknown[]).map(String);
+    const row = (n: number) => sheet.getRow(n).values as unknown[];
+    return { header, row };
+  };
+
+  it('Órdenes Maximo: Recepción, Integración SAP, OC SAP, Subtotal (sin IVA) y Total (con IVA)', async () => {
+    const headers = PO_COLUMNS.map((col) => col.header);
+    expect(headers).not.toContain('Monto');
+    const estatus = headers.indexOf('Estatus');
+    expect(headers.slice(estatus, estatus + 4)).toEqual([
+      'Estatus',
+      'Recepción',
+      'Integración SAP',
+      'OC SAP',
+    ]);
+    expect(headers.indexOf('Total (con IVA)')).toBe(
+      headers.indexOf('Subtotal (sin IVA)') + 1,
+    );
+
+    const buffer = await buildExcel('Ordenes Maximo', PO_COLUMNS, [
+      poView({}),
+      poView({
+        ponum: 'PO2',
+        receipt_status: null,
+        integration_status: null,
+        subtotal: null,
+        oc_sap: null,
+      }),
+    ]);
+    const { header, row } = await readSheet(buffer, 'Ordenes Maximo');
+    const cell = (n: number, h: string) => row(n)[header.indexOf(h)];
+    expect(cell(2, 'Recepción')).toBe('Completa');
+    expect(cell(2, 'Integración SAP')).toBe('Procesado');
+    expect(cell(2, 'OC SAP')).toBe(6337);
+    expect(cell(2, 'Subtotal (sin IVA)')).toBe(1755);
+    expect(cell(2, 'Total (con IVA)')).toBe(2035.8);
+    // sin dato: "No disponible" / "Sin dato", nunca un monto estimado
+    expect(cell(3, 'Recepción')).toBe('No disponible');
+    expect(cell(3, 'Integración SAP')).toBe('Sin dato');
+    expect(cell(3, 'OC SAP')).toBeUndefined();
+    expect(cell(3, 'Subtotal (sin IVA)')).toBe('No disponible');
+  });
+
+  it('K6.9: "Monto de la PR (Maximo)" en Contratos y Solicitudes; "Estatus PR" con el mapa de las PR', () => {
+    for (const columns of [CONTRACT_COLUMNS, REQUEST_COLUMNS]) {
+      const headers = columns.map((col) => col.header);
+      expect(headers).toContain('Monto de la PR (Maximo)');
+      expect(headers).not.toContain('Monto PR');
+    }
+    const estatusPr = REQUEST_COLUMNS.find(
+      (col) => col.header === 'Estatus PR',
+    )!;
+    const pr = (pr_status: string | null) =>
+      estatusPr.value({ pr_status } as MaximoContractView);
+    expect(pr('APPR')).toBe('Aprobada: llegó a Compras (APPR)');
+    expect(pr('WAPPR')).toBe('En aprobación (WAPPR)');
+    expect(pr('CLOSE')).toBe('Cerrada (CLOSE)');
+    expect(pr('CAN')).toBe('Cancelada (CAN)');
+    expect(pr(null)).toBe('No disponible');
+  });
+
+  it('mapa de estatus de la PR: aparte del de OC; desconocido tal cual', () => {
+    expect(MAXIMO_PR_STATUS_LABELS).toEqual({
+      WAPPR: 'En aprobación',
+      APPR: 'Aprobada: llegó a Compras',
+      CLOSE: 'Cerrada',
+      CAN: 'Cancelada',
+    });
+    expect(maximoPrStatusLabel('APPR')).toBe('Aprobada: llegó a Compras');
+    expect(maximoPrStatusLabel('DRAFT')).toBe('DRAFT');
+    expect(maximoPrStatusLabel(null)).toBe('');
+    expect(maximoPrStatusWithCode('DRAFT')).toBe('DRAFT');
+    expect(maximoPrStatusWithCode(null)).toBe('');
+    // el de OC no cambia
+    expect(maximoStatusWithCode('APPR')).toBe('Aprobada (APPR)');
+    expect(maximoStatusWithCode('WAPPR')).toBe(
+      'En espera de aprobación (WAPPR)',
+    );
   });
 });

@@ -26,7 +26,7 @@ import {
  * no nuestro).
  */
 
-function asRecordArray(value: unknown): CanonicalMaximoRecord[] {
+export function asRecordArray(value: unknown): CanonicalMaximoRecord[] {
   return Array.isArray(value)
     ? value.filter(
         (v): v is CanonicalMaximoRecord =>
@@ -35,7 +35,7 @@ function asRecordArray(value: unknown): CanonicalMaximoRecord[] {
     : [];
 }
 
-function asString(value: unknown): string | null {
+export function asString(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean')
@@ -43,7 +43,7 @@ function asString(value: unknown): string | null {
   return null;
 }
 
-function asNumber(value: unknown): number | null {
+export function asNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const n = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(n) ? n : null;

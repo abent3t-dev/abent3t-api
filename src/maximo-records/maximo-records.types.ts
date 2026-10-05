@@ -63,9 +63,45 @@ export interface MaximoPurchaseOrderView extends SupplierFields {
   /** Primer WAPPR; approved_at - waiting_approval_at = días de aprobación. */
   waiting_approval_at: Date | null;
   created_at_source: Date | null;
+  /**
+   * K7.1 (2026-10-05): recepción (RECEIPTS: NONE / PARTIAL / COMPLETE);
+   * null = no llega ("No disponible").
+   */
+  receipt_status: string | null;
+  /** K7.1: estado de integración con SAP (PO.PO5 literal); null = sin dato. */
+  integration_status: string | null;
+  /**
+   * K7.1: sin IVA = suma de POLINE.LINECOST, en la moneda de la OC; null si
+   * no hay líneas o a alguna le falta LINECOST (no se estima). `total_cost`
+   * (TOTALCOST) es con IVA.
+   */
+  subtotal: number | null;
+  /**
+   * K7.1: OC de SAP de la PO = min(DocNum) de sus copias en SAP
+   * (`maximo_ponum`), la misma regla de Expeditación; null = no migró.
+   */
+  oc_sap: number | null;
   last_changed_at: Date | null;
   last_seen_at: Date;
   raw?: unknown;
+}
+
+/**
+ * K7.1: línea de la OC derivada del raw canonizado (POLINE). Sin cantidad
+ * pedida: ORDERQTY no llega en AB_COMPRAS.
+ */
+export interface MaximoPurchaseOrderLine {
+  /** POLINENUM. */
+  line_num: number | null;
+  /** ITEMNUM (de la línea o de su ITEM). */
+  item_num: string | null;
+  description: string | null;
+  /** RECEIVEDQTY. */
+  received_qty: number | null;
+  /** LINECOST: importe de la línea sin IVA. */
+  line_cost: number | null;
+  /** RECEIPTSCOMPLETE: la línea ya se recibió completa; null = sin dato. */
+  receipts_complete: boolean | null;
 }
 
 export interface MaximoPurchaseOrderRevision {
@@ -81,6 +117,8 @@ export interface MaximoPurchaseOrderRevision {
 export interface MaximoPurchaseOrderDetail {
   current: MaximoPurchaseOrderView;
   revisions: MaximoPurchaseOrderRevision[];
+  /** K7.1: líneas de la revisión actual, por POLINENUM (sin número al final). */
+  lines: MaximoPurchaseOrderLine[];
 }
 
 export interface MaximoContractView extends SupplierFields {

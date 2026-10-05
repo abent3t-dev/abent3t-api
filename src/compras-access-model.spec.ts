@@ -203,12 +203,23 @@ describe('Modelo de acceso de Compras (ver todos, actuar por rol)', () => {
       '/compras/contratos/alertas/vencimiento',
       // D6: equivalencias de usuarios SAP/Maximo = configuración
       '/compras/erp-aliases',
+      // K5.7: conciliación del avance semanal contra la serie de Jorge
+      '/compras/reportes/avance-semanal/conciliacion',
     ];
     for (const route of restricted) {
       const info = routes.find((r) => r.method === 'GET' && r.route === route);
       expect(info).toBeDefined();
       expect(info?.roles?.length).toBeGreaterThan(0);
     }
+  });
+
+  it('la conciliación del avance semanal (K5.7) es solo de super_admin', () => {
+    const info = routes.find(
+      (r) =>
+        r.method === 'GET' &&
+        r.route === '/compras/reportes/avance-semanal/conciliacion',
+    );
+    expect(info?.roles).toEqual(['super_admin']);
   });
 
   it('el apartado de gestión de roles es solo de super_admin/lider_procura', () => {

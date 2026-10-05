@@ -414,7 +414,10 @@ describe('WeeklyReportService', () => {
     const prHeader = (prSheet.getRow(1).values as unknown[]).map(String);
     const appr = prSheet.getRow(2).values as unknown[];
     const conContrato = prSheet.getRow(3).values as unknown[];
-    expect(appr[prHeader.indexOf('Estatus PR')]).toBe('Aprobada (APPR)');
+    // K7: el estatus de la PR usa su propio mapa; el del contrato, el de OC
+    expect(appr[prHeader.indexOf('Estatus PR')]).toBe(
+      'Aprobada: llegó a Compras (APPR)',
+    );
     expect(appr[prHeader.indexOf('Pendiente de gestionar')]).toBe(
       'Sí (aprobada, sin OC ni contrato)',
     );

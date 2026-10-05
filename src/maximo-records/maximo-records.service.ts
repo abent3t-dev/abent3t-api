@@ -43,6 +43,7 @@ import {
   deriveContractLines,
   deriveContractStatusHistory,
 } from './maximo-contract-raw';
+import { derivePurchaseOrderLines } from './maximo-po-raw';
 import {
   isMaximoRequestsView,
   MaximoContractQueryDto,
@@ -105,14 +106,31 @@ import {
  * una fila por PR, con el estatus y las fechas DE LA PR (pendientes = APPR
  * sin OC ni contrato, ver erp-views). Sin ella, Contratos y el agrupado
  * quedan como antes. El folio ya no ubica a las PR.
+ *
+ * K7.1 (2026-10-05): Órdenes Maximo con recepción (RECEIPTS), integración
+ * con SAP (PO5), subtotal sin IVA y OC de SAP en la fila, el detalle, los
+ * filtros por columna y el export; la búsqueda también encuentra por la OC
+ * de SAP, y el detalle trae las líneas de la OC (maximo-po-raw).
  */
 
-/** Columnas del listado de POs (excluye `raw`: solo viaja en el detalle). */
+/**
+ * K7.1 (2026-10-05): OC de SAP de la PO = min(DocNum) de sus copias en SAP
+ * (abiertas, cerradas o canceladas), la misma regla de Expeditación; sin
+ * columna nueva (índice idx_sap_po_maximo_ponum). Sobre el alias `c`.
+ */
+const PO_OC_SAP = Prisma.sql`(SELECT min(s.doc_num) FROM sap_purchase_orders s
+    WHERE s.maximo_ponum = c.ponum)`;
+
+/**
+ * Columnas del listado de POs (excluye `raw`: solo viaja en el detalle).
+ * K7.1: recepción, integración con SAP (PO5), subtotal sin IVA y OC de SAP.
+ */
 const PO_LIST_COLUMNS = Prisma.sql`
   id, ponum, siteid, revisionnum, status, description, vendor_id, vendor_name,
   total_cost, currency, ab_ahorro, ab_tipocomp, ab_clasfpo, requested_by,
   purchase_agent, purchase_agent_name, created_by,
   department, approved_at, approved_by, waiting_approval_at, created_at_source,
+  receipt_status, integration_status, subtotal, ${PO_OC_SAP} AS oc_sap,
   last_changed_at, last_seen_at`;
 
 // K4.4: los `pr_*` van en las dos vistas (el agrupado los lleva en `prs[]`)
@@ -177,13 +195,20 @@ type PoSqlRow = Omit<
   MaximoPurchaseOrderView,
   | 'total_cost'
   | 'ab_ahorro'
+  | 'subtotal'
+  | 'oc_sap'
   | 'raw'
   | 'requested_by_name'
   | 'approved_by_name'
   | 'buyer_name'
   | 'buyer_kind'
   | SupplierKey
-> & { total_cost: unknown; ab_ahorro: unknown };
+> & {
+  total_cost: unknown;
+  ab_ahorro: unknown;
+  subtotal: unknown;
+  oc_sap: unknown;
+};
 
 type ContractSqlRow = Omit<
   MaximoContractView,
@@ -256,8 +281,11 @@ export class MaximoRecordsService {
       );
     if (query.search) {
       const term = `%${query.search}%`;
+      // K7.1: también por la OC de SAP (el DocNum de cualquiera de sus copias)
       conditions.push(
-        Prisma.sql`(c.ponum ILIKE ${term} OR c.description ILIKE ${term})`,
+        Prisma.sql`(c.ponum ILIKE ${term} OR c.description ILIKE ${term}
+          OR EXISTS (SELECT 1 FROM sap_purchase_orders s
+            WHERE s.maximo_ponum = c.ponum AND s.doc_num::text ILIKE ${term}))`,
       );
     }
     if (query.year) {
@@ -449,13 +477,22 @@ export class MaximoRecordsService {
     };
   }
 
+  /**
+   * K7.1 (2026-10-05): el detalle trae recepción, integración, subtotal y la
+   * OC de SAP (min(DocNum) de sus copias, como el listado), más las líneas
+   * de la revisión actual desde su raw canonizado.
+   */
   async getPurchaseOrder(
     ponum: string,
     includeRaw: boolean,
   ): Promise<MaximoPurchaseOrderDetail> {
-    const rows = await this.prisma.maximo_purchase_orders.findMany({
-      where: { ponum },
-    });
+    const [rows, sapCopies] = await Promise.all([
+      this.prisma.maximo_purchase_orders.findMany({ where: { ponum } }),
+      this.prisma.sap_purchase_orders.aggregate({
+        where: { maximo_ponum: ponum },
+        _min: { doc_num: true },
+      }),
+    ]);
     if (rows.length === 0) {
       throw new NotFoundException(`PO ${ponum} no existe en staging Maximo`);
     }
@@ -463,7 +500,9 @@ export class MaximoRecordsService {
       (a, b) => (b.revisionnum ?? -1) - (a.revisionnum ?? -1),
     );
     const current = sorted[0];
-    const [view] = await this.enrichPos([this.mapPoRow(current)]);
+    const [view] = await this.enrichPos([
+      this.mapPoRow({ ...current, oc_sap: sapCopies._min.doc_num }),
+    ]);
     return {
       current: {
         ...view,
@@ -478,6 +517,7 @@ export class MaximoRecordsService {
         last_changed_at: row.last_changed_at,
         last_seen_at: row.last_seen_at,
       })),
+      lines: derivePurchaseOrderLines(current.raw),
     };
   }
 
@@ -899,6 +939,12 @@ export class MaximoRecordsService {
       approved_by_name: null,
       waiting_approval_at: row.waiting_approval_at,
       created_at_source: row.created_at_source,
+      // K7.1: en el listado salen del SELECT; en el detalle, de Prisma (y
+      // `oc_sap` de su propia consulta)
+      receipt_status: row.receipt_status ?? null,
+      integration_status: row.integration_status ?? null,
+      subtotal: toNumber(row.subtotal),
+      oc_sap: toNumber(row.oc_sap),
       last_changed_at: row.last_changed_at,
       last_seen_at: row.last_seen_at,
       ...NO_SUPPLIER,

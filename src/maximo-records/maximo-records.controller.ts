@@ -25,6 +25,11 @@ import { MaximoSummaryQueryDto } from './dto/maximo-summary-query.dto';
 import { MaximoRecordsService } from './maximo-records.service';
 import type { MaximoContractGroupView } from './maximo-contract-groups';
 import { buyerLabel } from '../common/utils/buyer.util';
+import { maximoPrStatusWithCode } from '../common/utils/maximo-status.util';
+import {
+  integrationStatusLabel,
+  receiptStatusLabel,
+} from '../expediting/expediting.status';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import type { VendorMismatchExportRow } from '../erp-vendors/maximo-vendor-xref.service';
 import {
@@ -120,13 +125,42 @@ const VENDOR_MISMATCH_COLUMNS: ExcelColumn<VendorMismatchExportRow>[] = [
   },
 ];
 
-/** Columnas del export = pestaña "Ordenes Maximo" (B1). AB_* no expuestos → "No disponible". */
-const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
+/**
+ * Columnas del export = pestaña "Ordenes Maximo" (B1). AB_* sin captura en
+ * Maximo → "No disponible".
+ * K7.1 (2026-10-05): recepción e integración con las etiquetas de
+ * Expeditación, la OC de SAP y los dos montos rotulados: subtotal sin IVA
+ * (Σ LINECOST; "No disponible" si no se puede calcular, no se estima) y
+ * total con IVA (TOTALCOST).
+ */
+export const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
   { header: 'PONUM', value: (r) => r.ponum, width: 14 },
   { header: 'Descripción', value: (r) => r.description, width: 44 },
   { header: 'Estatus', value: (r) => r.status, width: 10 },
+  {
+    header: 'Recepción',
+    value: (r) => receiptStatusLabel(r.receipt_status),
+    width: 14,
+  },
+  {
+    header: 'Integración SAP',
+    value: (r) => integrationStatusLabel(r.integration_status),
+    width: 16,
+  },
+  { header: 'OC SAP', value: (r) => r.oc_sap, kind: 'int', width: 12 },
   ...supplierColumns<MaximoPurchaseOrderView>(),
-  { header: 'Monto', value: (r) => r.total_cost, kind: 'money', width: 16 },
+  {
+    header: 'Subtotal (sin IVA)',
+    value: (r) => r.subtotal ?? NO_DISPONIBLE,
+    kind: 'money',
+    width: 18,
+  },
+  {
+    header: 'Total (con IVA)',
+    value: (r) => r.total_cost,
+    kind: 'money',
+    width: 16,
+  },
   { header: 'Moneda', value: (r) => r.currency, width: 10 },
   { header: 'Departamento', value: (r) => r.department, width: 18 },
   {
@@ -179,7 +213,7 @@ const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
   { header: 'Sitio', value: (r) => r.siteid, width: 10 },
 ];
 
-const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
+export const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
   { header: 'PRNUM', value: (r) => r.prnum, width: 14 },
   {
     header: 'Contrato',
@@ -204,7 +238,12 @@ const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
     value: (r) => r.balance_value ?? NO_DISPONIBLE,
     width: 16,
   },
-  { header: 'Monto PR', value: (r) => r.pr_total ?? NO_DISPONIBLE, width: 16 },
+  // K6.9: PR.TOTALCOST, base desconocida; no se combina con montos de SAP
+  {
+    header: 'Monto de la PR (Maximo)',
+    value: (r) => r.pr_total ?? NO_DISPONIBLE,
+    width: 18,
+  },
   { header: 'MAXVOL', value: (r) => r.maxvol ?? NO_DISPONIBLE, width: 14 },
   { header: 'Moneda', value: (r) => r.currency, width: 10 },
   {
@@ -246,13 +285,18 @@ const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
  * estatus y las fechas del contrato se rotulan como tales (sin contrato,
  * vacíos).
  */
-const REQUEST_COLUMNS: ExcelColumn<MaximoContractView>[] =
+export const REQUEST_COLUMNS: ExcelColumn<MaximoContractView>[] =
   CONTRACT_COLUMNS.flatMap((col): ExcelColumn<MaximoContractView>[] => {
     switch (col.header) {
       case 'Contrato':
         return [
           col,
-          { header: 'Estatus PR', value: (r) => r.pr_status, width: 12 },
+          // K7: con el mapa de las PR ("Aprobada: llegó a Compras (APPR)")
+          {
+            header: 'Estatus PR',
+            value: (r) => maximoPrStatusWithCode(r.pr_status) || NO_DISPONIBLE,
+            width: 32,
+          },
         ];
       case 'Estatus':
         return [

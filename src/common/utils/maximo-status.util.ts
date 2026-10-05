@@ -7,6 +7,8 @@
  * APPRnREV (cualquier n) siguen EN APROBACIÓN: falta el siguiente nivel o la
  * aprobación final. Etiquetas provisionales hasta que Alfredo confirme los
  * significados; el código siempre acompaña a la etiqueta.
+ *
+ * K7 (2026-10-05): las PR tienen su propio mapa (`maximoPrStatusLabel`).
  */
 
 const LEVEL_STATUS = /^APPR(\d+)$/;
@@ -54,5 +56,30 @@ export function maximoStatusLabel(status: string | null): string {
 export function maximoStatusWithCode(status: string | null): string {
   if (!status) return '';
   const label = maximoStatusLabel(status);
+  return label === status ? status : `${label} (${status})`;
+}
+
+/**
+ * K7 (2026-10-05): estatus DE LA PR (raíz de AB_CONTRATOS), aparte del de la
+ * OC: en una PR, APPR es la llegada a Compras y WAPPR que todavía no llega.
+ * Misma tabla en el front (`MAXIMO_PR_STATUS_OPTIONS`). Un estatus
+ * desconocido sale tal cual.
+ */
+export const MAXIMO_PR_STATUS_LABELS: Record<string, string> = {
+  WAPPR: 'En aprobación',
+  APPR: 'Aprobada: llegó a Compras',
+  CLOSE: 'Cerrada',
+  CAN: 'Cancelada',
+};
+
+export function maximoPrStatusLabel(status: string | null): string {
+  if (!status) return '';
+  return MAXIMO_PR_STATUS_LABELS[status] ?? status;
+}
+
+/** Estatus de la PR con el código, para exports: "En aprobación (WAPPR)". */
+export function maximoPrStatusWithCode(status: string | null): string {
+  if (!status) return '';
+  const label = maximoPrStatusLabel(status);
   return label === status ? status : `${label} (${status})`;
 }

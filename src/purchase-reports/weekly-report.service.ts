@@ -10,7 +10,10 @@ import type { ExcelColumn } from '../common/utils/excel-export.util';
 import { SapRecordsService } from '../sap-records/sap-records.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { buyerText, maximoBuyer } from '../common/utils/buyer.util';
-import { maximoStatusWithCode } from '../common/utils/maximo-status.util';
+import {
+  maximoPrStatusWithCode,
+  maximoStatusWithCode,
+} from '../common/utils/maximo-status.util';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import {
   CURRENT_MAXIMO_POS,
@@ -446,11 +449,13 @@ export class WeeklyReportService {
           [
             { header: 'PRNUM', value: (r) => r.prnum, width: 14 },
             { header: 'Contrato', value: (r) => r.contractnum, width: 14 },
-            // K4.5: estatus de la PR; el del contrato va aparte
+            // K4.5: estatus de la PR; el del contrato va aparte. K7: con el
+            // mapa de las PR ("Aprobada: llegó a Compras (APPR)"), no el de OC
             {
               header: 'Estatus PR',
-              value: (r) => maximoStatus(r.pr_status) || NO_DISPONIBLE,
-              width: 26,
+              value: (r) =>
+                maximoPrStatusWithCode(r.pr_status) || NO_DISPONIBLE,
+              width: 32,
             },
             {
               header: 'Estatus contrato',

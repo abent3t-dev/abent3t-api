@@ -1,5 +1,10 @@
 import type { ColumnDefs } from '../common/column-filters/column-filters';
 import { buyerLabel } from '../common/utils/buyer.util';
+// Funciones puras sin dependencias (solo contracts.dates): no crea ciclo
+import {
+  integrationStatusLabel,
+  receiptStatusLabel,
+} from '../expediting/expediting.status';
 import type {
   MaximoContractView,
   MaximoPurchaseOrderView,
@@ -38,12 +43,28 @@ export function maximoPrDays(row: MaximoContractView): number | null {
   return daysBetween(row.pr_issue_date, row.pr_approved_at);
 }
 
+/**
+ * K7.1 (2026-10-05): `recepcion` e `integracion` con las etiquetas de
+ * Expeditación ("Completa", "No disponible"; "Procesado", "Sin dato"…);
+ * `oc_sap` como texto (igual que en Expeditación; el orden es numérico) y
+ * `subtotal` (sin IVA) aparte de `monto` (TOTALCOST, con IVA).
+ */
 export const MAXIMO_PO_FILTER_COLUMNS: ColumnDefs<MaximoPurchaseOrderView> = {
   ponum: { type: 'text', value: (r) => r.ponum },
   descripcion: { type: 'text', value: (r) => r.description },
   estatus: { type: 'text', value: (r) => r.status },
+  recepcion: {
+    type: 'text',
+    value: (r) => receiptStatusLabel(r.receipt_status),
+  },
+  integracion: {
+    type: 'text',
+    value: (r) => integrationStatusLabel(r.integration_status),
+  },
+  oc_sap: { type: 'text', value: (r) => r.oc_sap },
   // G1: el proveedor efectivo (según SAP cuando la OC migró o por cruce)
   proveedor: { type: 'text', value: (r) => r.supplier_name },
+  subtotal: { type: 'number', value: (r) => r.subtotal },
   monto: { type: 'number', value: (r) => r.total_cost },
   moneda: { type: 'text', value: (r) => r.currency },
   solicitante: {
