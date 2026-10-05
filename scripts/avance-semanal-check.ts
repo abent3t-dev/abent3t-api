@@ -11,6 +11,7 @@
  *   npm run avance:check -- --semana=2026-09-21   (KPI de una semana por fuente vs Jorge)
  *   npm run avance:check -- --serie               (las 38 semanas: Jorge vs nuestra página de Maximo)
  *   npm run avance:check -- --recibida=emision --dias_desde=emision --montos=sap_migradas --corte=viernes
+ *   npm run avance:check -- --dias-tipo=habiles   (H3: días hábiles, lunes a viernes sin festivos)
  *   npm run avance:check -- --json=conciliacion.json  (la respuesta completa, como el endpoint)
  *   npm run avance:check -- --pdf=avance.pdf      (guarda el PDF de la semana)
  *   npm run avance:check -- --acumulado=acum.pdf  (PDF del año y cuánto tarda)
@@ -45,9 +46,11 @@ import {
 import { renderAvancePdf } from '../src/purchase-reports/avance-semanal/avance-semanal.pdf';
 import {
   AVANCE_CORTES,
+  AVANCE_DIAS_TIPOS,
   AVANCE_INICIOS,
   AVANCE_MONTOS_FUENTES,
   type AvanceCorte,
+  type AvanceDiasTipo,
   type AvanceInicio,
   type AvanceMontosFuente,
   type AvanceOpciones,
@@ -131,6 +134,12 @@ function weekTable(data: AvanceData, lunes: Date, opciones: AvanceOpciones) {
       null,
       (p) => p.estado_anio.cerradas_sin_oc_ni_contrato,
     ],
+    // H2: ¿las "canceladas" de Jorge son nuestras PR de contrato cerradas?
+    [
+      'Cerradas de contrato (H2)',
+      j?.medidor_canceladas,
+      (p) => p.estado_anio.cerradas_de_contrato,
+    ],
     [
       'PR emitidas sin aprobar (aparte)',
       null,
@@ -173,6 +182,10 @@ async function main(): Promise<void> {
     dias_desde: choice<AvanceInicio>('dias_desde', AVANCE_INICIOS),
     montos: choice<AvanceMontosFuente>('montos', AVANCE_MONTOS_FUENTES),
     corte: choice<AvanceCorte>('corte', AVANCE_CORTES),
+    // H3: --dias-tipo (o --dias_tipo, como el parámetro del endpoint)
+    dias_tipo:
+      choice<AvanceDiasTipo>('dias-tipo', AVANCE_DIAS_TIPOS) ??
+      choice<AvanceDiasTipo>('dias_tipo', AVANCE_DIAS_TIPOS),
   });
   const prisma = new PrismaService();
   await prisma.$connect();
@@ -184,7 +197,7 @@ async function main(): Promise<void> {
       `Reglas: ${JSON.stringify(opciones.reglas)} · montos ${opciones.monto_base} de ${opciones.montos_fuente_maximo}`,
     );
     console.log(
-      `Datos: ${data.gestiones.length} gestiones (SAP ${data.gestiones.length - maximoN}, Maximo ${maximoN}; PR de Maximo fuera del universo: ${data.maximo_no_recibidas.length}), ${data.ordenes.length} OC · ${Date.now() - t0} ms`,
+      `Datos: ${data.gestiones.length} gestiones (SAP ${data.gestiones.length - maximoN}, Maximo ${maximoN}; PR de Maximo fuera del universo: ${data.maximo_no_recibidas.length}), ${data.ordenes.length} OC, ${data.festivos?.length ?? 0} festivos · ${Date.now() - t0} ms`,
     );
     const semana = arg('semana');
     const lunes = semana ? mondayOf(parseDay(semana)) : lastCompleteWeek();
@@ -210,6 +223,11 @@ async function main(): Promise<void> {
           ' · ',
         )} → cumple: ${conc.criterio.cumple ? 'SÍ' : 'NO'} · abiertas, error absoluto medio: ${conc.criterio.abiertas_error_absoluto_medio ?? '—'} PR`,
     );
+    const h2 = conc.hipotesis.h2;
+    console.log(
+      `\nH2: ${h2.compara} · ${h2.semanas} semanas · error ${pct(h2.error_pct)} · abs. medio ${h2.error_absoluto_medio ?? '—'} · sesgo ${h2.sesgo ?? '—'}`,
+    );
+    console.log(conc.hipotesis.h3);
     for (const m of conc.montos) {
       console.log(
         `\nMontos ${m.anio} MXN (Jorge ${m.total.jorge.toLocaleString('es-MX')}; escrito ${m.total.jorge_escrito?.toLocaleString('es-MX') ?? '—'}):`,
@@ -250,7 +268,7 @@ async function main(): Promise<void> {
           );
         // H15: la página copiada de la anterior no se compara en ningún KPI
         console.log(
-          `  p.${String(s.pagina).padStart(2)} ${s.lunes}  ${partes.join(' · ')} · H1 ${s.cerradas_sin_oc_ni_contrato}${s.validez.copia ? ' · copia de la semana anterior: no se compara' : ''}`,
+          `  p.${String(s.pagina).padStart(2)} ${s.lunes}  ${partes.join(' · ')} · H1 ${s.cerradas_sin_oc_ni_contrato} · H2 ${s.cerradas_de_contrato}${s.validez.copia ? ' · copia de la semana anterior: no se compara' : ''}`,
         );
       }
     }

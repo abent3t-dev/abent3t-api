@@ -16,6 +16,12 @@ export type AvanceInicio = 'aprobacion' | 'emision';
 /** Fin de la semana: domingo o viernes, 23:59 hora de México. */
 export type AvanceCorte = 'domingo' | 'viernes';
 
+/**
+ * Cómo se cuentan los días de cierre y de cancelación: naturales o hábiles
+ * (lunes a viernes sin los festivos activos de la tabla `holidays`).
+ */
+export type AvanceDiasTipo = 'naturales' | 'habiles';
+
 export interface AvanceReglas {
   /**
    * Recibida (inicio R) y universo de Maximo: 'aprobacion' = primer APPR
@@ -30,6 +36,13 @@ export interface AvanceReglas {
   /** Última CAN del historial PRSTATUS (`pr_cancelled_at`). */
   cancelada: 'can_historial';
   corte: AvanceCorte;
+  /**
+   * Días de cierre y de cancelación (las dos páginas, homologadas):
+   * 'naturales' = el tiempo corrido (`gestionDays`); 'habiles' = solo el
+   * tiempo que cae de lunes a viernes, sin los festivos activos de la tabla
+   * `holidays` (si está vacía, solo se quitan sábados y domingos).
+   */
+  dias_tipo: AvanceDiasTipo;
 }
 
 export const AVANCE_REGLAS = {
@@ -38,6 +51,10 @@ export const AVANCE_REGLAS = {
   cerrada: 'primera_oc_o_close', // coalesce(primera OC vigente, último CLOSE)
   cancelada: 'can_historial', // última CAN del historial PRSTATUS
   corte: 'domingo', // 'domingo' | 'viernes' (23:59 hora de México)
+  // 'naturales' | 'habiles' (hábiles = lunes a viernes sin los festivos
+  // activos de la tabla holidays). H3 de la calibración (5-oct): 17.1 días
+  // naturales ≈ 12 hábiles, cerca de los 11 de Jorge
+  dias_tipo: 'naturales',
 } as const satisfies AvanceReglas;
 
 /** Base de los montos adjudicados (K6: `subtotal` = suma de las líneas). */
@@ -67,10 +84,16 @@ export const AVANCE_OPCIONES: AvanceOpciones = {
 
 export const AVANCE_INICIOS: AvanceInicio[] = ['aprobacion', 'emision'];
 export const AVANCE_CORTES: AvanceCorte[] = ['domingo', 'viernes'];
+export const AVANCE_DIAS_TIPOS: AvanceDiasTipo[] = ['naturales', 'habiles'];
 export const AVANCE_MONTOS_FUENTES: AvanceMontosFuente[] = [
   'maximo',
   'sap_migradas',
 ];
+
+/** "días" / "días hábiles", para los textos de la página, el PDF y el Excel. */
+export function diasTexto(tipo: AvanceDiasTipo): string {
+  return tipo === 'habiles' ? 'días hábiles' : 'días';
+}
 
 /** "sin IVA" / "con IVA", para los textos de la página, el PDF y el Excel. */
 export function montoBaseTexto(base: AvanceMontoBase): string {
@@ -95,6 +118,7 @@ export interface AvanceReglasVigentes {
   /** Frase lista para la tarjeta: la base y dónde va el otro valor. */
   monto_base_nota: string;
   montos_fuente_maximo: AvanceMontosFuente;
+  /** Todas las reglas, con `dias_tipo` (naturales o hábiles, H3). */
   reglas: AvanceReglas;
 }
 

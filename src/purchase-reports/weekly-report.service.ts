@@ -793,6 +793,11 @@ export class WeeklyReportService {
     const join = (...parts: Array<string | undefined>) =>
       parts.filter(Boolean).join(' · ') || undefined;
     const noRecibidas = p.avance.maximo_no_recibidas;
+    // H3: "Días" o "Días hábiles" según `reglas.dias_tipo`
+    const titulo = (unidad: string) =>
+      unidad.charAt(0).toUpperCase() + unidad.slice(1);
+    const diasCierre = titulo(p.cierre.unidad);
+    const diasCancel = titulo(p.cancelacion.unidad);
     const rows: AvanceRow[] = [
       {
         indicador: 'Semana',
@@ -831,12 +836,12 @@ export class WeeklyReportService {
         ),
       },
       {
-        indicador: `Días de cierre ${anio} (promedio)`,
+        indicador: `${diasCierre} de cierre ${anio} (promedio)`,
         valor: dias(p.cierre.anio.promedio_dias),
         nota: `${p.cierre.nota} · mediana ${p.cierre.anio.mediana_dias ?? 'sin datos'} · sobre ${p.cierre.anio.total} cerradas con OC`,
       },
       ...p.cierre.semanas.map((s) => ({
-        indicador: `Días de cierre, semana ${s.etiqueta} (promedio)`,
+        indicador: `${diasCierre} de cierre, semana ${s.etiqueta} (promedio)`,
         valor: dias(s.dias.promedio_dias),
         nota: `Mediana ${s.dias.mediana_dias ?? 'sin datos'} · ${s.cerradas} cerradas en la semana`,
       })),
@@ -845,7 +850,7 @@ export class WeeklyReportService {
     const cancel = p.cancelacion.anio;
     rows.push(
       {
-        indicador: `Días de cancelación ${anio} (promedio)`,
+        indicador: `${diasCancel} de cancelación ${anio} (promedio)`,
         valor: dias(cancel?.promedio_dias ?? null),
         nota: join(
           p.cancelacion.nota ?? undefined,
@@ -853,7 +858,7 @@ export class WeeklyReportService {
         ),
       },
       ...p.cancelacion.semanas.map((s) => ({
-        indicador: `Días de cancelación, semana ${s.etiqueta} (promedio)`,
+        indicador: `${diasCancel} de cancelación, semana ${s.etiqueta} (promedio)`,
         valor: dias(s.dias.promedio_dias),
         nota: `Mediana ${s.dias.mediana_dias ?? 'sin datos'} · ${s.canceladas} canceladas en la semana`,
       })),

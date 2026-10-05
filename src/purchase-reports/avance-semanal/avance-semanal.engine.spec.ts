@@ -1,9 +1,13 @@
+import { gestionDays } from '../../purchase-dashboard/sap-gestion-days';
 import {
   anioDe,
   type AvanceData,
   avanceDefiniciones,
   buildAvancePage,
   cohortes,
+  type CuentaDias,
+  diasHabiles,
+  diasHasta,
   estadoAl,
   etiquetaSemana,
   firstMondayOfYear,
@@ -339,6 +343,278 @@ describe('lo que pasó en la semana', () => {
     const sin = semanaStats([sinInicio], D('2026-09-21'));
     expect(sin.canceladas).toBe(1);
     expect(sin.dias_cancelacion.total).toBe(0);
+  });
+});
+
+describe('H3: días hábiles (lunes a viernes sin festivos, con fracción)', () => {
+  // semana del 21-sep-2026: lunes 21 … viernes 25, sábado 26, domingo 27
+  const H = 1 / 24;
+  const habiles: CuentaDias = { tipo: 'habiles', festivos: [] };
+
+  it('viernes 17:00 a lunes 09:00 hora local = 7 h + 9 h (Maximo en hora de México, SAP sin desfase)', () => {
+    // Maximo: 17:00 de México = 23:00 UTC; 09:00 = 15:00 UTC
+    const desde = T('2026-09-25T23:00:00Z');
+    const hasta = T('2026-09-28T15:00:00Z');
+    expect(diasHabiles(desde, hasta, 'maximo')).toBeCloseTo(7 * H + 9 * H, 10);
+    // los naturales son 2 días y 16 h
+    expect(gestionDays(desde, hasta)).toBeCloseTo(2 + 16 * H, 10);
+    // SAP: día calendario (UTC)
+    expect(
+      diasHabiles(T('2026-09-25T17:00:00Z'), T('2026-09-28T09:00:00Z'), 'sap'),
+    ).toBeCloseTo(7 * H + 9 * H, 10);
+  });
+
+  it('el desfase cuenta: el viernes 21:00 de México ya es sábado en UTC', () => {
+    const desde = T('2026-09-26T03:00:00Z'); // viernes 21:00 de México
+    const hasta = T('2026-09-28T15:00:00Z'); // lunes 09:00 de México
+    expect(diasHabiles(desde, hasta, 'maximo')).toBeCloseTo(3 * H + 9 * H, 10);
+    // como SAP (sin desfase) el inicio es sábado: solo el lunes hasta las 15:00
+    expect(diasHabiles(desde, hasta, 'sap')).toBeCloseTo(15 * H, 10);
+  });
+
+  it('de un lunes 00:00 al siguiente = 5; un festivo entre semana resta 1 (en sábado, nada)', () => {
+    expect(
+      diasHabiles(
+        T('2026-09-21T06:00:00Z'),
+        T('2026-09-28T06:00:00Z'),
+        'maximo',
+      ),
+    ).toBe(5);
+    expect(diasHabiles(D('2026-09-21'), D('2026-09-28'), 'sap')).toBe(5);
+    // 16-sep-2026 es miércoles
+    expect(
+      diasHabiles(D('2026-09-14'), D('2026-09-21'), 'sap', ['2026-09-16']),
+    ).toBe(4);
+    expect(
+      diasHabiles(
+        T('2026-09-14T06:00:00Z'),
+        T('2026-09-21T06:00:00Z'),
+        'maximo',
+        ['2026-09-16'],
+      ),
+    ).toBe(4);
+    // festivo en sábado o fuera del intervalo: no resta
+    expect(
+      diasHabiles(D('2026-09-14'), D('2026-09-21'), 'sap', [
+        '2026-09-19',
+        '2026-12-25',
+      ]),
+    ).toBe(5);
+  });
+
+  it('el festivo de Maximo es el día de México (de 06:00 a 06:00 UTC)', () => {
+    // martes 15 18:00 a jueves 17 06:00 de México, con el miércoles festivo
+    const desde = T('2026-09-16T00:00:00Z');
+    const hasta = T('2026-09-17T12:00:00Z');
+    expect(diasHabiles(desde, hasta, 'maximo', ['2026-09-16'])).toBeCloseTo(
+      6 * H + 6 * H,
+      10,
+    );
+    expect(diasHabiles(desde, hasta, 'maximo')).toBeCloseTo(36 * H, 10);
+  });
+
+  it('mismo instante = 0; evento anterior al inicio = null (como gestionDays)', () => {
+    const t = T('2026-09-23T15:30:00Z');
+    expect(diasHabiles(t, t, 'maximo')).toBe(0);
+    expect(diasHabiles(D('2026-09-26'), D('2026-09-26'), 'sap')).toBe(0);
+    expect(
+      diasHabiles(
+        T('2026-09-23T15:30:00Z'),
+        T('2026-09-22T15:30:00Z'),
+        'maximo',
+      ),
+    ).toBeNull();
+    expect(
+      gestionDays(T('2026-09-23T15:30:00Z'), T('2026-09-22T15:30:00Z')),
+    ).toBeNull();
+  });
+
+  it('diasHasta: naturales (default) con gestionDays y hábiles con diasHabiles; sin inicio o evento anterior → null', () => {
+    const g = maximo({
+      recibida: T('2026-09-25T23:00:00Z'),
+      inicio_dias: T('2026-09-25T23:00:00Z'),
+    });
+    const lunes = T('2026-09-28T15:00:00Z');
+    expect(diasHasta(g, lunes)).toBeCloseTo(2 + 16 * H, 10);
+    expect(diasHasta(g, lunes, habiles)).toBeCloseTo(16 * H, 10);
+    expect(diasHasta(g, null, habiles)).toBeNull();
+    expect(diasHasta({ ...g, inicio_dias: null }, lunes, habiles)).toBeNull();
+    expect(diasHasta(g, T('2026-09-24T12:00:00Z'), habiles)).toBeNull();
+  });
+
+  it('cohortes y semana con hábiles: días menores que los naturales; los festivos restan; los conteos no cambian', () => {
+    const gestiones = [
+      // lunes a lunes: 7 naturales, 5 hábiles (4 con el 16-sep)
+      sap({ recibida: D('2026-09-14'), primera_oc: D('2026-09-21') }),
+      maximo({
+        recibida: T('2026-09-14T06:00:00Z'),
+        inicio_dias: T('2026-09-14T06:00:00Z'),
+        primera_oc: T('2026-09-21T06:00:00Z'),
+      }),
+      // viernes a lunes: 3 naturales, 1 hábil
+      sap({ recibida: D('2026-09-11'), cancelada: D('2026-09-14') }),
+    ];
+    const lunes = D('2026-09-21');
+    const [naturales] = cohortes(gestiones, [2026], lunes);
+    const [enHabiles] = cohortes(gestiones, [2026], lunes, 'domingo', habiles);
+    const [conFestivo] = cohortes(gestiones, [2026], lunes, 'domingo', {
+      tipo: 'habiles',
+      festivos: ['2026-09-16'],
+    });
+    expect(naturales.dias_cierre.promedio_dias).toBe(7);
+    expect(naturales.dias_cancelacion.promedio_dias).toBe(3);
+    expect(enHabiles.dias_cierre.promedio_dias).toBe(5);
+    expect(enHabiles.dias_cancelacion.promedio_dias).toBe(1);
+    expect(conFestivo.dias_cierre).toEqual({
+      promedio_dias: 4,
+      mediana_dias: 4,
+      total: 2,
+    });
+    // la cuenta de días no mueve los estados
+    for (const c of [enHabiles, conFestivo]) {
+      expect(c).toMatchObject({
+        recibidas: naturales.recibidas,
+        cerradas: naturales.cerradas,
+        canceladas: naturales.canceladas,
+        abiertas: naturales.abiertas,
+      });
+    }
+    // cerradas en la semana del 21-sep, con sus días hábiles
+    const s = semanaStats(gestiones, lunes, 'domingo', habiles);
+    expect(s.cerradas).toBe(2);
+    expect(s.dias_cierre.promedio_dias).toBe(5);
+    expect(semanaStats(gestiones, lunes).dias_cierre.promedio_dias).toBe(7);
+  });
+
+  it('la página (Maximo y SAP) cuenta en hábiles con los festivos de los datos y lo dice; el default sigue en naturales', () => {
+    const gestiones = [
+      sap({ recibida: D('2026-09-14'), primera_oc: D('2026-09-21') }),
+      maximo({
+        recibida: T('2026-09-14T06:00:00Z'),
+        primera_oc: T('2026-09-21T06:00:00Z'),
+      }),
+      maximo({
+        recibida: T('2026-09-11T06:00:00Z'),
+        cancelada: T('2026-09-14T06:00:00Z'),
+      }),
+    ];
+    const conFestivos: AvanceData = {
+      ...data(gestiones),
+      festivos: ['2026-09-16'],
+    };
+    const now = T('2026-09-30T18:00:00Z');
+    const enHabiles = opciones({
+      reglas: { ...AVANCE_REGLAS, dias_tipo: 'habiles' },
+    });
+    const maximoPag = buildAvancePage(
+      conFestivos,
+      D('2026-09-21'),
+      'maximo',
+      now,
+      enHabiles,
+    );
+    const sapPag = buildAvancePage(
+      conFestivos,
+      D('2026-09-21'),
+      'sap',
+      now,
+      enHabiles,
+    );
+    expect(maximoPag.opciones.reglas.dias_tipo).toBe('habiles');
+    expect(maximoPag.cierre).toMatchObject({ unidad: 'días hábiles' });
+    expect(maximoPag.cancelacion).toMatchObject({ unidad: 'días hábiles' });
+    // lunes a lunes con el miércoles 16 festivo: 4; viernes a lunes: 1
+    expect(maximoPag.cierre.anio.promedio_dias).toBe(4);
+    expect(maximoPag.cancelacion.anio?.promedio_dias).toBe(1);
+    expect(sapPag.cierre.anio.promedio_dias).toBe(4);
+    expect(sapPag.cierre.unidad).toBe('días hábiles');
+    expect(maximoPag.notas.join(' ')).toContain(
+      'en días hábiles: de lunes a viernes, sin los días festivos registrados',
+    );
+    // sin festivos en los datos: solo se quitan sábados y domingos
+    const sinFestivos = buildAvancePage(
+      data(gestiones),
+      D('2026-09-21'),
+      'maximo',
+      now,
+      enHabiles,
+    );
+    expect(sinFestivos.cierre.anio.promedio_dias).toBe(5);
+    expect(sinFestivos.notas.join(' ')).toContain(
+      'no hay días festivos registrados',
+    );
+    // default (AVANCE_REGLAS): naturales, aunque haya festivos
+    expect(AVANCE_REGLAS.dias_tipo).toBe('naturales');
+    const naturales = buildAvancePage(
+      conFestivos,
+      D('2026-09-21'),
+      'maximo',
+      now,
+    );
+    expect(naturales.cierre).toMatchObject({ unidad: 'días' });
+    expect(naturales.cancelacion.unidad).toBe('días');
+    expect(naturales.cierre.anio.promedio_dias).toBe(7);
+    expect(naturales.notas.join(' ')).not.toContain('hábiles');
+  });
+});
+
+describe('H2: cerradas de contrato al corte', () => {
+  it('cuenta la PR de contrato cerrada (con OC o por CLOSE); no la sin contrato, ni la de contrato abierta o cancelada; en SAP, 0', () => {
+    const recibida = T('2026-09-01T15:00:00Z');
+    const gestiones = [
+      // de contrato, cerrada con OC: cuenta
+      maximo({
+        recibida,
+        primera_oc: T('2026-09-10T15:00:00Z'),
+        de_contrato: true,
+      }),
+      // de contrato, cerrada por CLOSE sin OC: cuenta (y no es H1)
+      maximo({
+        recibida,
+        cierre_sin_oc: T('2026-09-11T15:00:00Z'),
+        de_contrato: true,
+      }),
+      // sin contrato, cerrada: no cuenta
+      maximo({ recibida, primera_oc: T('2026-09-10T15:00:00Z') }),
+      // de contrato, abierta: no cuenta
+      maximo({ recibida, de_contrato: true }),
+      // de contrato, cancelada: no cuenta
+      maximo({
+        recibida,
+        cancelada: T('2026-09-12T15:00:00Z'),
+        de_contrato: true,
+      }),
+      // de contrato, cerrada después del corte: al corte sigue abierta
+      maximo({
+        recibida,
+        primera_oc: T('2026-10-01T15:00:00Z'),
+        de_contrato: true,
+      }),
+      // SAP no tiene contrato (aunque la marca viniera en true)
+      sap({
+        recibida: D('2026-09-01'),
+        primera_oc: D('2026-09-10'),
+        de_contrato: true,
+      }),
+    ];
+    const [y2026] = cohortes(gestiones, [2026], D('2026-09-14'));
+    expect(y2026).toMatchObject({
+      recibidas: 7,
+      cerradas: 4,
+      cerradas_de_contrato: 2,
+      cerradas_sin_oc: 1,
+      cerradas_sin_oc_ni_contrato: 0,
+      canceladas: 1,
+      abiertas: 2,
+    });
+    // al corte del domingo 6-sep ya estaban recibidas y ninguna cerraba
+    const [antes] = cohortes(gestiones, [2026], D('2026-08-31'));
+    expect(antes).toMatchObject({ recibidas: 7, cerradas_de_contrato: 0 });
+    const now = T('2026-09-30T18:00:00Z');
+    const pagina = (fuente: 'maximo' | 'sap') =>
+      buildAvancePage(data(gestiones), D('2026-09-14'), fuente, now);
+    expect(pagina('maximo').estado_anio.cerradas_de_contrato).toBe(2);
+    expect(pagina('sap').estado_anio.cerradas_de_contrato).toBe(0);
   });
 });
 
@@ -838,5 +1114,42 @@ describe('I3: un reporte por sistema, homologados', () => {
     expect(variante.montos).toContain('OC de SAP creadas desde Maximo');
     expect(variante.montos).toContain('con IVA');
     expect(variante.semana).toContain('de sábado a viernes');
+  });
+
+  it('H3: con hábiles, las dos páginas lo explican (lunes a viernes, sin festivos de holidays) y lo dicen homologado', () => {
+    const habiles = opciones({
+      reglas: { ...AVANCE_REGLAS, dias_tipo: 'habiles' },
+    });
+    const maximoDef = avanceDefiniciones('maximo', habiles);
+    const sapDef = avanceDefiniciones('sap', habiles);
+    for (const def of [maximoDef, sapDef]) {
+      expect(def.dias).toMatch(/^Días hábiles de cierre y de cancelación/);
+      expect(def.dias).toContain('de lunes a viernes');
+      expect(def.dias).toContain('holidays');
+      expect(def.dias).not.toContain('la misma cuenta que los días de gestión');
+      expect(def.homologacion).toContain(
+        'se cuentan igual en las dos páginas: hábiles',
+      );
+    }
+    expect(maximoDef.dias).toContain('en hora de México');
+    expect(sapDef.dias).toContain('por día calendario');
+    // cada página sigue hablando solo de su sistema
+    const propias = (def: Record<string, string>) =>
+      Object.entries(def)
+        .filter(([clave]) => clave !== 'montos' && clave !== 'homologacion')
+        .map(([, texto]) => texto)
+        .join(' ');
+    expect(propias(maximoDef)).not.toContain('SAP');
+    expect(propias(sapDef)).not.toContain('Maximo');
+    expect(avanceDefiniciones('todas', habiles).homologacion).toContain(
+      'en las dos fuentes: hábiles',
+    );
+    // default: naturales, la misma cuenta que el tablero
+    const def = avanceDefiniciones('maximo');
+    expect(def.dias).toMatch(/^Días de cierre y de cancelación/);
+    expect(def.dias).toContain('la misma cuenta que los días de gestión');
+    expect(def.homologacion).toContain(
+      'se cuentan igual en las dos páginas: naturales',
+    );
   });
 });

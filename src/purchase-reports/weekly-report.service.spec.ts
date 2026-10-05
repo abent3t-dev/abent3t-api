@@ -19,7 +19,15 @@ import {
   effectiveMaximoVendor,
 } from '../erp-vendors/maximo-vendor-xref';
 import type { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
-import type { AvanceData } from './avance-semanal/avance-semanal.engine';
+import {
+  type AvanceData,
+  type AvancePage,
+  buildAvancePage,
+} from './avance-semanal/avance-semanal.engine';
+import {
+  AVANCE_OPCIONES,
+  AVANCE_REGLAS,
+} from './avance-semanal/avance-semanal.reglas';
 
 /**
  * Reporte semanal de Compras (2026-09-23): periodo anterior de la misma
@@ -578,5 +586,41 @@ describe('WeeklyReportService', () => {
     // un mes sin OC no es "No disponible": no hubo compras
     expect(filas.get('Monto adjudicado Junio 2026 (MXN)')?.valor).toBe(0);
     expect(filas.get('Monto adjudicado total 2026 (MXN)')?.valor).toBe(300);
+  });
+
+  it('H3: con días hábiles, los renglones de días de cierre y de cancelación dicen "Días hábiles"', () => {
+    const { service } = makeService();
+    const filas = (page: AvancePage) =>
+      (
+        service as unknown as {
+          avanceRows: (p: AvancePage) => Array<{ indicador: string }>;
+        }
+      )
+        .avanceRows(page)
+        .map((r) => r.indicador);
+    const data: AvanceData = {
+      gestiones: [],
+      ordenes: [],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+    };
+    const lunes = new Date('2026-09-21T00:00:00Z');
+    const now = new Date('2026-09-30T18:00:00Z');
+    const habiles = filas(
+      buildAvancePage(data, lunes, 'maximo', now, {
+        ...AVANCE_OPCIONES,
+        reglas: { ...AVANCE_REGLAS, dias_tipo: 'habiles' },
+      }),
+    );
+    expect(habiles).toContain('Días hábiles de cierre 2026 (promedio)');
+    expect(habiles).toContain(
+      'Días hábiles de cierre, semana al 25 de septiembre (promedio)',
+    );
+    expect(habiles).toContain('Días hábiles de cancelación 2026 (promedio)');
+    expect(habiles).not.toContain('Días de cierre 2026 (promedio)');
+    // default: naturales, como siempre
+    const naturales = filas(buildAvancePage(data, lunes, 'maximo', now));
+    expect(naturales).toContain('Días de cierre 2026 (promedio)');
+    expect(naturales).toContain('Días de cancelación 2026 (promedio)');
   });
 });

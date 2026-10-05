@@ -1,6 +1,8 @@
 import {
   compararSerie,
   conciliarAvance,
+  HIPOTESIS_H2_COMPARA,
+  hipotesisH2,
   MOTIVO_COPIA,
   type NuestraSemana,
   opcionesConciliacion,
@@ -47,6 +49,7 @@ function sintetica(j: JorgeSemana, factor = 1): NuestraSemana {
     dias_cierre_mediana: dias(j.dias_cierre),
     dias_cancelacion: dias(j.dias_cancelacion),
     cerradas_sin_oc_ni_contrato: 0,
+    cerradas_de_contrato: 0,
   };
 }
 
@@ -242,6 +245,77 @@ describe('criterio con una serie sintética', () => {
   });
 });
 
+describe('H2: cerradas de contrato contra las canceladas del año de Jorge', () => {
+  const semanas = jorgeSemanas();
+  // semanas donde se comparan las canceladas del medidor de Jorge
+  const validas = compararSerie(
+    semanas,
+    semanas.map((j) => sintetica(j)),
+  ).semanas.filter((s) => kpi(s, 'medidor_canceladas').valida);
+  const conContrato = (desfase: number) =>
+    semanas.map((j) => ({
+      ...sintetica(j),
+      cerradas_de_contrato: (j.medidor_canceladas ?? 0) + desfase,
+    }));
+
+  it('cada semana lleva sus cerradas de contrato; iguales a las canceladas de Jorge dan 0% en las semanas con medidor válido', () => {
+    const r = compararSerie(semanas, conContrato(0));
+    expect(r.semanas[0].cerradas_de_contrato).toBe(
+      semanas[0].medidor_canceladas,
+    );
+    expect(hipotesisH2(r.semanas)).toEqual({
+      compara: HIPOTESIS_H2_COMPARA,
+      semanas: validas.length,
+      error_pct: 0,
+      error_absoluto_medio: 0,
+      sesgo: 0,
+    });
+    // fuera: la p.16 (medidor con "777"), la p.26 (copia) y la p.38 (sin medidor)
+    const paginas = validas.map((s) => s.pagina);
+    expect(paginas.length).toBeGreaterThan(20);
+    expect(paginas).not.toContain(16);
+    expect(paginas).not.toContain(26);
+    expect(paginas).not.toContain(38);
+  });
+
+  it('con desfase: el mismo error ponderado, error absoluto medio y sesgo que el resumen', () => {
+    const h2 = hipotesisH2(compararSerie(semanas, conContrato(2)).semanas);
+    expect(h2.error_absoluto_medio).toBe(2);
+    expect(h2.sesgo).toBe(2);
+    const sumaJorge = validas.reduce(
+      (s, v) => s + (kpi(v, 'medidor_canceladas').jorge ?? 0),
+      0,
+    );
+    expect(h2.error_pct).toBe(
+      Math.round(((2 * validas.length) / sumaJorge) * 10_000) / 100,
+    );
+    // la misma cuenta que el resumen de medidor_canceladas con ese desfase
+    const resumen = compararSerie(
+      semanas,
+      semanas.map((j) => ({
+        ...sintetica(j),
+        canceladas_anio: (j.medidor_canceladas ?? 0) + 2,
+      })),
+    ).resumen.find((k) => k.kpi === 'medidor_canceladas')!;
+    expect(h2).toMatchObject({
+      semanas: resumen.semanas,
+      error_pct: resumen.error_pct,
+      error_absoluto_medio: resumen.error_absoluto_medio,
+      sesgo: resumen.sesgo,
+    });
+  });
+
+  it('sin semanas válidas: todo null', () => {
+    expect(hipotesisH2([])).toEqual({
+      compara: HIPOTESIS_H2_COMPARA,
+      semanas: 0,
+      error_pct: null,
+      error_absoluto_medio: null,
+      sesgo: null,
+    });
+  });
+});
+
 describe('conciliarAvance', () => {
   const gestion = (overrides: Partial<Gestion>): Gestion => ({
     sistema: 'maximo',
@@ -345,5 +419,78 @@ describe('conciliarAvance', () => {
       monto_base: AVANCE_MONTO_BASE,
       montos_fuente_maximo: 'sap_migradas',
     });
+  });
+
+  it('H3: dias_tipo respeta lo pedido y por default son días naturales', () => {
+    expect(opcionesConciliacion({}).reglas.dias_tipo).toBe('naturales');
+    expect(opcionesConciliacion({ dias_tipo: 'habiles' })).toEqual({
+      reglas: { ...AVANCE_REGLAS, dias_tipo: 'habiles' },
+      monto_base: AVANCE_MONTO_BASE,
+      montos_fuente_maximo: AVANCE_MONTOS_FUENTE_MAXIMO,
+    });
+  });
+
+  it('H2: cada semana lleva sus cerradas de contrato al corte y la respuesta trae las hipótesis', () => {
+    const conContrato: AvanceData = {
+      ...data,
+      gestiones: [
+        ...data.gestiones,
+        // de contrato, cerrada con OC el 24-sep
+        gestion({
+          folio: 'PR4',
+          primera_oc: new Date('2026-09-24T16:00:00Z'),
+          de_contrato: true,
+        }),
+        // de contrato, cerrada por CLOSE el 16-sep (no es H1)
+        gestion({
+          folio: 'PR5',
+          cierre_sin_oc: new Date('2026-09-16T16:00:00Z'),
+          de_contrato: true,
+        }),
+        // de contrato, abierta
+        gestion({ folio: 'PR6', de_contrato: true }),
+      ],
+    };
+    const conc = conciliarAvance(
+      conContrato,
+      opcionesConciliacion({}),
+      new Date('2026-10-05T18:00:00Z'),
+    );
+    expect(conc.semanas[0]).toMatchObject({
+      lunes: '2026-09-21',
+      cerradas_de_contrato: 2,
+      cerradas_sin_oc_ni_contrato: 1,
+    });
+    expect(conc.semanas[1]).toMatchObject({
+      lunes: '2026-09-14',
+      cerradas_de_contrato: 1,
+    });
+    expect(conc.semanas[2].cerradas_de_contrato).toBe(0);
+    expect(conc.hipotesis.h2).toMatchObject({ compara: HIPOTESIS_H2_COMPARA });
+    expect(conc.hipotesis.h2.semanas).toBeGreaterThan(0);
+    // 2 o menos contra las canceladas de Jorge: contamos de menos
+    expect(conc.hipotesis.h2.sesgo).toBeLessThan(0);
+    expect(conc.hipotesis.h3).toContain('dias_tipo=habiles');
+  });
+
+  it('H3: con dias_tipo=habiles los días de cierre salen en hábiles y la respuesta lo reporta', () => {
+    const generado = new Date('2026-10-05T18:00:00Z');
+    const naturales = conciliarAvance(data, opcionesConciliacion({}), generado);
+    const habiles = conciliarAvance(
+      data,
+      opcionesConciliacion({ dias_tipo: 'habiles' }),
+      generado,
+    );
+    expect(habiles.opciones.reglas.dias_tipo).toBe('habiles');
+    expect(naturales.opciones.reglas.dias_tipo).toBe('naturales');
+    // martes 15-sep 09:00 a jueves 24-sep 10:00 de México: 9 días y 1 h
+    // naturales; 6 días hábiles enteros + 15 h + 10 h
+    expect(kpi(naturales.semanas[0], 'dias_cierre_promedio').nuestro).toBe(9);
+    expect(kpi(habiles.semanas[0], 'dias_cierre_promedio').nuestro).toBe(7);
+    expect(habiles.hipotesis.h3).toContain('cuenta días hábiles');
+    // los conteos no cambian
+    expect(kpi(habiles.semanas[0], 'recibidas').nuestro).toBe(
+      kpi(naturales.semanas[0], 'recibidas').nuestro,
+    );
   });
 });

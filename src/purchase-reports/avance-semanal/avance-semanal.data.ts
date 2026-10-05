@@ -28,6 +28,10 @@ import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
  *    respaldo (ya no se ubica por folio ni por la fecha del contrato).
  *  - Montos (K6): las OC traen el total con IVA y el `subtotal` sin IVA
  *    (null = sin líneas o alguna sin importe).
+ *  - Festivos (H3, días hábiles): los activos de la tabla `holidays`, una
+ *    vez, como 'YYYY-MM-DD'. El motor los usa solo con
+ *    `reglas.dias_tipo='habiles'`; sin festivos, hábiles solo quita sábados
+ *    y domingos.
  */
 
 type Queryable = {
@@ -75,6 +79,8 @@ export interface AvanceRows {
     monto: unknown;
     subtotal: unknown;
   }>;
+  /** H3: festivos activos de la tabla `holidays` ('YYYY-MM-DD'). */
+  festivos: Array<{ dia: string }>;
 }
 
 export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
@@ -85,6 +91,7 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
     maximoPrs,
     maximoFirstPo,
     maximoOrders,
+    festivos,
   ] = await Promise.all([
     prisma.$queryRaw<AvanceRows['sapRequests']>(Prisma.sql`
       SELECT doc_entry, doc_num, doc_date, document_status, cancelled,
@@ -125,6 +132,13 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
       FROM (${CURRENT_MAXIMO_POS}) p
       WHERE coalesce(p.status, '') NOT IN ('CAN', 'CANCEL')
         AND p.created_at_source IS NOT NULL AND p.total_cost IS NOT NULL`),
+    // H3: `holiday_date` es @db.Date (sin hora): el texto evita corrimientos
+    // de zona al pasarlo a Date
+    prisma.$queryRaw<AvanceRows['festivos']>(Prisma.sql`
+      SELECT to_char(h.holiday_date, 'YYYY-MM-DD') AS dia
+      FROM holidays h
+      WHERE h.is_active = true
+      ORDER BY h.holiday_date`),
   ]);
   return {
     sapRequests,
@@ -133,6 +147,7 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
     maximoPrs,
     maximoFirstPo,
     maximoOrders,
+    festivos,
   };
 }
 
@@ -245,5 +260,6 @@ export function buildAvanceData(
     ordenes,
     maximo_no_recibidas: noRecibidas,
     sap_desde: sapDesde,
+    festivos: rows.festivos.map((f) => f.dia),
   };
 }

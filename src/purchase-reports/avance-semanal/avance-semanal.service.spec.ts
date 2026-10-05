@@ -1,10 +1,12 @@
 import 'reflect-metadata';
 import PDFDocument from 'pdfkit';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
 import type { PrismaService } from '../../prisma/prisma.service';
+import { AvanceConciliacionDto } from '../dto/avance-semanal.dto';
 import { PurchaseReportsController } from '../purchase-reports.controller';
+import { opcionesConciliacion } from './avance-semanal.conciliacion';
 import { buildAvancePage, type AvanceData } from './avance-semanal.engine';
 import { renderAvancePdf } from './avance-semanal.pdf';
 import {
@@ -300,6 +302,86 @@ describe('PDF: tarjeta de montos (H9, H18)', () => {
   });
 });
 
+describe('PDF: días hábiles (H3)', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('las tarjetas de días dicen "días hábiles"; el rótulo en dos renglones no se encima con la mediana', async () => {
+    const dia = (n: number) =>
+      new Date(`2026-08-${String(n).padStart(2, '0')}T15:00:00Z`);
+    const DIA_MS = 86_400_000;
+    const gestiones: AvanceData['gestiones'] = Array.from(
+      { length: 10 },
+      (_, i) => ({
+        sistema: 'maximo' as const,
+        folio: `PR${i}`,
+        recibida: dia(3 + i),
+        fecha_origen: 'aprobacion' as const,
+        inicio_dias: dia(3 + i),
+        // ~20 naturales = ~14 hábiles (dos cifras: el rótulo no cabe en uno)
+        primera_oc: i % 2 ? new Date(dia(3 + i).getTime() + 20 * DIA_MS) : null,
+        cierre_sin_oc: null,
+        cancelada: i % 2 ? null : new Date(dia(3 + i).getTime() + 22 * DIA_MS),
+        de_contrato: false,
+      }),
+    );
+    const data: AvanceData = {
+      gestiones,
+      ordenes: [],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+      festivos: ['2026-09-16'],
+    };
+    const page = buildAvancePage(data, D('2026-09-21'), 'maximo', NOW, {
+      ...AVANCE_OPCIONES,
+      reglas: { ...AVANCE_REGLAS, dias_tipo: 'habiles' },
+    });
+    expect(page.cierre.anio.promedio_dias).toBeGreaterThanOrEqual(10);
+    expect(page.cancelacion.anio?.promedio_dias).toBeGreaterThanOrEqual(10);
+
+    const proto = PDFDocument.prototype as unknown as {
+      text: (...args: unknown[]) => unknown;
+    };
+    const original = proto.text;
+    const textos: Array<{ texto: string; y: number; necesita: number }> = [];
+    jest.spyOn(proto, 'text').mockImplementation(function (
+      this: PDFKit.PDFDocument,
+      ...args: unknown[]
+    ) {
+      const [s, , y, opts] = args as [
+        unknown,
+        number,
+        number,
+        { width?: number } | undefined,
+      ];
+      if (typeof s === 'string') {
+        textos.push({
+          texto: s,
+          y,
+          necesita: opts?.width
+            ? this.heightOfString(s, { width: opts.width, lineGap: 0 })
+            : 0,
+        });
+      }
+      return original.apply(this, args);
+    });
+    await renderAvancePdf([page]);
+
+    const rotulos = textos.filter((t) => t.texto === 'días hábiles promedio');
+    const medianas = textos.filter((t) =>
+      /^Mediana .* días hábiles · sobre/.test(t.texto),
+    );
+    // cierre y cancelación
+    expect(rotulos).toHaveLength(2);
+    expect(medianas).toHaveLength(2);
+    expect(textos.some((t) => t.texto === 'días promedio')).toBe(false);
+    rotulos.forEach((rotulo, i) => {
+      // con dos cifras va en dos renglones y termina antes de la mediana
+      expect(rotulo.necesita).toBeGreaterThan(14);
+      expect(rotulo.y + rotulo.necesita).toBeLessThanOrEqual(medianas[i].y);
+    });
+  });
+});
+
 describe('K5.7: conciliación contra la serie de Jorge', () => {
   it('pide super_admin y no entra a las lecturas abiertas', () => {
     const proto = PurchaseReportsController.prototype as unknown as Record<
@@ -314,6 +396,35 @@ describe('K5.7: conciliación contra la serie de Jorge', () => {
     expect(Reflect.getMetadata(ROLES_KEY, handler)).toEqual(['super_admin']);
   });
 
+  it('H3: el DTO acepta dias_tipo=habiles (no lo descarta el whitelist) y rechaza otro valor', async () => {
+    // espejo de main.ts
+    const pipe = new ValidationPipe({ whitelist: true, transform: true });
+    const meta = {
+      type: 'query' as const,
+      metatype: AvanceConciliacionDto,
+      data: '',
+    };
+    const ok = (await pipe.transform(
+      { dias_tipo: 'habiles', corte: 'viernes' },
+      meta,
+    )) as AvanceConciliacionDto;
+    expect(ok).toEqual({ dias_tipo: 'habiles', corte: 'viernes' });
+    expect(opcionesConciliacion(ok).reglas.dias_tipo).toBe('habiles');
+    const naturales = (await pipe.transform(
+      { dias_tipo: 'naturales' },
+      meta,
+    )) as AvanceConciliacionDto;
+    expect(naturales.dias_tipo).toBe('naturales');
+    // sin el parámetro: default (naturales)
+    const vacio = (await pipe.transform({}, meta)) as AvanceConciliacionDto;
+    expect(opcionesConciliacion(vacio).reglas.dias_tipo).toBe('naturales');
+    for (const malo of ['laborales', 'HABILES', '']) {
+      await expect(pipe.transform({ dias_tipo: malo }, meta)).rejects.toThrow(
+        BadRequestException,
+      );
+    }
+  });
+
   it('sin datos: 38 semanas, el criterio no se cumple y los parámetros cambian solo su regla', async () => {
     const prisma = { $queryRaw: jest.fn().mockResolvedValue([]) };
     const service = new AvanceSemanalService(
@@ -322,6 +433,7 @@ describe('K5.7: conciliación contra la serie de Jorge', () => {
     const conc = await service.getConciliacion({
       recibida: 'emision',
       corte: 'viernes',
+      dias_tipo: 'habiles',
     });
     expect(conc.semanas).toHaveLength(38);
     expect(conc.semanas[0]).toMatchObject({ pagina: 1, lunes: '2026-09-21' });
@@ -334,14 +446,18 @@ describe('K5.7: conciliación contra la serie de Jorge', () => {
       ...AVANCE_REGLAS,
       recibida: 'emision',
       corte: 'viernes',
+      dias_tipo: 'habiles',
     });
+    // H2 y H3: el bloque de hipótesis
+    expect(conc.hipotesis.h2.semanas).toBeGreaterThan(0);
+    expect(conc.hipotesis.h3).toContain('cuenta días hábiles');
     expect(conc.montos.map((m) => m.anio)).toEqual([2026, 2025]);
     expect(conc.anual.map((a) => a.anio)).toEqual([
       2022, 2023, 2024, 2025, 2026,
     ]);
     expect(conc.duracion_ms).toBeGreaterThanOrEqual(0);
-    // una sola carga de datos (6 consultas)
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(6);
+    // una sola carga de datos (7 consultas, H3: con los festivos)
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(7);
   });
 });
 
@@ -372,6 +488,8 @@ describe('H4: reglas vigentes del avance (tarjeta de Reportes)', () => {
       montos_fuente_maximo: AVANCE_MONTOS_FUENTE_MAXIMO,
       reglas: AVANCE_REGLAS,
     });
+    // H3: las reglas vigentes dicen cómo se cuentan los días
+    expect(reglas.reglas.dias_tipo).toBe(AVANCE_REGLAS.dias_tipo);
     expect(reglas.monto_base_nota).toMatch(
       new RegExp(`^Montos ${montoBaseTexto(AVANCE_MONTO_BASE)}`),
     );

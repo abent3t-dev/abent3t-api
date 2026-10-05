@@ -22,7 +22,8 @@ import {
  * K5 (2026-10-05): la página de Maximo con el mismo formato que la de SAP
  * (cerradas · canceladas · abiertas, días de cancelación con dato), sin
  * fechas aproximadas ni "sin OC"; los montos dicen su base y el otro valor
- * va en una línea chica.
+ * va en una línea chica. H3: con `reglas.dias_tipo='habiles'`, las
+ * tarjetas de días dicen "días hábiles" (`cierre.unidad`).
  */
 
 type Doc = PDFKit.PDFDocument;
@@ -424,6 +425,8 @@ function diasCard(
     eventLabel: string;
     /** Qué cuenta la N del promedio ("cerradas con OC de 2026"). */
     nLabel: string;
+    /** H3: "días" o "días hábiles" (`reglas.dias_tipo`). */
+    unidad: string;
     semanas: Array<{ lunes: string; n: number; dias: DiasStats }>;
   },
 ) {
@@ -450,14 +453,21 @@ function diasCard(
     });
     doc.font(F.b).fontSize(28);
     const numW = doc.widthOfString(fmtDias(a.promedio_dias));
-    text(doc, 'días promedio', x + 18 + numW, top + 13, {
+    const label = `${opts.unidad} promedio`;
+    const labelW = w - numW - 32;
+    // H3: "días hábiles promedio" junto a un promedio de dos cifras va en dos
+    // renglones; se sube para no encimarse con la mediana (top + 38)
+    doc.font(F.s).fontSize(9);
+    const dosRenglones =
+      doc.heightOfString(label, { width: labelW, lineGap: 0 }) > 14;
+    text(doc, label, x + 18 + numW, top + (dosRenglones ? 5 : 13), {
       font: F.s,
       size: 9,
-      width: w - numW - 32,
+      width: labelW,
     });
     text(
       doc,
-      `Mediana ${fmtDias(a.mediana_dias)} días · sobre ${fmtInt(a.total)} ${opts.nLabel}`,
+      `Mediana ${fmtDias(a.mediana_dias)} ${opts.unidad} · sobre ${fmtInt(a.total)} ${opts.nLabel}`,
       x + 14,
       top + 38,
       { size: 7.3, color: C.grisTexto, width: w - 28, height: 24 },
@@ -892,6 +902,7 @@ function drawPage(doc: Doc, page: AvancePage, index: number, total: number) {
     anioLabel: String(page.semana.anio),
     eventLabel: 'Cerradas',
     nLabel: `cerradas con OC de ${page.semana.anio}`,
+    unidad: page.cierre.unidad,
     semanas: page.cierre.semanas.map((s) => ({
       lunes: s.lunes,
       n: s.cerradas,
@@ -905,6 +916,7 @@ function drawPage(doc: Doc, page: AvancePage, index: number, total: number) {
     anioLabel: String(page.semana.anio),
     eventLabel: 'Canceladas',
     nLabel: `canceladas de ${page.semana.anio}`,
+    unidad: page.cancelacion.unidad,
     semanas: page.cancelacion.semanas.map((s) => ({
       lunes: s.lunes,
       n: s.canceladas,

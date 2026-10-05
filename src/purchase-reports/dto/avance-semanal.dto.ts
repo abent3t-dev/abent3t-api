@@ -5,9 +5,11 @@ import {
 } from '../avance-semanal/avance-semanal.engine';
 import {
   AVANCE_CORTES,
+  AVANCE_DIAS_TIPOS,
   AVANCE_INICIOS,
   AVANCE_MONTOS_FUENTES,
   type AvanceCorte,
+  type AvanceDiasTipo,
   type AvanceInicio,
   type AvanceMontosFuente,
 } from '../avance-semanal/avance-semanal.reglas';
@@ -40,7 +42,7 @@ export class AvanceSemanalDto {
 /**
  * K5.7 — Conciliación contra la serie de Jorge con una variante de las
  * reglas. Todo opcional: lo que no viene toma el default (`AVANCE_REGLAS` y
- * `AVANCE_MONTOS_FUENTE_MAXIMO`).
+ * `AVANCE_MONTOS_FUENTE_MAXIMO`). `dias_tipo` (H3) = naturales | habiles.
  */
 export class AvanceConciliacionDto {
   /** Recibida de Maximo: primer APPR o ISSUEDATE. */
@@ -62,4 +64,13 @@ export class AvanceConciliacionDto {
   @IsIn(AVANCE_CORTES)
   @IsOptional()
   corte?: AvanceCorte;
+
+  /**
+   * H3: días de cierre y cancelación naturales o hábiles (lunes a viernes
+   * sin los festivos de `holidays`). Declarado aquí porque el
+   * ValidationPipe (whitelist) descarta en silencio lo no declarado.
+   */
+  @IsIn(AVANCE_DIAS_TIPOS)
+  @IsOptional()
+  dias_tipo?: AvanceDiasTipo;
 }

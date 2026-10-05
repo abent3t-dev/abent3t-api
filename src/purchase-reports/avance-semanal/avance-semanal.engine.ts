@@ -6,9 +6,11 @@ import {
   AVANCE_OPCIONES,
   AVANCE_REGLAS,
   type AvanceCorte,
+  type AvanceDiasTipo,
   type AvanceMontoBase,
   type AvanceMontosFuente,
   type AvanceOpciones,
+  diasTexto,
   montoBaseTexto,
   otraBase,
 } from './avance-semanal.reglas';
@@ -41,7 +43,10 @@ import {
  *    regresaron a aprobación).
  *  - Días = `gestionDays` (la misma cuenta que G2) con promedio y mediana:
  *    desde la solicitud (SAP) o desde `reglas.dias_desde` (Maximo); un
- *    evento anterior al inicio no entra al promedio ni a la mediana.
+ *    evento anterior al inicio no entra al promedio ni a la mediana. H3:
+ *    con `reglas.dias_tipo='habiles'`, `diasHabiles` cuenta solo el tiempo
+ *    que cae de lunes a viernes sin festivos (`holidays`), en las dos
+ *    páginas y con fracción, en la hora local de cada sistema.
  *  - Montos adjudicados = OC no canceladas (estatus actual) por mes de la OC
  *    y por moneda, sin convertir, en la base de AVANCE_MONTO_BASE con el
  *    otro valor aparte; sin subtotal no se estima. Las OC de SAP creadas
@@ -158,7 +163,22 @@ export interface AvanceData {
   maximo_no_recibidas: MaximoNoRecibida[];
   /** Primera solicitud de SAP (SAP tiene solicitudes desde ene-2026). */
   sap_desde: Date | null;
+  /**
+   * H3: festivos activos de la tabla `holidays` ('YYYY-MM-DD'), para los
+   * días hábiles. Ausente o vacío = hábiles solo quita sábados y domingos.
+   */
+  festivos?: string[];
 }
+
+/** H3: cómo se cuentan los días (tipo y festivos de los hábiles). */
+export interface CuentaDias {
+  tipo: AvanceDiasTipo;
+  /** 'YYYY-MM-DD'; solo cuentan con `tipo='habiles'`. */
+  festivos: readonly string[];
+}
+
+/** Default de `cohortes` y `semanaStats`: días naturales (sin festivos). */
+export const DIAS_NATURALES: CuentaDias = { tipo: 'naturales', festivos: [] };
 
 export interface DiasStats {
   promedio_dias: number | null;
@@ -177,6 +197,12 @@ export interface ConteoEstados {
    * ni contrato; ¿para él son cerradas o canceladas?
    */
   cerradas_sin_oc_ni_contrato: number;
+  /**
+   * H2 (calibración del 5-oct): PR de Maximo de contrato cerradas al corte
+   * (con OC o por CLOSE). Al 5-oct son 126, lo mismo que las "canceladas"
+   * de Jorge: ¿eso cuenta él como cancelada? En SAP, 0.
+   */
+  cerradas_de_contrato: number;
   canceladas: number;
   /** Recibidas sin cerrar ni cancelar al corte. */
   abiertas: number;
@@ -281,6 +307,8 @@ export interface AvancePage {
   cierre: {
     /** Desde dónde se cuentan los días ("De la solicitud a su primera OC"). */
     nota: string;
+    /** H3: "días" o "días hábiles" (`reglas.dias_tipo`), para los textos. */
+    unidad: string;
     anio: DiasStats;
     semanas: Array<{
       lunes: string;
@@ -293,6 +321,8 @@ export interface AvancePage {
     /** K5: siempre true (Maximo ya trae la CAN del historial de la PR). */
     disponible: boolean;
     nota: string | null;
+    /** H3: "días" o "días hábiles", como en `cierre`. */
+    unidad: string;
     anio: DiasStats | null;
     semanas: Array<{
       lunes: string;
@@ -346,6 +376,17 @@ export function avanceDefiniciones(
   const corteViernes = reglas.corte === 'viernes';
   const semanaDe = corteViernes ? 'de sábado a viernes' : 'de lunes a domingo';
   const diaCorte = corteViernes ? 'viernes' : 'domingo';
+  // H3: días naturales o hábiles, igual en las dos páginas (homologadas)
+  const habiles = reglas.dias_tipo === 'habiles';
+  const diasTitulo = habiles ? 'Días hábiles' : 'Días';
+  const cuentaDias = (hora: string) =>
+    habiles
+      ? `. Días hábiles = solo el tiempo que cae de lunes a viernes (${hora}), sin los festivos activos de la tabla de días festivos (holidays) si los hay; con fracción de día, como los naturales`
+      : ' (la misma cuenta que los días de gestión del tablero)';
+  const diasIguales = (en: string) =>
+    `Los días de cierre y de cancelación se cuentan igual en ${en}: ${
+      habiles ? 'hábiles (de lunes a viernes, sin festivos)' : 'naturales'
+    }.`;
   return {
     gestion: por({
       maximo: 'Gestión = PR de Maximo (solicitud de compra).',
@@ -384,9 +425,9 @@ export function avanceDefiniciones(
         'Abierta = recibida sin cerrar ni cancelar al corte (en Maximo, incluye las PR que regresaron a aprobación).',
     }),
     dias: por({
-      maximo: `Días de cierre y de cancelación = de la ${inicioDias} de la PR a su primera OC o a su cancelación, con promedio y mediana (la misma cuenta que los días de gestión del tablero). Un evento anterior a la ${inicioDias} cuenta en su semana pero no en los días; las cerradas sin OC tampoco tienen días.`,
-      sap: 'Días de cierre y de cancelación = de la solicitud a su primera OC o a su cancelación, con promedio y mediana (la misma cuenta que los días de gestión del tablero).',
-      todas: `Días de cierre y de cancelación = de la solicitud (SAP) o de la ${inicioDias} de la PR (Maximo) a su primera OC o a su cancelación, con promedio y mediana (la misma cuenta que los días de gestión del tablero).`,
+      maximo: `${diasTitulo} de cierre y de cancelación = de la ${inicioDias} de la PR a su primera OC o a su cancelación, con promedio y mediana${cuentaDias('en hora de México')}. Un evento anterior a la ${inicioDias} cuenta en su semana pero no en los días; las cerradas sin OC tampoco tienen días.`,
+      sap: `${diasTitulo} de cierre y de cancelación = de la solicitud a su primera OC o a su cancelación, con promedio y mediana${cuentaDias('por día calendario')}.`,
+      todas: `${diasTitulo} de cierre y de cancelación = de la solicitud (SAP) o de la ${inicioDias} de la PR (Maximo) a su primera OC o a su cancelación, con promedio y mediana${cuentaDias('Maximo en hora de México y SAP por día calendario')}.`,
     }),
     montos: por({
       maximo: sapMigradas
@@ -401,10 +442,9 @@ export function avanceDefiniciones(
       todas: `Semana ${semanaDe}: Maximo con corte el ${diaCorte} a las 23:59 hora de México y SAP por día calendario; la etiqueta va de lunes a viernes, como el reporte de Jorge.`,
     }),
     homologacion: por({
-      maximo: `Diferencia con la página de SAP: SAP cuenta la solicitud desde su fecha (sin hora, por día calendario) y la cancela con su última actualización; aquí la PR cuenta desde su ${aprobacion ? 'primera aprobación (llegada a Compras)' : 'emisión'}, en hora de México, y se cancela con la CAN de su historial.`,
-      sap: `Diferencia con la página de Maximo: Maximo cuenta la PR desde su ${aprobacion ? 'primera aprobación (llegada a Compras)' : 'emisión'}, en hora de México, y la cancela con la CAN de su historial; aquí la solicitud cuenta desde su fecha en SAP, por día calendario.`,
-      todas:
-        'Cada fuente se suma con su propia definición: SAP por la fecha de la solicitud (día calendario) y Maximo por la de la PR (hora de México).',
+      maximo: `Diferencia con la página de SAP: SAP cuenta la solicitud desde su fecha (sin hora, por día calendario) y la cancela con su última actualización; aquí la PR cuenta desde su ${aprobacion ? 'primera aprobación (llegada a Compras)' : 'emisión'}, en hora de México, y se cancela con la CAN de su historial. ${diasIguales('las dos páginas')}`,
+      sap: `Diferencia con la página de Maximo: Maximo cuenta la PR desde su ${aprobacion ? 'primera aprobación (llegada a Compras)' : 'emisión'}, en hora de México, y la cancela con la CAN de su historial; aquí la solicitud cuenta desde su fecha en SAP, por día calendario. ${diasIguales('las dos páginas')}`,
+      todas: `Cada fuente se suma con su propia definición: SAP por la fecha de la solicitud (día calendario) y Maximo por la de la PR (hora de México). ${diasIguales('las dos fuentes')}`,
     }),
   };
 }
@@ -563,6 +603,53 @@ function alViernes(lunes: Date): string {
   return `al ${viernes.getUTCDate()} de ${MESES[viernes.getUTCMonth()]}`;
 }
 
+// ── Días hábiles (H3) ───────────────────────────────────────────────────
+
+/** Festivos 'YYYY-MM-DD' → número de día (días desde el 1-ene-1970), una vez por lista. */
+const festivosPorLista = new WeakMap<readonly string[], Set<number>>();
+
+function numerosDeFestivos(festivos: readonly string[]): Set<number> {
+  let numeros = festivosPorLista.get(festivos);
+  if (!numeros) {
+    numeros = new Set(festivos.map((f) => parseDay(f).getTime() / DAY_MS));
+    festivosPorLista.set(festivos, numeros);
+  }
+  return numeros;
+}
+
+/**
+ * H3 (calibración del 5-oct: 17.1 días naturales ≈ 12 hábiles; Jorge
+ * reporta 11): días hábiles de `desde` a `hasta`, con fracción como
+ * `gestionDays`. Lleva las dos fechas a la hora local del sistema (Maximo en
+ * hora de México, como el corte; SAP por día calendario), recorre los días
+ * locales entre las dos y suma solo la parte del intervalo que cae de lunes
+ * a viernes en días que no están en `festivos` ('YYYY-MM-DD'). Viernes 17:00
+ * a lunes 09:00 = 7 h + 9 h; de un lunes 00:00 al siguiente = 5. Evento
+ * anterior al inicio → null (fuera del promedio, como `gestionDays`).
+ *
+ * No es `calculateBusinessDays` (common/utils/business-days.ts): ésa cuenta
+ * días enteros inclusivos (aprobaciones); aquí cuenta el tiempo.
+ */
+export function diasHabiles(
+  desde: Date,
+  hasta: Date,
+  sistema: AvanceSistema,
+  festivos: readonly string[] = [],
+): number | null {
+  const a = desde.getTime() - desfase(sistema);
+  const b = hasta.getTime() - desfase(sistema);
+  if (b < a) return null;
+  const inhabiles = numerosDeFestivos(festivos);
+  let ms = 0;
+  for (let dia = Math.floor(a / DAY_MS); dia * DAY_MS < b; dia += 1) {
+    // el día 0 (1-ene-1970) fue jueves: 0 = domingo … 6 = sábado
+    const semana = (((dia + 4) % 7) + 7) % 7;
+    if (semana === 0 || semana === 6 || inhabiles.has(dia)) continue;
+    ms += Math.min(b, (dia + 1) * DAY_MS) - Math.max(a, dia * DAY_MS);
+  }
+  return ms / DAY_MS;
+}
+
 // ── Estados ─────────────────────────────────────────────────────────────
 
 type Estado = 'cerrada' | 'cancelada' | 'abierta';
@@ -602,10 +689,18 @@ export function estadoAl(g: Gestion, fin: number): EstadoAl {
 /**
  * Días de la gestión hasta `evento` desde su inicio de días; null = sin
  * inicio o evento anterior al inicio (fuera del promedio y la mediana).
+ * H3: naturales con `gestionDays` (sin cambio) o hábiles con `diasHabiles`
+ * en la hora local de su sistema.
  */
-function diasHasta(g: Gestion, evento: Date | null): number | null {
+export function diasHasta(
+  g: Gestion,
+  evento: Date | null,
+  dias: CuentaDias = DIAS_NATURALES,
+): number | null {
   if (!evento || !g.inicio_dias) return null;
-  return gestionDays(g.inicio_dias, evento);
+  return dias.tipo === 'habiles'
+    ? diasHabiles(g.inicio_dias, evento, g.sistema, dias.festivos)
+    : gestionDays(g.inicio_dias, evento);
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
@@ -621,6 +716,7 @@ function conteoVacio(): ConteoEstados {
     cerradas: 0,
     cerradas_sin_oc: 0,
     cerradas_sin_oc_ni_contrato: 0,
+    cerradas_de_contrato: 0,
     canceladas: 0,
     abiertas: 0,
     atendidas: 0,
@@ -638,12 +734,16 @@ function cerrarConteo(c: ConteoEstados): ConteoEstados {
   };
 }
 
-/** Cohortes de varios años al corte de la semana del `lunes`, en una sola pasada. */
+/**
+ * Cohortes de varios años al corte de la semana del `lunes`, en una sola
+ * pasada. `dias` (H3): naturales (default) o hábiles con sus festivos.
+ */
 export function cohortes(
   gestiones: Gestion[],
   anios: number[],
   lunes: Date,
   corte: AvanceCorte = AVANCE_REGLAS.corte,
+  dias: CuentaDias = DIAS_NATURALES,
 ): CohorteAnio[] {
   const fines = finesDeSemana(lunes, corte);
   const acc = new Map(
@@ -662,18 +762,22 @@ export function cohortes(
     const e = estadoAl(g, fin);
     if (e.estado === 'cerrada') {
       c.cerradas += 1;
+      // H2: con OC o por CLOSE, la PR de contrato cerrada al corte
+      if (g.sistema === 'maximo' && g.de_contrato) {
+        c.cerradas_de_contrato += 1;
+      }
       if (!e.con_oc) {
         c.cerradas_sin_oc += 1;
         if (g.sistema === 'maximo' && !g.de_contrato) {
           c.cerradas_sin_oc_ni_contrato += 1;
         }
       } else {
-        const days = diasHasta(g, g.primera_oc);
+        const days = diasHasta(g, g.primera_oc, dias);
         if (days !== null) entry.cierre.push(days);
       }
     } else if (e.estado === 'cancelada') {
       c.canceladas += 1;
-      const days = diasHasta(g, g.cancelada);
+      const days = diasHasta(g, g.cancelada, dias);
       if (days !== null) entry.cancel.push(days);
     } else {
       c.abiertas += 1;
@@ -690,11 +794,15 @@ export function cohortes(
   });
 }
 
-/** Lo que pasó en la semana del `lunes` (recibidas, cierres y cancelaciones). */
+/**
+ * Lo que pasó en la semana del `lunes` (recibidas, cierres y
+ * cancelaciones). `dias` (H3): naturales (default) o hábiles.
+ */
 export function semanaStats(
   gestiones: Gestion[],
   lunes: Date,
   corte: AvanceCorte = AVANCE_REGLAS.corte,
+  dias: CuentaDias = DIAS_NATURALES,
 ): SemanaStats {
   const semanaInicio = mondayOf(lunes);
   const ventanas = {
@@ -719,12 +827,12 @@ export function semanaStats(
       cerradas += 1;
       if (anioDe(g.recibida, g.sistema) < anio) anteriores += 1;
       if (e.con_oc) {
-        const days = diasHasta(g, g.primera_oc);
+        const days = diasHasta(g, g.primera_oc, dias);
         if (days !== null) cierre.push(days);
       }
     } else if (e.estado === 'cancelada') {
       canceladas += 1;
-      const days = diasHasta(g, g.cancelada);
+      const days = diasHasta(g, g.cancelada, dias);
       if (days !== null) cancel.push(days);
     }
   }
@@ -887,20 +995,26 @@ export function buildAvancePage(
   opciones: AvanceOpciones = AVANCE_OPCIONES,
 ): AvancePage {
   const { corte } = opciones.reglas;
+  // H3: días naturales o hábiles (con los festivos cargados), las dos fuentes
+  const cuenta: CuentaDias = {
+    tipo: opciones.reglas.dias_tipo,
+    festivos: data.festivos ?? [],
+  };
+  const unidad = diasTexto(cuenta.tipo);
   const semanaInicio = mondayOf(lunes);
   const start = semanaInicio.getTime();
   const anio = semanaInicio.getUTCFullYear();
   const gestiones = data.gestiones.filter((g) => enFuente(g.sistema, fuente));
 
   const anios = [anio - 4, anio - 3, anio - 2, anio - 1, anio];
-  const anual = cohortes(gestiones, anios, semanaInicio, corte);
+  const anual = cohortes(gestiones, anios, semanaInicio, corte, cuenta);
   const actual = anual[anual.length - 1];
   const previo = anual[anual.length - 2];
-  const semana = semanaStats(gestiones, semanaInicio, corte);
+  const semana = semanaStats(gestiones, semanaInicio, corte, cuenta);
   const ultimas = [3, 2, 1, 0].map((k) =>
     k === 0
       ? semana
-      : semanaStats(gestiones, new Date(start - k * WEEK_MS), corte),
+      : semanaStats(gestiones, new Date(start - k * WEEK_MS), corte, cuenta),
   );
 
   const conSap = fuente !== 'maximo';
@@ -911,8 +1025,8 @@ export function buildAvancePage(
   if (fuente === 'todas') {
     for (const sistema of ['sap', 'maximo'] as const) {
       const propias = gestiones.filter((g) => g.sistema === sistema);
-      const [cohorte] = cohortes(propias, [anio], semanaInicio, corte);
-      const sem = semanaStats(propias, semanaInicio, corte);
+      const [cohorte] = cohortes(propias, [anio], semanaInicio, corte, cuenta);
+      const sem = semanaStats(propias, semanaInicio, corte, cuenta);
       porSistema[sistema] = {
         recibidas_anio: cohorte.recibidas,
         nuevas_semana: sem.nuevas,
@@ -957,6 +1071,13 @@ export function buildAvancePage(
       noRecibidas === 1
         ? `1 PR de Maximo emitida en ${anio} no se ha aprobado (en aprobación o cancelada sin aprobar): no llegó a Compras y no cuenta como recibida.`
         : `${fmtCount(noRecibidas)} PR de Maximo emitidas en ${anio} no se han aprobado (en aprobación o canceladas sin aprobar): no llegaron a Compras y no cuentan como recibidas.`,
+    );
+  }
+  if (cuenta.tipo === 'habiles') {
+    notas.push(
+      cuenta.festivos.length > 0
+        ? 'Días de cierre y de cancelación en días hábiles: de lunes a viernes, sin los días festivos registrados.'
+        : 'Días de cierre y de cancelación en días hábiles: de lunes a viernes (no hay días festivos registrados).',
     );
   }
   notas.push(
@@ -1063,6 +1184,7 @@ export function buildAvancePage(
     },
     cierre: {
       nota: dias.cierre,
+      unidad,
       anio: actual.dias_cierre,
       semanas: ultimas.map((s) => ({
         lunes: s.lunes,
@@ -1074,6 +1196,7 @@ export function buildAvancePage(
     cancelacion: {
       disponible: true,
       nota: dias.cancelacion,
+      unidad,
       anio: actual.dias_cancelacion,
       semanas: ultimas.map((s) => ({
         lunes: s.lunes,
@@ -1087,6 +1210,7 @@ export function buildAvancePage(
       cerradas: actual.cerradas,
       cerradas_sin_oc: actual.cerradas_sin_oc,
       cerradas_sin_oc_ni_contrato: actual.cerradas_sin_oc_ni_contrato,
+      cerradas_de_contrato: actual.cerradas_de_contrato,
       canceladas: actual.canceladas,
       abiertas: actual.abiertas,
       atendidas: actual.atendidas,

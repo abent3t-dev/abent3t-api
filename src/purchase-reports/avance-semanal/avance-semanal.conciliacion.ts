@@ -13,6 +13,7 @@ import {
   AVANCE_MONTOS_FUENTE_MAXIMO,
   AVANCE_REGLAS,
   type AvanceCorte,
+  type AvanceDiasTipo,
   type AvanceInicio,
   type AvanceMontoBase,
   type AvanceMontosFuente,
@@ -60,6 +61,10 @@ import {
  *    abiertas (con 30-60 abiertas por semana, el 5% son ±2-3 PR).
  *  - Montos MXN por mes contra Jorge, con y sin IVA y por fuente (OC de
  *    Maximo u OC de SAP migradas); anual "recibidas / atendidas".
+ *  - Hipótesis de la calibración del 5-oct: H2, nuestras PR de contrato
+ *    cerradas (`cerradas_de_contrato`, por semana) contra las canceladas del
+ *    año de Jorge, con el mismo error que el resumen; H3 (días hábiles) no
+ *    lleva cálculo aparte: se corre la variante `dias_tipo=habiles`.
  */
 
 export type KpiConciliacion =
@@ -112,6 +117,8 @@ export interface NuestraSemana {
   dias_cancelacion: number | null;
   /** H1: PR cerradas en Maximo sin OC ni contrato (solo nuestro). */
   cerradas_sin_oc_ni_contrato: number;
+  /** H2: PR de contrato cerradas al corte (contra las canceladas de Jorge). */
+  cerradas_de_contrato: number;
 }
 
 export function nuestraSemana(page: AvancePage): NuestraSemana {
@@ -126,6 +133,7 @@ export function nuestraSemana(page: AvancePage): NuestraSemana {
     dias_cierre_mediana: page.cierre.anio.mediana_dias,
     dias_cancelacion: page.cancelacion.anio?.promedio_dias ?? null,
     cerradas_sin_oc_ni_contrato: page.estado_anio.cerradas_sin_oc_ni_contrato,
+    cerradas_de_contrato: page.estado_anio.cerradas_de_contrato,
   };
 }
 
@@ -243,6 +251,8 @@ export interface SemanaConciliada {
   kpis: ComparacionKpi[];
   /** H1: PR cerradas en Maximo sin OC ni contrato al corte (solo nuestro). */
   cerradas_sin_oc_ni_contrato: number;
+  /** H2: PR de Maximo de contrato cerradas al corte (solo nuestro). */
+  cerradas_de_contrato: number;
 }
 
 const suma = (a: number | null, b: number | null) =>
@@ -354,18 +364,18 @@ export interface CriterioConciliacion {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
-function resumenKpi(
-  kpi: KpiConciliacion,
-  semanas: SemanaConciliada[],
-): ResumenKpi & { error: number | null } {
-  const pares = semanas
-    .map((s) => s.kpis.find((k) => k.kpi === kpi)!)
-    .filter((k) => k.valida) as Array<
-    ComparacionKpi & { jorge: number; nuestro: number }
-  >;
+/** Error de una serie de pares (semanas válidas), sin el KPI. */
+type ErrorSerie = Omit<ResumenKpi, 'kpi'> & { error: number | null };
+
+/**
+ * Σ|nuestro − Jorge| / Σ Jorge (ponderado), error absoluto medio y sesgo
+ * (media de nuestro − Jorge) de los pares; sin pares, todo null.
+ */
+function errorSerie(
+  pares: Array<{ jorge: number; nuestro: number }>,
+): ErrorSerie {
   if (pares.length === 0) {
     return {
-      kpi,
       semanas: 0,
       error: null,
       error_pct: null,
@@ -378,12 +388,72 @@ function resumenKpi(
   const dif = pares.reduce((s, p) => s + (p.nuestro - p.jorge), 0);
   const error = jorge === 0 ? null : abs / jorge;
   return {
-    kpi,
     semanas: pares.length,
     error,
     error_pct: error === null ? null : round2(error * 100),
     error_absoluto_medio: round2(abs / pares.length),
     sesgo: round2(dif / pares.length),
+  };
+}
+
+function resumenKpi(
+  kpi: KpiConciliacion,
+  semanas: SemanaConciliada[],
+): ResumenKpi & { error: number | null } {
+  const pares = semanas
+    .map((s) => s.kpis.find((k) => k.kpi === kpi)!)
+    .filter((k) => k.valida) as Array<
+    ComparacionKpi & { jorge: number; nuestro: number }
+  >;
+  return { kpi, ...errorSerie(pares) };
+}
+
+/**
+ * Hipótesis de la calibración del 5-oct que la conciliación prueba. H2: las
+ * "canceladas" de Jorge serían nuestras PR de contrato cerradas (al 5-oct,
+ * 126 y 126); H3 (días hábiles) se prueba con la variante
+ * `dias_tipo=habiles` y no lleva cálculo aparte.
+ */
+export interface HipotesisConciliacion {
+  h2: {
+    /** Qué se compara (nuestro contra Jorge). */
+    compara: string;
+    /** Semanas donde el medidor de Jorge cuadra (las de medidor_canceladas). */
+    semanas: number;
+    /** Σ|nuestro − Jorge| / Σ Jorge, en %; null sin semanas. */
+    error_pct: number | null;
+    error_absoluto_medio: number | null;
+    /** Media de nuestro − Jorge (positivo = contamos de más). */
+    sesgo: number | null;
+  };
+  /** Cómo se prueba H3 (sin cálculo aparte). */
+  h3: string;
+}
+
+export const HIPOTESIS_H2_COMPARA =
+  'cerradas_de_contrato (PR de Maximo de contrato cerradas al corte) contra las canceladas del año de Jorge (medidor)';
+
+/**
+ * H2 con las semanas ya conciliadas: nuestras `cerradas_de_contrato` contra
+ * las canceladas del medidor de Jorge, solo en las semanas donde ese KPI se
+ * compara (su medidor cuadra, no es copia y trae el dato).
+ */
+export function hipotesisH2(
+  semanas: SemanaConciliada[],
+): HipotesisConciliacion['h2'] {
+  const pares = semanas.flatMap((s) => {
+    const k = s.kpis.find((c) => c.kpi === 'medidor_canceladas');
+    return k?.valida && k.jorge !== null
+      ? [{ jorge: k.jorge, nuestro: s.cerradas_de_contrato }]
+      : [];
+  });
+  const r = errorSerie(pares);
+  return {
+    compara: HIPOTESIS_H2_COMPARA,
+    semanas: r.semanas,
+    error_pct: r.error_pct,
+    error_absoluto_medio: r.error_absoluto_medio,
+    sesgo: r.sesgo,
   };
 }
 
@@ -430,6 +500,7 @@ export function compararSerie(
       validez: v,
       kpis,
       cerradas_sin_oc_ni_contrato: n?.cerradas_sin_oc_ni_contrato ?? 0,
+      cerradas_de_contrato: n?.cerradas_de_contrato ?? 0,
     };
   });
   const conError = KPIS_CONCILIACION.map((kpi) => resumenKpi(kpi, semanas));
@@ -609,6 +680,8 @@ export interface ConciliacionAvance {
   semanas: SemanaConciliada[];
   resumen: ResumenKpi[];
   criterio: CriterioConciliacion;
+  /** H2 (contrato cerradas contra canceladas de Jorge) y cómo probar H3. */
+  hipotesis: HipotesisConciliacion;
   montos: MontosConciliados[];
   /** Al corte de la p.1; el 2025 de Jorge no cuadra en su origen (nota). */
   anual: AnualConciliado[];
@@ -633,6 +706,7 @@ export function opcionesConciliacion(p: {
   dias_desde?: AvanceInicio;
   montos?: AvanceMontosFuente;
   corte?: AvanceCorte;
+  dias_tipo?: AvanceDiasTipo;
 }): AvanceOpciones {
   return {
     reglas: {
@@ -640,10 +714,18 @@ export function opcionesConciliacion(p: {
       recibida: p.recibida ?? AVANCE_REGLAS.recibida,
       dias_desde: p.dias_desde ?? AVANCE_REGLAS.dias_desde,
       corte: p.corte ?? AVANCE_REGLAS.corte,
+      dias_tipo: p.dias_tipo ?? AVANCE_REGLAS.dias_tipo,
     },
     monto_base: AVANCE_MONTO_BASE,
     montos_fuente_maximo: p.montos ?? AVANCE_MONTOS_FUENTE_MAXIMO,
   };
+}
+
+/** H3: cómo se prueba con esta corrida (sin cálculo aparte). */
+function notaH3(opciones: AvanceOpciones): string {
+  return opciones.reglas.dias_tipo === 'habiles'
+    ? 'H3 (días hábiles): esta corrida cuenta días hábiles (dias_tipo=habiles); compara dias_cierre_promedio y dias_cierre_mediana del resumen con la corrida en días naturales.'
+    : 'H3 (días hábiles): esta corrida cuenta días naturales; para probarla, corre la variante dias_tipo=habiles y compara dias_cierre_promedio y dias_cierre_mediana del resumen.';
 }
 
 /**
@@ -716,6 +798,7 @@ export function conciliarAvance(
     semanas: serie.semanas,
     resumen: serie.resumen,
     criterio: serie.criterio,
+    hipotesis: { h2: hipotesisH2(serie.semanas), h3: notaH3(opciones) },
     montos: [
       montosConciliados(data, ultima.semana.anio, lunesUltima, opciones),
       montosConciliados(data, pagina2025.semana.anio, lunes2025, opciones),

@@ -24,6 +24,7 @@ const empty = (): AvanceRows => ({
   maximoPrs: [],
   maximoFirstPo: [],
   maximoOrders: [],
+  festivos: [],
 });
 
 type PrRow = AvanceRows['maximoPrs'][number];
@@ -295,7 +296,8 @@ describe('loadAvanceRows', () => {
     await loadAvanceRows(
       prisma as unknown as Parameters<typeof loadAvanceRows>[0],
     );
-    expect(queries).toHaveLength(6);
+    // H3: la séptima trae los festivos activos
+    expect(queries).toHaveLength(7);
     const sql = queries.map((q) => q.sql).join(' ');
     expect(sql).toContain('bool_or(has_contract) OVER (PARTITION BY prnum)');
     expect(sql).toContain('p.pr_approved_at');
@@ -304,6 +306,38 @@ describe('loadAvanceRows', () => {
     expect(sql).toContain('p.subtotal');
     expect(sql).not.toContain('regexp_replace');
     expect(sql).not.toContain('first_seen_at');
+  });
+
+  it('H3: los festivos activos de holidays, una vez y como texto YYYY-MM-DD, llegan a los datos', async () => {
+    const queries: Prisma.Sql[] = [];
+    const prisma = {
+      $queryRaw: jest.fn((query: Prisma.Sql) => {
+        queries.push(query);
+        return Promise.resolve(
+          query.sql.includes('FROM holidays')
+            ? [{ dia: '2026-09-16' }, { dia: '2026-11-16' }]
+            : [],
+        );
+      }),
+    };
+    const rows = await loadAvanceRows(
+      prisma as unknown as Parameters<typeof loadAvanceRows>[0],
+    );
+    const festivos = queries.filter((q) => q.sql.includes('FROM holidays'));
+    expect(festivos).toHaveLength(1);
+    const sql = festivos[0].sql.replace(/\s+/g, ' ');
+    expect(sql).toContain("to_char(h.holiday_date, 'YYYY-MM-DD') AS dia");
+    expect(sql).toContain('WHERE h.is_active = true');
+    expect(rows.festivos).toEqual([
+      { dia: '2026-09-16' },
+      { dia: '2026-11-16' },
+    ]);
+    expect(buildAvanceData(rows).festivos).toEqual([
+      '2026-09-16',
+      '2026-11-16',
+    ]);
+    // tabla vacía: sin festivos (hábiles solo quita sábados y domingos)
+    expect(buildAvanceData(empty()).festivos).toEqual([]);
   });
 
   it('D1: marca las copias extra de la misma PO de Maximo y se queda con la de menor DocNum (entre las no canceladas)', async () => {
