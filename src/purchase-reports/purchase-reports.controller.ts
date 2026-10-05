@@ -1,5 +1,6 @@
 import { Controller, Get, Query, Res } from '@nestjs/common';
 import type { Response } from 'express';
+import { Roles } from '../common/decorators/roles.decorator';
 import { sendExcel } from '../common/utils/excel-export.util';
 import { PurchaseReportsService } from './purchase-reports.service';
 import { WeeklyReportService } from './weekly-report.service';
@@ -7,7 +8,10 @@ import { ApprovalChainService } from './approval-chain.service';
 import { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
 import { sendPdf } from './avance-semanal/avance-semanal.pdf';
 import { ReportPeriodDto } from './dto/report-period.dto';
-import { AvanceSemanalDto } from './dto/avance-semanal.dto';
+import {
+  AvanceConciliacionDto,
+  AvanceSemanalDto,
+} from './dto/avance-semanal.dto';
 
 // Roles de compras (§Roles y Permisos)
 
@@ -41,6 +45,16 @@ export class PurchaseReportsController {
   ) {
     const { buffer, filename } = await this.avance.buildPdf(query);
     sendPdf(res, buffer, filename);
+  }
+
+  // K5.7 (2026-10-05): conciliación de la página de Maximo contra la serie
+  // de Jorge, con variantes de las reglas por parámetro (default = las
+  // constantes). Solo lectura y SOLO super_admin: no va en la lista blanca
+  // de lecturas abiertas (compras-access-model.spec.ts).
+  @Get('avance-semanal/conciliacion')
+  @Roles('super_admin')
+  getAvanceConciliacion(@Query() query: AvanceConciliacionDto) {
+    return this.avance.getConciliacion(query);
   }
 
   // G5 (2026-09-28): aprobadas, rechazadas y pendientes por aprobador con

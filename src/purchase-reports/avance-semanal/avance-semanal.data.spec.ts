@@ -1,13 +1,17 @@
+import type { Prisma } from '@prisma/client';
 import {
   type AvanceRows,
   buildAvanceData,
-  maximoFolioDater,
-  parseFolio,
+  loadAvanceRows,
 } from './avance-semanal.data';
+import { AVANCE_REGLAS } from './avance-semanal.reglas';
 
 /**
- * H1 — de filas a gestiones: SAP (cerrada, cancelada, cerrada a mano) y la
- * fecha aproximada de las PR de Maximo (exacta, alta, folio, sin fecha).
+ * H1 — de filas a gestiones: SAP (cerrada, cancelada, cerrada a mano) y las
+ * PR de Maximo. K5 (2026-10-05): las PR traen sus fechas reales (primer
+ * APPR, ISSUEDATE, último CLOSE y última CAN, K3): ya no hay fechas por
+ * folio ni por la primera vez que se vio la PR, y sin la fecha de la regla
+ * la PR queda fuera y se cuenta aparte.
  */
 
 const D = (iso: string) => new Date(`${iso}T00:00:00Z`);
@@ -19,27 +23,140 @@ const empty = (): AvanceRows => ({
   sapOrders: [],
   maximoPrs: [],
   maximoFirstPo: [],
-  maximoKnown: [],
   maximoOrders: [],
 });
 
-describe('folio de las PR de Maximo', () => {
-  it('toma los dígitos, igual que maximoPrFolio en SQL', () => {
-    expect(parseFolio('PR104531')).toBe(104531);
-    expect(parseFolio('104531')).toBe(104531);
-    expect(parseFolio('PR-A')).toBeNull();
+type PrRow = AvanceRows['maximoPrs'][number];
+
+const pr = (prnum: string, overrides: Partial<PrRow> = {}): PrRow => ({
+  prnum,
+  pr_status: 'APPR',
+  pr_issue_date: T('2026-09-14T15:00:00Z'),
+  pr_approved_at: T('2026-09-15T09:00:00Z'),
+  pr_closed_at: null,
+  pr_cancelled_at: null,
+  de_contrato: false,
+  ...overrides,
+});
+
+describe('fecha de las PR de Maximo (K5: sin folio)', () => {
+  it('recibida = primer APPR aunque la PR se haya aprobado dos veces (WAPPR→APPR→WAPPR→APPR)', () => {
+    const rows = empty();
+    // el mapper (K3) deja en pr_approved_at la PRIMERA APPR; la segunda no la mueve
+    rows.maximoPrs = [
+      pr('PR990002', {
+        pr_issue_date: T('2026-09-14T15:00:00Z'),
+        pr_approved_at: T('2026-09-15T09:00:00Z'),
+      }),
+    ];
+    const [g] = buildAvanceData(rows).gestiones;
+    expect(AVANCE_REGLAS.recibida).toBe('aprobacion');
+    expect(g).toMatchObject({
+      sistema: 'maximo',
+      folio: 'PR990002',
+      recibida: T('2026-09-15T09:00:00Z'),
+      fecha_origen: 'aprobacion',
+      inicio_dias: T('2026-09-15T09:00:00Z'),
+      primera_oc: null,
+      cierre_sin_oc: null,
+      cancelada: null,
+    });
   });
 
-  it('fecha por folio = la más reciente conocida con folio menor o igual (ventana de G3)', () => {
-    const dater = maximoFolioDater([
-      { folio: 100, fecha: D('2026-01-10') },
-      { folio: 120, fecha: D('2026-01-08') }, // fuera de orden
-      { folio: 150, fecha: D('2026-02-01') },
+  it("con 'aprobacion' la PR sin APPR queda fuera y se cuenta aparte; con 'emision' entra", () => {
+    const rows = empty();
+    rows.maximoPrs = [
+      pr('PR1'),
+      // en aprobación: nunca llegó a Compras
+      pr('PR2', { pr_status: 'WAPPR', pr_approved_at: null }),
+      // cancelada sin aprobar (STATUS CAN sin fila CAN)
+      pr('PR3', { pr_status: 'CAN', pr_approved_at: null }),
+      // sin ninguna fecha (antes del primer full)
+      pr('PR4', {
+        pr_status: null,
+        pr_issue_date: null,
+        pr_approved_at: null,
+      }),
+    ];
+    const aprobacion = buildAvanceData(rows);
+    expect(aprobacion.gestiones.map((g) => g.folio)).toEqual(['PR1']);
+    expect(aprobacion.maximo_no_recibidas).toEqual([
+      { prnum: 'PR2', emision: T('2026-09-14T15:00:00Z'), pr_status: 'WAPPR' },
+      { prnum: 'PR3', emision: T('2026-09-14T15:00:00Z'), pr_status: 'CAN' },
+      { prnum: 'PR4', emision: null, pr_status: null },
     ]);
-    expect(dater(99)).toBeNull();
-    expect(dater(100)).toEqual(D('2026-01-10'));
-    expect(dater(130)).toEqual(D('2026-01-10'));
-    expect(dater(900)).toEqual(D('2026-02-01'));
+
+    const emision = buildAvanceData(rows, {
+      ...AVANCE_REGLAS,
+      recibida: 'emision',
+    });
+    expect(emision.gestiones.map((g) => g.folio)).toEqual([
+      'PR1',
+      'PR2',
+      'PR3',
+    ]);
+    expect(emision.gestiones[1]).toMatchObject({
+      recibida: T('2026-09-14T15:00:00Z'),
+      fecha_origen: 'emision',
+      // los días siguen desde la aprobación: sin APPR no hay días
+      inicio_dias: null,
+    });
+    expect(emision.maximo_no_recibidas.map((p) => p.prnum)).toEqual(['PR4']);
+    const diasEmision = buildAvanceData(rows, {
+      ...AVANCE_REGLAS,
+      recibida: 'emision',
+      dias_desde: 'emision',
+    });
+    expect(diasEmision.gestiones[1].inicio_dias).toEqual(
+      T('2026-09-14T15:00:00Z'),
+    );
+  });
+
+  it('cerrada = primera OC o, sin OC, el último CLOSE; cancelada = última CAN; de_contrato pasa', () => {
+    const rows = empty();
+    rows.maximoPrs = [
+      // con OC: la OC manda aunque la PR también tenga CLOSE
+      pr('PR10', {
+        pr_status: 'CLOSE',
+        pr_closed_at: T('2026-09-09T17:20:00Z'),
+      }),
+      // CLOSE sin OC (H1)
+      pr('PR11', {
+        pr_status: 'CLOSE',
+        pr_closed_at: T('2026-09-20T17:00:00Z'),
+      }),
+      // cancelada (MEMO en el historial)
+      pr('PR12', {
+        pr_status: 'CAN',
+        pr_cancelled_at: T('2026-09-18T16:40:00Z'),
+      }),
+      // contrato en APPR con la PR en CLOSE
+      pr('PR13', {
+        pr_status: 'CLOSE',
+        pr_closed_at: T('2026-06-15T12:00:00Z'),
+        de_contrato: true,
+      }),
+    ];
+    rows.maximoFirstPo = [
+      { prnum: 'PR10', primera_oc: T('2026-09-09T17:20:00Z') },
+    ];
+    const by = new Map(
+      buildAvanceData(rows).gestiones.map((g) => [g.folio, g]),
+    );
+    expect(by.get('PR10')).toMatchObject({
+      primera_oc: T('2026-09-09T17:20:00Z'),
+      cierre_sin_oc: null,
+    });
+    expect(by.get('PR11')).toMatchObject({
+      primera_oc: null,
+      cierre_sin_oc: T('2026-09-20T17:00:00Z'),
+      de_contrato: false,
+    });
+    expect(by.get('PR12')?.cancelada).toEqual(T('2026-09-18T16:40:00Z'));
+    expect(by.get('PR13')).toMatchObject({
+      cierre_sin_oc: T('2026-06-15T12:00:00Z'),
+      de_contrato: true,
+    });
   });
 });
 
@@ -85,6 +202,8 @@ describe('buildAvanceData', () => {
     const [conOc, cancelada, aMano, abierta] = data.gestiones;
     expect(conOc).toMatchObject({
       folio: '11',
+      fecha_origen: 'documento',
+      inicio_dias: D('2026-02-01'),
       primera_oc: D('2026-02-05'),
       cierre_sin_oc: null,
     });
@@ -98,99 +217,27 @@ describe('buildAvanceData', () => {
     expect(data.sap_desde).toEqual(D('2026-01-12'));
   });
 
-  it('Maximo: exacta por su OC, alta después de la carga inicial, folio antes; sin fecha fuera', () => {
-    const rows = empty();
-    const initial = T('2026-09-22T09:00:00Z');
-    rows.maximoKnown = [
-      { folio: BigInt(100), fecha: D('2026-09-01') },
-      { folio: BigInt(110), fecha: D('2026-09-10') },
-    ];
-    rows.maximoPrs = [
-      // exacta: es el folio de una OC con fecha
-      {
-        prnum: 'PR100',
-        con_contrato: false,
-        fecha_contrato: null,
-        visto: initial,
-      },
-      // por folio: vista en la carga inicial
-      {
-        prnum: 'PR105',
-        con_contrato: false,
-        fecha_contrato: null,
-        visto: initial,
-      },
-      // alta: vista después de la carga inicial, cerca de su folio
-      {
-        prnum: 'PR120',
-        con_contrato: false,
-        fecha_contrato: null,
-        visto: T('2026-09-25T15:40:00Z'),
-      },
-      // vieja que aparece tarde (a más de 30 días de su folio): por folio
-      {
-        prnum: 'PR101',
-        con_contrato: false,
-        fecha_contrato: null,
-        visto: T('2026-11-20T10:00:00Z'),
-      },
-      // se volvió contrato
-      {
-        prnum: 'PR108',
-        con_contrato: true,
-        fecha_contrato: D('2026-09-15'),
-        visto: initial,
-      },
-      // folio menor a todos los conocidos: sin fecha
-      {
-        prnum: 'PR050',
-        con_contrato: false,
-        fecha_contrato: null,
-        visto: initial,
-      },
-    ];
-    rows.maximoFirstPo = [{ prnum: 'PR100', primera_oc: D('2026-09-04') }];
-    const data = buildAvanceData(rows);
-    const by = new Map(data.gestiones.map((g) => [g.folio, g]));
-    expect(by.get('PR100')).toMatchObject({
-      fecha_origen: 'exacta',
-      recibida: D('2026-09-01'),
-      primera_oc: D('2026-09-04'),
-    });
-    expect(by.get('PR105')).toMatchObject({
-      fecha_origen: 'folio',
-      recibida: D('2026-09-01'),
-    });
-    expect(by.get('PR120')).toMatchObject({
-      fecha_origen: 'alta',
-      recibida: T('2026-09-25T15:40:00Z'),
-    });
-    expect(by.get('PR101')).toMatchObject({
-      fecha_origen: 'folio',
-      recibida: D('2026-09-01'),
-    });
-    expect(by.get('PR108')?.cierre_sin_oc).toEqual(D('2026-09-15'));
-    expect(by.has('PR050')).toBe(false);
-    expect(data.maximo_sin_fecha).toBe(1);
-  });
-
-  it('OC por moneda: SAP marca las que cuentan en Maximo', () => {
+  it('OC por moneda con el subtotal (K6): SAP marca las que cuentan en Maximo; sin subtotal = null', () => {
     const rows = empty();
     rows.sapOrders = [
       {
         fecha: D('2026-01-02'),
         moneda: 'MXN',
         monto: '10.50',
+        subtotal: '9.05',
         contada_en_maximo: true,
       },
       {
         fecha: D('2026-01-03'),
         moneda: 'USD',
         monto: null,
+        subtotal: null,
         contada_en_maximo: false,
       },
     ];
-    rows.maximoOrders = [{ fecha: D('2026-01-04'), moneda: 'MXN', monto: 7 }];
+    rows.maximoOrders = [
+      { fecha: D('2026-01-04'), moneda: 'MXN', monto: 7, subtotal: null },
+    ];
     const data = buildAvanceData(rows);
     expect(data.ordenes).toEqual([
       {
@@ -198,6 +245,7 @@ describe('buildAvanceData', () => {
         fecha: D('2026-01-02'),
         moneda: 'MXN',
         monto: 10.5,
+        subtotal: 9.05,
         contada_en_maximo: true,
       },
       {
@@ -205,8 +253,33 @@ describe('buildAvanceData', () => {
         fecha: D('2026-01-04'),
         moneda: 'MXN',
         monto: 7,
+        subtotal: null,
         contada_en_maximo: false,
       },
     ]);
+  });
+});
+
+describe('loadAvanceRows', () => {
+  it('K5: las PR salen de la vista por PR con sus fechas reales y las OC traen el subtotal (sin folio)', async () => {
+    const queries: Prisma.Sql[] = [];
+    const prisma = {
+      $queryRaw: jest.fn((query: Prisma.Sql) => {
+        queries.push(query);
+        return Promise.resolve([]);
+      }),
+    };
+    await loadAvanceRows(
+      prisma as unknown as Parameters<typeof loadAvanceRows>[0],
+    );
+    expect(queries).toHaveLength(6);
+    const sql = queries.map((q) => q.sql).join(' ');
+    expect(sql).toContain('bool_or(has_contract) OVER (PARTITION BY prnum)');
+    expect(sql).toContain('p.pr_approved_at');
+    expect(sql).toContain('p.pr_cancelled_at');
+    expect(sql).toContain('s.subtotal');
+    expect(sql).toContain('p.subtotal');
+    expect(sql).not.toContain('regexp_replace');
+    expect(sql).not.toContain('first_seen_at');
   });
 });

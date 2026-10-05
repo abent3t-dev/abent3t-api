@@ -16,7 +16,10 @@ import type {
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { hasAnyRole } from '../common/utils/roles.util';
-import { MaximoContractQueryDto } from './dto/maximo-contract-query.dto';
+import {
+  isMaximoRequestsView,
+  MaximoContractQueryDto,
+} from './dto/maximo-contract-query.dto';
 import { MaximoPoQueryDto } from './dto/maximo-po-query.dto';
 import { MaximoSummaryQueryDto } from './dto/maximo-summary-query.dto';
 import { MaximoRecordsService } from './maximo-records.service';
@@ -237,6 +240,64 @@ const CONTRACT_COLUMNS: ExcelColumn<MaximoContractView>[] = [
   { header: 'Revisión', value: (r) => r.revisionnum, kind: 'int', width: 10 },
 ];
 
+/**
+ * K4.4 (2026-10-05): export de Solicitudes (`vista=solicitudes`, una fila
+ * por PR) = el de Contratos con el estatus y las fechas DE LA PR. El
+ * estatus y las fechas del contrato se rotulan como tales (sin contrato,
+ * vacíos).
+ */
+const REQUEST_COLUMNS: ExcelColumn<MaximoContractView>[] =
+  CONTRACT_COLUMNS.flatMap((col): ExcelColumn<MaximoContractView>[] => {
+    switch (col.header) {
+      case 'Contrato':
+        return [
+          col,
+          { header: 'Estatus PR', value: (r) => r.pr_status, width: 12 },
+        ];
+      case 'Estatus':
+        return [
+          {
+            header: 'Estatus contrato',
+            value: (r) => (r.has_contract ? r.status : null),
+            width: 14,
+          },
+        ];
+      case 'F. Solicitud':
+        return [
+          {
+            header: 'Fecha PR (ISSUEDATE)',
+            value: (r) => r.pr_issue_date,
+            kind: 'date',
+            width: 16,
+          },
+          // primer APPR de la PR: llegó a Compras
+          {
+            header: 'Aprobación PR',
+            value: (r) => r.pr_approved_at,
+            kind: 'date',
+            width: 14,
+          },
+          {
+            header: 'Solicitud del contrato',
+            value: (r) => (r.has_contract ? r.created_at_source : null),
+            kind: 'date',
+            width: 14,
+          },
+        ];
+      case 'F. Aprobación':
+        return [
+          {
+            header: 'Aprobación del contrato',
+            value: (r) => (r.has_contract ? r.approved_at : null),
+            kind: 'date',
+            width: 14,
+          },
+        ];
+      default:
+        return [col];
+    }
+  });
+
 /** E2: export de la vista agrupada por contrato (una fila por contrato). */
 const CONTRACT_GROUP_COLUMNS: ExcelColumn<MaximoContractGroupView>[] = [
   { header: 'Contrato', value: (r) => r.contractnum, width: 14 },
@@ -395,6 +456,17 @@ export class MaximoRecordsController {
     }
     const { rows, truncated } =
       await this.service.listContractsForExport(query);
+    // K4.4: Solicitudes (una fila por PR) con el estatus y fechas de la PR
+    if (isMaximoRequestsView(query)) {
+      const buffer = await buildExcel(
+        'Solicitudes Maximo',
+        REQUEST_COLUMNS,
+        rows,
+        { truncated },
+      );
+      sendExcel(res, buffer, excelFilename('solicitudes_maximo'));
+      return;
+    }
     const buffer = await buildExcel(
       'Contratos Maximo',
       CONTRACT_COLUMNS,

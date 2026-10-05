@@ -1,6 +1,7 @@
 import {
   averageAndMedian,
   gestionDays,
+  maximoGestion,
   maximoGestionDays,
   sapGestionDays,
 } from './sap-gestion-days';
@@ -148,6 +149,31 @@ describe('mediana y gestión de Maximo (G2, 2026-09-28)', () => {
       total: 3,
       descartadas: 1,
       sin_solicitud: 1,
+    });
+  });
+});
+
+describe('maximoGestion (K4.3: desde la creación y desde la aprobación)', () => {
+  it('dos series de las mismas OC; sin APPR la OC queda fuera del dato secundario', () => {
+    const result = maximoGestion([
+      // la línea no traía la fecha de su PR: la consulta ya usó la de AB_CONTRATOS
+      { dias: '12', dias_desde_aprobacion: '10' },
+      { dias: 4, dias_desde_aprobacion: null }, // PR sin APPR en el historial
+      { dias: null, dias_desde_aprobacion: null }, // OC sin PR conocida
+    ]);
+    expect(result.creacion).toEqual({
+      promedio_dias: 8,
+      mediana_dias: 8,
+      total: 2,
+      descartadas: 0,
+      sin_solicitud: 1,
+    });
+    expect(result.desde_aprobacion).toEqual({
+      promedio_dias: 10,
+      mediana_dias: 10,
+      total: 1,
+      descartadas: 0,
+      sin_solicitud: 2,
     });
   });
 });

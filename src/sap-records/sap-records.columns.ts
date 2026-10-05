@@ -39,6 +39,8 @@ export const SAP_PO_FILTER_COLUMNS: ColumnDefs<SapPurchaseOrderRow> = {
   comprador: { type: 'text', value: buyerLabel },
   estatus: { type: 'text', value: statusOf },
   monto: { type: 'number', value: (r) => r.doc_total },
+  // K6: sin IVA (suma de las líneas); null = "No disponible" (vacías)
+  subtotal: { type: 'number', value: (r) => r.subtotal },
   saldo: {
     type: 'number',
     value: (r) => (r.status_key === 'cancelled' ? null : r.open_total),

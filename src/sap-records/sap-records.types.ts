@@ -13,7 +13,13 @@
  *   cancelled=true → 'cancelled'; bost_Open → 'open'; bost_Close → 'close'.
  * `null` = fila sincronizada antes de la migración 0011 y sin re-sync (se
  * muestra como el DocumentStatus crudo, nunca se inventa).
+ *
+ * K6 (2026-10-05): la OC trae `subtotal` sin IVA (suma estricta de sus
+ * líneas, mapper 1.3.0) junto a `doc_total` (con IVA). La solicitud no lo
+ * necesita: su `doc_total` ya es la suma de las líneas (sin IVA).
  */
+
+import type { MontoBase } from '../common/sql/erp-views.sql';
 
 export type SapDocStatusKey = 'open' | 'close' | 'cancelled';
 
@@ -43,6 +49,13 @@ interface SapDocBaseRow {
 export interface SapPurchaseOrderRow extends SapDocBaseRow {
   card_code: string | null;
   card_name: string | null;
+  /**
+   * K6: sin IVA en la moneda del documento = suma de las líneas (LineTotal
+   * en MXN, RowTotalFC en otra moneda). null = sin líneas, alguna sin
+   * importe o sync anterior a 1.3.0 ("No disponible"; no se estima).
+   * `doc_total` sigue con IVA.
+   */
+  subtotal: number | null;
   /**
    * Saldo disponible: lo que falta por recibir/facturar, con IVA y en la
    * moneda del documento. null = sin calcular (sync previo a 1.2.0).
@@ -122,6 +135,12 @@ export interface SapCurrencyAmount {
   currency: string | null;
   total: number;
   count: number;
+  /**
+   * K6, solo OC (sin las abiertas): suma sin IVA de las que tienen
+   * `subtotal` y cuántas no lo tienen (no suman; no se estima).
+   */
+  subtotal?: number;
+  sin_subtotal?: number;
 }
 
 export interface SapLastSyncRun {
@@ -139,11 +158,23 @@ export interface SapLastSyncRun {
 export interface SapEntitySummary {
   total: number;
   byStatus: SapStatusCount[];
-  /** Suma de doc_total SIN distinguir moneda (compat; preferir montoPorMoneda). */
+  /**
+   * K6: base de `montoTotal` y `montoPorMoneda`: OC = TABLERO_MONTO_BASE
+   * (erp-views; con IVA hasta que conteste Ingrid); solicitudes = sin IVA.
+   */
+  montoBase: MontoBase;
+  /** Suma SIN distinguir moneda (compat; preferir montoPorMoneda). */
   montoTotal: number;
   montoPorMoneda: SapCurrencyAmount[];
-  /** Abiertas no canceladas, con monto por moneda ("por recibir"). */
-  abiertas: { count: number; montoPorMoneda: SapCurrencyAmount[] };
+  /**
+   * Abiertas no canceladas, con monto por moneda ("por recibir"). K6: sin
+   * cambio, `doc_total` (OC con IVA; solicitudes sin IVA) y sin subtotal.
+   */
+  abiertas: {
+    count: number;
+    montoBase: MontoBase;
+    montoPorMoneda: SapCurrencyAmount[];
+  };
   linesTotal: number;
   /** Líneas con clasificación REAL capturada (≠ placeholder del ERP). */
   linesClassified: number;
@@ -216,6 +247,10 @@ export interface SapApprovalRequestRow {
   days_with_approver?: number | null;
   doc_num: number | null;
   doc_date: Date | null;
+  /**
+   * DocTotal del borrador, con IVA. K6.9: se queda con IVA a propósito (el
+   * borrador no trae líneas en la cola: no hay subtotal que sumar).
+   */
   doc_total: number | null;
   currency: string | null;
   card_name: string | null;

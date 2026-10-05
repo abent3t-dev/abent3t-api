@@ -3,6 +3,8 @@ import {
   MaximoVendorXref,
   normalizeCompanyName,
 } from '../erp-vendors/maximo-vendor-xref';
+import { TABLERO_MONTO_BASE } from '../common/sql/erp-views.sql';
+import type { MontoBase } from '../common/sql/erp-views.sql';
 
 /**
  * G1 (2026-09-28) — Tops de proveedores de Reportes:
@@ -12,6 +14,10 @@ import {
  *  - SAP + Maximo contado una vez (D1): las OC de SAP sin las migradas que
  *    existen en Maximo + las de Maximo por proveedor efectivo.
  * Siempre por (proveedor, moneda): nunca se suman monedas. Funciones puras.
+ *
+ * K6 (2026-10-05): `monto` va en la base de `TABLERO_MONTO_BASE` (con IVA
+ * hasta que conteste Ingrid) y cada fila trae el subtotal sin IVA y las OC
+ * sin él como dato secundario. El orden del top sigue siendo por `monto`.
  */
 
 export const VENDOR_TOP_LIMIT = 10;
@@ -23,7 +29,11 @@ export interface VendorAmount {
   name: string | null;
   currency: string | null;
   count: number;
+  /** En la base de `TABLERO_MONTO_BASE` (K6). */
   monto: number;
+  /** K6: sin IVA, de las OC que tienen subtotal; `sin_subtotal` = las que no. */
+  subtotal: number;
+  sin_subtotal: number;
   source: 'sap' | 'maximo';
   /** Maximo: lo que dice su maestro (para "en Maximo: …"). */
   maximo_code?: string | null;
@@ -39,12 +49,22 @@ export interface VendorTopRow {
   currency: string | null;
   count: number;
   monto: number;
+  /** K6: dato secundario sin IVA y OC sin subtotal. */
+  subtotal: number;
+  sin_subtotal: number;
   /** "en Maximo: NOMBRE (CÓDIGO)" cuando Maximo lo nombra distinto. */
   nota: string | null;
   por_fuente: {
-    sap: { count: number; monto: number };
-    maximo: { count: number; monto: number };
+    sap: VendorSourceAmount;
+    maximo: VendorSourceAmount;
   };
+}
+
+export interface VendorSourceAmount {
+  count: number;
+  monto: number;
+  subtotal: number;
+  sin_subtotal: number;
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -63,7 +83,11 @@ function mostFrequent(values: string[]): string | null {
   return best;
 }
 
-/** OC vigentes de Maximo → montos por proveedor efectivo. */
+/**
+ * OC vigentes de Maximo → montos por proveedor efectivo. K6: `monto` en la
+ * base pedida (TOTALCOST con IVA o el `subtotal` sin IVA); sin subtotal, la
+ * OC no suma a la base sin IVA y cuenta en `sin_subtotal` (no se estima).
+ */
 export function maximoVendorAmounts(
   rows: Array<{
     ponum: string;
@@ -71,12 +95,18 @@ export function maximoVendorAmounts(
     vendor_name: string | null;
     currency: string | null;
     total_cost: unknown;
+    subtotal?: unknown;
   }>,
   xref: MaximoVendorXref,
+  base: MontoBase = TABLERO_MONTO_BASE,
 ): VendorAmount[] {
   return rows.flatMap((row) => {
     const vendor = effectiveMaximoVendor(row, xref);
     if (!vendor.key) return [];
+    const subtotal =
+      row.subtotal === null || row.subtotal === undefined
+        ? null
+        : Number(row.subtotal);
     return [
       {
         key: vendor.key,
@@ -84,7 +114,10 @@ export function maximoVendorAmounts(
         name: vendor.name,
         currency: row.currency,
         count: 1,
-        monto: Number(row.total_cost ?? 0),
+        monto:
+          base === 'sin_iva' ? (subtotal ?? 0) : Number(row.total_cost ?? 0),
+        subtotal: subtotal ?? 0,
+        sin_subtotal: subtotal === null ? 1 : 0,
         source: 'maximo' as const,
         maximo_code: row.vendor_id,
         maximo_name: row.vendor_name,
@@ -127,11 +160,13 @@ export function rankVendors(
       );
     }
     const notes = [...differentMaximo.values()];
-    const bySource = (source: 'sap' | 'maximo') => {
+    const bySource = (source: 'sap' | 'maximo'): VendorSourceAmount => {
       const part = list.filter((a) => a.source === source);
       return {
         count: part.reduce((s, a) => s + a.count, 0),
         monto: round2(part.reduce((s, a) => s + a.monto, 0)),
+        subtotal: round2(part.reduce((s, a) => s + a.subtotal, 0)),
+        sin_subtotal: part.reduce((s, a) => s + a.sin_subtotal, 0),
       };
     };
     const sap = bySource('sap');
@@ -144,6 +179,8 @@ export function rankVendors(
       currency: first.currency,
       count: sap.count + maximo.count,
       monto: round2(sap.monto + maximo.monto),
+      subtotal: round2(sap.subtotal + maximo.subtotal),
+      sin_subtotal: sap.sin_subtotal + maximo.sin_subtotal,
       nota:
         notes.length === 0
           ? null

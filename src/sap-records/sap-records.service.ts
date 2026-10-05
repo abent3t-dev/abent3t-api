@@ -11,7 +11,12 @@ import {
 import type { SapApprovalLine } from '../purchase-reports/approver-stats';
 import { PaginatedResponse } from '../common/interfaces/paginated-response.interface';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
-import { andYear } from '../common/sql/erp-views.sql';
+import {
+  andYear,
+  poSubtotalColumns,
+  sapPoMonto,
+  TABLERO_MONTO_BASE,
+} from '../common/sql/erp-views.sql';
 import { deriveSapLines } from './sap-document-raw';
 import {
   applyColumnQuery,
@@ -79,6 +84,10 @@ import {
  *    su OC allá; las demás, quién la capturó ("Capturó: …").
  *  - F1: si la OC de Maximo no trae PURCHASEAGENT, la migrada muestra quién
  *    la creó en Maximo ("Capturó: …"), no el usuario de la integración.
+ *
+ * K6 (2026-10-05): la OC trae `subtotal` sin IVA (columna filtrable
+ * numérica y export "Subtotal (sin IVA)"); el resumen de OC va en la base
+ * del tablero (`TABLERO_MONTO_BASE`) con el subtotal por moneda.
  */
 
 const DEFAULT_LIMIT = 20;
@@ -100,6 +109,8 @@ const PO_LIST_SELECT = {
   card_code: true,
   card_name: true,
   doc_total: true,
+  // K6: sin IVA (suma de las líneas); null = no disponible
+  subtotal: true,
   currency: true,
   lines_total: true,
   lines_classified: true,
@@ -179,6 +190,15 @@ const DOC_ORDER = [
 function toNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value);
 }
+
+/** Monto por moneda del resumen; K6: `subtotal` solo en el de las OC. */
+type CurrencyRow = {
+  currency: string | null;
+  total: unknown;
+  count: number;
+  subtotal?: unknown;
+  sin_subtotal?: number;
+};
 
 function buildMeta(total: number, page: number, limit: number) {
   const totalPages = Math.max(1, Math.ceil(total / limit));
@@ -893,11 +913,20 @@ export class SapRecordsService {
     entity: 'purchase_orders' | 'purchase_requests',
     year: number | null = null,
   ): Promise<SapEntitySummary> {
-    const table =
-      entity === 'purchase_orders'
-        ? Prisma.sql`sap_purchase_orders`
-        : Prisma.sql`sap_purchase_requests`;
+    const isPo = entity === 'purchase_orders';
+    const table = isPo
+      ? Prisma.sql`sap_purchase_orders`
+      : Prisma.sql`sap_purchase_requests`;
     const inYear = andYear('doc_date', year);
+    // K6: las OC en la base del tablero, con su subtotal sin IVA por moneda;
+    // las solicitudes ya son sin IVA (suma de sus líneas) y no tienen subtotal
+    const montoBase = isPo ? TABLERO_MONTO_BASE : 'sin_iva';
+    const monto = isPo
+      ? sapPoMonto('sap_purchase_orders', TABLERO_MONTO_BASE)
+      : Prisma.sql`doc_total`;
+    const subtotalCols = isPo
+      ? Prisma.sql`, ${poSubtotalColumns('sap_purchase_orders')}`
+      : Prisma.empty;
     const [byStatus, byCurrency, openByCurrency, agg, gestion] =
       await Promise.all([
         this.prisma.$queryRaw<
@@ -909,15 +938,13 @@ export class SapRecordsService {
         >(Prisma.sql`
           SELECT document_status, cancelled, count(*)::int AS count
           FROM ${table} WHERE true ${inYear} GROUP BY document_status, cancelled`),
-        this.prisma.$queryRaw<
-          Array<{ currency: string | null; total: unknown; count: number }>
-        >(Prisma.sql`
-          SELECT currency, coalesce(sum(doc_total), 0) AS total, count(*)::int AS count
+        this.prisma.$queryRaw<CurrencyRow[]>(Prisma.sql`
+          SELECT currency, coalesce(sum(${monto}), 0) AS total,
+                 count(*)::int AS count ${subtotalCols}
           FROM ${table} WHERE cancelled IS DISTINCT FROM true ${inYear}
           GROUP BY currency ORDER BY total DESC`),
-        this.prisma.$queryRaw<
-          Array<{ currency: string | null; total: unknown; count: number }>
-        >(Prisma.sql`
+        // "por recibir": sin cambio en K6 (doc_total, sin subtotal)
+        this.prisma.$queryRaw<CurrencyRow[]>(Prisma.sql`
           SELECT currency, coalesce(sum(doc_total), 0) AS total, count(*)::int AS count
           FROM ${table}
           WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true ${inYear}
@@ -932,7 +959,7 @@ export class SapRecordsService {
           }>
         >(Prisma.sql`
           SELECT count(*)::int AS total,
-                 coalesce(sum(doc_total), 0) AS monto,
+                 coalesce(sum(${monto}), 0) AS monto,
                  coalesce(sum(lines_total), 0)::int AS lines_total,
                  coalesce(sum(lines_classified), 0)::int AS lines_classified,
                  count(*) FILTER (WHERE ahorro_total IS NOT NULL)::int AS con_ahorro
@@ -956,11 +983,18 @@ export class SapRecordsService {
     const statusCounts: SapStatusCount[] = [...counts.entries()]
       .map(([status, count]) => ({ status, count }))
       .sort((a, b) => b.count - a.count);
-    const toCurrency = (rows: typeof byCurrency): SapCurrencyAmount[] =>
+    const toCurrency = (rows: CurrencyRow[]): SapCurrencyAmount[] =>
       rows.map((r) => ({
         currency: r.currency,
         total: toNumber(r.total) ?? 0,
         count: Number(r.count),
+        // K6: solo el monto de las OC trae el subtotal
+        ...(r.subtotal === undefined
+          ? {}
+          : {
+              subtotal: toNumber(r.subtotal) ?? 0,
+              sin_subtotal: Number(r.sin_subtotal ?? 0),
+            }),
       }));
     const openAmounts = toCurrency(openByCurrency);
     const dias = toNumber(gestion[0]?.dias);
@@ -968,10 +1002,12 @@ export class SapRecordsService {
     return {
       total: Number(agg[0]?.total ?? 0),
       byStatus: statusCounts,
+      montoBase,
       montoTotal: toNumber(agg[0]?.monto) ?? 0,
       montoPorMoneda: toCurrency(byCurrency),
       abiertas: {
         count: openAmounts.reduce((sum, r) => sum + r.count, 0),
+        montoBase: isPo ? 'con_iva' : 'sin_iva',
         montoPorMoneda: openAmounts,
       },
       linesTotal: Number(agg[0]?.lines_total ?? 0),
@@ -1004,6 +1040,7 @@ export class SapRecordsService {
 
   private toPoRow(row: {
     doc_total: unknown;
+    subtotal: unknown;
     ahorro_total: unknown;
     open_total: unknown;
     document_status: string | null;
@@ -1014,6 +1051,7 @@ export class SapRecordsService {
       ...(row as unknown as SapPurchaseOrderRow),
       status_key: deriveStatusKey(row),
       doc_total: toNumber(row.doc_total),
+      subtotal: toNumber(row.subtotal),
       ahorro_total: toNumber(row.ahorro_total),
       open_total: toNumber(row.open_total),
     };

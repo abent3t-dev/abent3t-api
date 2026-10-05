@@ -13,11 +13,12 @@ import { buyerText, maximoBuyer } from '../common/utils/buyer.util';
 import { maximoStatusWithCode } from '../common/utils/maximo-status.util';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import {
-  andMaximoPrInWindow,
-  CURRENT_MAXIMO_CONTRACTS,
   CURRENT_MAXIMO_POS,
-  loadMaximoPrFolioWindow,
+  CURRENT_MAXIMO_PRS,
   MAXIMO_PRS_WITH_PO,
+  maximoPrPending,
+  montoBaseNota,
+  TABLERO_MONTO_BASE,
 } from '../common/sql/erp-views.sql';
 import {
   SAP_PO_EXPORT_COLUMNS,
@@ -37,6 +38,7 @@ import {
   fuentesDelReporte,
   lastCompleteWeek,
 } from './avance-semanal/avance-semanal.engine';
+import { montoBaseTexto } from './avance-semanal/avance-semanal.reglas';
 
 /**
  * Reporte semanal de Compras (Ingrid, 2026-09-23): un Excel con el resumen
@@ -49,22 +51,38 @@ import {
  * moneda, nunca sumados entre monedas; sin dato = "Sin datos", nunca 0.
  *
  * 2026-09-28: G1 proveedor efectivo en las OC de Maximo; G2 días de gestión
- * RQ → OC por sistema (promedio y mediana); G3 pendientes = RQ sin OC; las
- * PR de Maximo del periodo se ubican por folio; G7 etiquetas de estatus.
+ * RQ → OC por sistema (promedio y mediana); G3 pendientes = RQ sin OC; G7
+ * etiquetas de estatus. K4.5 (2026-10-05): las PR de Maximo del periodo
+ * son las creadas en él (ISSUEDATE), una por PR, con el estatus de la PR;
+ * ya no se ubican por folio.
  *
  * 2026-09-29 (H1): hoja "Avance semanal" con los KPIs del PDF del reporte de
  * avance semanal (mismo motor), de la última semana completa del periodo.
  * I3 (2026-09-30): un bloque de Maximo y uno de SAP, como las dos páginas.
+ * K5.6 (2026-10-05): canceladas y abiertas en las dos fuentes (sin "Sin
+ * OC" ni fechas aproximadas) y los montos en la base de AVANCE_MONTO_BASE
+ * con un renglón del otro valor.
+ * K6.7 (2026-10-05): el Resumen trae los montos de OC en la base de
+ * TABLERO_MONTO_BASE y un renglón "… sin IVA" (subtotal); las hojas OC SAP
+ * y OC Maximo traen la columna "Subtotal (sin IVA)" junto a "Monto" (con
+ * IVA). El saldo abierto y las autorizaciones de SAP se quedan con IVA a
+ * propósito y lo dicen.
  */
 
 const DAY_MS = 86_400_000;
 
-/** Columnas del detalle SAP que van al reporte (mismas etiquetas que el export). */
-const SAP_PO_HEADERS = [
+/**
+ * Columnas del detalle SAP que van al reporte (mismas etiquetas que el
+ * export). Ojo: se eligen de SAP_PO_EXPORT_COLUMNS por el TEXTO del
+ * encabezado (`pick`); un encabezado que no exista allá se cae sin error
+ * (lo cuida una prueba). K6: "Monto" es el DocTotal con IVA y no se renombra.
+ */
+export const SAP_PO_HEADERS = [
   'Número',
   'Proveedor',
   'Estatus',
   'Monto',
+  'Subtotal (sin IVA)',
   'Saldo disponible',
   'Moneda',
   'Solicitante',
@@ -74,7 +92,7 @@ const SAP_PO_HEADERS = [
   'F. Documento',
   'F. Entrega',
 ];
-const SAP_PR_HEADERS = [
+export const SAP_PR_HEADERS = [
   'Número',
   'Solicitante',
   'Estatus',
@@ -111,6 +129,8 @@ interface MaximoPoRow {
   vendor_id: string | null;
   vendor_name: string | null;
   total_cost: unknown;
+  /** K6: sin IVA (Σ POLINE.LINECOST); null = no disponible. */
+  subtotal: unknown;
   currency: string | null;
   requested_by: string | null;
   purchase_agent: string | null;
@@ -125,15 +145,21 @@ interface MaximoPoRow {
 interface MaximoPrRow {
   prnum: string | null;
   contractnum: string | null;
+  /** K4.5: estatus DE LA PR (WAPPR, APPR, CLOSE, CAN). */
+  pr_status: string | null;
+  /** Estatus del contrato (sin contrato, el de la PR). */
   status: string | null;
-  /** G3: la PR ya tiene OC vigente (o contrato). */
+  has_contract: boolean;
+  /** G3: alguna OC vigente no cancelada usa la PR. */
   con_oc: boolean;
+  /** K4: aprobada (APPR) sin OC ni contrato = pendiente de gestionar. */
+  pendiente: boolean;
   vendor_name: string | null;
   contract_value: unknown;
   currency: string | null;
   requested_by: string | null;
-  created_at_source: Date | null;
-  approved_at: Date | null;
+  pr_issue_date: Date | null;
+  pr_approved_at: Date | null;
 }
 
 interface PendingApprovalRow {
@@ -205,12 +231,6 @@ export class WeeklyReportService {
     const periodTo = period.to;
     // H1: datos del avance semanal (se cargan en paralelo con lo demás)
     const avanceData = this.avance.loadData();
-    // G3: las PR de Maximo del periodo se ubican por folio (sin fecha propia)
-    const prWindow = await loadMaximoPrFolioWindow(
-      this.prisma,
-      period.from,
-      new Date(periodTo.getTime() + 1),
-    );
 
     const [
       actual,
@@ -229,19 +249,22 @@ export class WeeklyReportService {
       this.sap.listAllForExport('purchase_orders', { from, to }),
       this.sap.listAllForExport('purchase_requests', { from, to }),
       this.prisma.$queryRaw<MaximoPoRow[]>(Prisma.sql`
-        SELECT ponum, description, status, vendor_id, vendor_name, total_cost, currency,
-               requested_by, purchase_agent, purchase_agent_name, created_by,
+        SELECT ponum, description, status, vendor_id, vendor_name, total_cost, subtotal,
+               currency, requested_by, purchase_agent, purchase_agent_name, created_by,
                department, created_at_source, approved_at, approved_by
         FROM (${CURRENT_MAXIMO_POS}) current
         WHERE created_at_source BETWEEN ${period.from} AND ${periodTo}
         ORDER BY created_at_source DESC`),
+      // K4.5: PR creadas en el periodo (ISSUEDATE), una por PR
       this.prisma.$queryRaw<MaximoPrRow[]>(Prisma.sql`
-        SELECT prnum, contractnum, status, vendor_name, contract_value, currency,
-               requested_by, created_at_source, approved_at,
-               (has_contract OR prnum IN (${MAXIMO_PRS_WITH_PO})) AS con_oc
-        FROM (${CURRENT_MAXIMO_CONTRACTS}) current
-        WHERE prnum IS NOT NULL ${andMaximoPrInWindow('current', prWindow)}
-        ORDER BY prnum DESC`),
+        SELECT p.prnum, p.contractnum, p.pr_status, p.status, p.has_contract,
+               p.vendor_name, p.contract_value, p.currency, p.requested_by,
+               p.pr_issue_date, p.pr_approved_at,
+               (p.prnum IN (${MAXIMO_PRS_WITH_PO})) AS con_oc,
+               ${maximoPrPending('p')} AS pendiente
+        FROM (${CURRENT_MAXIMO_PRS}) p
+        WHERE p.pr_issue_date BETWEEN ${period.from} AND ${periodTo}
+        ORDER BY p.pr_issue_date DESC, p.prnum DESC`),
       this.prisma.$queryRaw<PendingApprovalRow[]>(Prisma.sql`
         SELECT object_type, doc_num, card_name, doc_total, currency,
                requester_name, originator_name, current_stage,
@@ -370,11 +393,20 @@ export class WeeklyReportService {
               value: (r) => (r.supplier.differs ? r.vendor_name : null),
               width: 32,
             },
+            // TOTALCOST, con IVA (la nota lo dice)
             {
               header: 'Monto',
               value: (r) => num(r.total_cost),
               kind: 'money',
               width: 16,
+            },
+            // K6: Σ POLINE.LINECOST; sin líneas o alguna sin LINECOST →
+            // "No disponible" (no se estima)
+            {
+              header: 'Subtotal (sin IVA)',
+              value: (r) => num(r.subtotal) ?? NO_DISPONIBLE,
+              kind: 'money',
+              width: 18,
             },
             { header: 'Moneda', value: (r) => r.currency, width: 10 },
             {
@@ -414,15 +446,27 @@ export class WeeklyReportService {
           [
             { header: 'PRNUM', value: (r) => r.prnum, width: 14 },
             { header: 'Contrato', value: (r) => r.contractnum, width: 14 },
+            // K4.5: estatus de la PR; el del contrato va aparte
             {
-              header: 'Estatus',
-              value: (r) => maximoStatus(r.status),
+              header: 'Estatus PR',
+              value: (r) => maximoStatus(r.pr_status) || NO_DISPONIBLE,
+              width: 26,
+            },
+            {
+              header: 'Estatus contrato',
+              value: (r) => (r.has_contract ? maximoStatus(r.status) : null),
               width: 22,
             },
             {
               header: 'Con OC',
-              value: (r) => (r.con_oc ? 'Sí' : 'No (pendiente de gestionar)'),
-              width: 24,
+              value: (r) => (r.con_oc ? 'Sí' : 'No'),
+              width: 10,
+            },
+            {
+              header: 'Pendiente de gestionar',
+              value: (r) =>
+                r.pendiente ? 'Sí (aprobada, sin OC ni contrato)' : 'No',
+              width: 30,
             },
             { header: 'Proveedor', value: (r) => r.vendor_name, width: 36 },
             {
@@ -438,14 +482,15 @@ export class WeeklyReportService {
               width: 18,
             },
             {
-              header: 'F. Solicitud',
-              value: (r) => r.created_at_source,
+              header: 'Fecha PR (ISSUEDATE)',
+              value: (r) => r.pr_issue_date,
               kind: 'date',
-              width: 14,
+              width: 16,
             },
+            // primer APPR de la PR: llegó a Compras
             {
-              header: 'F. Aprobación',
-              value: (r) => r.approved_at,
+              header: 'Aprobación PR',
+              value: (r) => r.pr_approved_at,
               kind: 'date',
               width: 14,
             },
@@ -463,8 +508,9 @@ export class WeeklyReportService {
               width: 10,
             },
             { header: 'Proveedor', value: (r) => r.proveedor, width: 36 },
+            // K6.9: total del borrador, con IVA a propósito (sin líneas)
             {
-              header: 'Monto',
+              header: 'Monto (con IVA)',
               value: (r) => r.monto,
               kind: 'money',
               width: 16,
@@ -527,10 +573,11 @@ export class WeeklyReportService {
       [
         `Reporte de Compras del ${periodLabel}, comparado contra el periodo anterior de la misma duración (${prevLabel}). Generado el ${dmy(new Date().toISOString().slice(0, 10))}.`,
         'Fuentes: SAP Business One, Maximo (vista vigente: última revisión de cada documento) y la captura propia de ABENT.',
-        'Montos por moneda: nunca se suman MXN con USD o EUR. OC de SAP con IVA en la moneda del documento; solicitudes de SAP sin IVA (suma de sus líneas).',
+        `Montos por moneda: nunca se suman MXN con USD o EUR. Resumen: montos de OC ${montoBaseNota(TABLERO_MONTO_BASE)}${TABLERO_MONTO_BASE === 'sin_iva' ? '' : ', con un renglón sin IVA (suma de las líneas, solo de las OC que la tienen; las propias de ABENT no la tienen)'}. Hojas "OC SAP" y "OC Maximo": "Monto" con IVA (DocTotal / TOTALCOST) en la moneda del documento y "Subtotal (sin IVA)" = suma de las líneas ("No disponible" si la OC no tiene líneas o a alguna le falta importe; no se estima). Solicitudes de SAP sin IVA (suma de sus líneas); autorizaciones de SAP con IVA (total del borrador). La hoja "Avance semanal", ${montoBaseTexto(avancePages[0].montos.base)} (con un renglón del otro valor).`,
         'Saldo disponible: parte de la OC de SAP aún no recibida ni facturada (cantidad pendiente de cada línea), con IVA.',
         'Solicitante de una OC de SAP: el de la solicitud de pedido de SAP de la que nació; si la OC viene de Maximo (columna "Origen"), el solicitante de Maximo; si no hay, queda vacío.',
         'Comprador: en Maximo es el comprador de la OC (PURCHASEAGENT); si no lo trae (casi todas), "Capturó: …" es quien creó la OC en Maximo. SAP no tiene comprador capturado en ninguna OC: las OC de SAP creadas desde Maximo muestran lo de Maximo y las demás "Capturó: …" (el usuario de SAP que la capturó).',
+        'Solicitudes Maximo: las PR creadas en el periodo (fecha de la PR, ISSUEDATE), una fila por PR, con el estatus de la PR (el del contrato va aparte). "Pendiente de gestionar" = aprobadas (APPR) sin OC ni contrato; "Aprobación PR" es su primera aprobación (cuando llegó a Compras).',
         'Los indicadores marcados "al día de hoy" son una foto al generar el archivo, no del periodo; por eso no tienen columna anterior.',
         'Estado por aprobador: "Retrasado" cuando su pendiente más antigua ya rebasó su promedio histórico de autorización. Ambos cuentan desde que el documento le llegó a ese aprobador (la aprobación de la etapa anterior o la creación); "Días esperando" de la hoja de autorizaciones cuenta desde la creación.',
         `Avance semanal (${avanceSemana}): los mismos KPIs que el PDF "Reporte de avance semanal" de Reportes, un bloque por sistema (Maximo y SAP, homologados, por cohorte del año).`,
@@ -609,15 +656,35 @@ export class WeeklyReportService {
         ),
       ),
     ];
+    type Montos = typeof a.ordenes.monto_por_moneda;
     for (const currency of currencies) {
-      const amount = (list: typeof a.ordenes.monto_por_moneda) =>
-        list.find((m) => m.currency === currency)?.total ?? 0;
+      const find = (list: Montos) => list.find((m) => m.currency === currency);
+      const amount = (list: Montos) => find(list)?.total ?? 0;
+      // K6: ninguna OC de la moneda con subtotal → "Sin datos", no 0
+      const subtotal = (list: Montos) => {
+        const m = find(list);
+        if (!m) return 0;
+        return (m.sin_subtotal ?? 0) >= m.count
+          ? 'Sin datos'
+          : (m.subtotal ?? 0);
+      };
       rows.push({
         indicador: `Monto de OC creadas (${currency})`,
         actual: amount(a.ordenes.monto_por_moneda),
         anterior: amount(b.ordenes.monto_por_moneda),
+        nota: `OC no canceladas, ${montoBaseNota(TABLERO_MONTO_BASE)}`,
         money: true,
       });
+      if (TABLERO_MONTO_BASE !== 'sin_iva') {
+        const sinSubtotal = find(a.ordenes.monto_por_moneda)?.sin_subtotal;
+        rows.push({
+          indicador: `Monto de OC creadas (${currency}), sin IVA`,
+          actual: subtotal(a.ordenes.monto_por_moneda),
+          anterior: subtotal(b.ordenes.monto_por_moneda),
+          nota: `Suma de las líneas, solo de las OC con subtotal${sinSubtotal ? ` · ${sinSubtotal} OC del periodo sin subtotal no suman (sin líneas o con alguna sin importe, y las propias de ABENT)` : ''}`,
+          money: true,
+        });
+      }
     }
     rows.push(
       // G2: de que se crea la RQ a que se crea la OC (OC del periodo)
@@ -655,7 +722,8 @@ export class WeeklyReportService {
         indicador: 'Pendientes de gestionar (solicitudes sin OC)',
         actual: a.solicitudes.pendientes,
         anterior: null,
-        nota: `Al día de hoy · creadas desde ${dmy(a.solicitudes.pendientes_periodo.desde)} · SAP ${a.solicitudes.por_fuente.sap.pendientes} · Maximo ${a.solicitudes.por_fuente.maximo.pendientes ?? NO_DISPONIBLE}`,
+        // K4: en Maximo, aprobadas (APPR) sin OC ni contrato, por su aprobación
+        nota: `Al día de hoy · desde ${dmy(a.solicitudes.pendientes_periodo.desde)} · SAP ${a.solicitudes.por_fuente.sap.pendientes} (sin OC) · Maximo ${a.solicitudes.por_fuente.maximo.pendientes ?? NO_DISPONIBLE} (aprobadas, APPR, sin OC ni contrato)`,
       },
     );
     for (const row of openBalance) {
@@ -663,7 +731,8 @@ export class WeeklyReportService {
         indicador: `Saldo por recibir de OC SAP abiertas (${row.currency ?? 'sin moneda'})`,
         actual: num(row.saldo),
         anterior: null,
-        nota: `Al día de hoy · ${row.count} OC abiertas`,
+        // K6.9: el saldo se queda con IVA a propósito
+        nota: `Al día de hoy · ${row.count} OC abiertas · con IVA`,
         money: true,
       });
     }
@@ -717,27 +786,28 @@ export class WeeklyReportService {
       sap && maximo ? `SAP ${pick(sap)} · Maximo ${pick(maximo)}` : undefined;
     const join = (...parts: Array<string | undefined>) =>
       parts.filter(Boolean).join(' · ') || undefined;
+    const noRecibidas = p.avance.maximo_no_recibidas;
     const rows: AvanceRow[] = [
       {
         indicador: 'Semana',
         valor: p.semana.etiqueta,
-        nota: `Datos al domingo ${p.semana.corte}`,
+        nota: `Datos al ${p.semana.corte_dia} ${p.semana.corte}`,
       },
       { indicador: 'Fuente', valor: p.fuente.etiqueta },
       {
         indicador: `Gestiones recibidas en ${anio}`,
         valor: p.avance.recibidas_anio,
-        nota: split((s) => s.recibidas_anio),
+        nota: join(
+          split((s) => s.recibidas_anio),
+          noRecibidas && p.opciones.reglas.recibida === 'aprobacion'
+            ? `${noRecibidas} ${noRecibidas === 1 ? 'PR de Maximo emitida sin aprobar va' : 'PR de Maximo emitidas sin aprobar van'} aparte`
+            : undefined,
+        ),
       },
       {
         indicador: 'Nuevas en la semana',
         valor: p.avance.nuevas_semana,
-        nota: join(
-          split((s) => s.nuevas_semana),
-          p.avance.nuevas_aproximadas > 0
-            ? `${p.avance.nuevas_aproximadas} PR de Maximo con fecha aproximada`
-            : undefined,
-        ),
+        nota: split((s) => s.nuevas_semana),
       },
       {
         indicador: `Cerradas de las recibidas en ${anio}`,
@@ -757,7 +827,7 @@ export class WeeklyReportService {
       {
         indicador: `Días de cierre ${anio} (promedio)`,
         valor: dias(p.cierre.anio.promedio_dias),
-        nota: `De la solicitud a su primera OC · mediana ${p.cierre.anio.mediana_dias ?? 'sin datos'} · sobre ${p.cierre.anio.total} cerradas con OC`,
+        nota: `${p.cierre.nota} · mediana ${p.cierre.anio.mediana_dias ?? 'sin datos'} · sobre ${p.cierre.anio.total} cerradas con OC`,
       },
       ...p.cierre.semanas.map((s) => ({
         indicador: `Días de cierre, semana ${s.etiqueta} (promedio)`,
@@ -765,82 +835,87 @@ export class WeeklyReportService {
         nota: `Mediana ${s.dias.mediana_dias ?? 'sin datos'} · ${s.cerradas} cerradas en la semana`,
       })),
     ];
-    if (!p.cancelacion.disponible || !p.cancelacion.anio) {
-      rows.push({
+    // K5: la cancelación ya trae dato en las dos fuentes
+    const cancel = p.cancelacion.anio;
+    rows.push(
+      {
         indicador: `Días de cancelación ${anio} (promedio)`,
-        valor: NO_DISPONIBLE,
-        nota: p.cancelacion.nota ?? undefined,
-      });
-    } else {
-      rows.push(
-        {
-          indicador: `Días de cancelación ${anio} (promedio)`,
-          valor: dias(p.cancelacion.anio.promedio_dias),
-          nota: join(
-            p.cancelacion.nota ?? undefined,
-            `mediana ${p.cancelacion.anio.mediana_dias ?? 'sin datos'} · sobre ${p.cancelacion.anio.total} canceladas`,
-          ),
-        },
-        ...p.cancelacion.semanas.map((s) => ({
-          indicador: `Días de cancelación, semana ${s.etiqueta} (promedio)`,
-          valor: dias(s.dias.promedio_dias),
-          nota: `Mediana ${s.dias.mediana_dias ?? 'sin datos'} · ${s.canceladas} canceladas en la semana`,
-        })),
-      );
-    }
+        valor: dias(cancel?.promedio_dias ?? null),
+        nota: join(
+          p.cancelacion.nota ?? undefined,
+          `mediana ${cancel?.mediana_dias ?? 'sin datos'} · sobre ${cancel?.total ?? 0} canceladas`,
+        ),
+      },
+      ...p.cancelacion.semanas.map((s) => ({
+        indicador: `Días de cancelación, semana ${s.etiqueta} (promedio)`,
+        valor: dias(s.dias.promedio_dias),
+        nota: `Mediana ${s.dias.mediana_dias ?? 'sin datos'} · ${s.canceladas} canceladas en la semana`,
+      })),
+    );
     const e = p.estado_anio;
-    const conSap = p.fuente.clave !== 'maximo';
-    const conMaximo = p.fuente.clave !== 'sap';
-    rows.push({
-      indicador: `Canceladas de las recibidas en ${anio}`,
-      valor: conSap ? e.canceladas : NO_DISPONIBLE,
-      nota: conMaximo
-        ? conSap
-          ? 'Solo SAP: Maximo no envía el estatus de las solicitudes'
-          : 'Maximo no envía el estatus de las PR'
-        : undefined,
-    });
-    if (conSap) {
-      rows.push({
-        indicador: `Abiertas de las recibidas en ${anio}${conMaximo ? ' (SAP)' : ''}`,
+    rows.push(
+      {
+        indicador: `Canceladas de las recibidas en ${anio}`,
+        valor: e.canceladas,
+      },
+      {
+        indicador: `Abiertas de las recibidas en ${anio}`,
         valor: e.abiertas,
-      });
-    }
-    if (conMaximo) {
-      rows.push({
-        indicador: `Sin OC de las recibidas en ${anio}${conSap ? ' (Maximo)' : ''}`,
-        valor: e.sin_oc,
-        nota: 'Maximo no envía el estatus de las PR: pueden seguir abiertas o estar canceladas',
-      });
-    }
-    rows.push({
-      indicador: `% atendidas de las recibidas en ${anio}`,
-      valor: e.atendidas_pct ?? 'Sin datos',
-      nota: 'Cerradas + canceladas entre recibidas',
-    });
+        nota: 'Recibidas sin cerrar ni cancelar al corte',
+      },
+      {
+        indicador: `% atendidas de las recibidas en ${anio}`,
+        valor: e.atendidas_pct ?? 'Sin datos',
+        nota: 'Cerradas + canceladas entre recibidas',
+      },
+    );
     for (const c of p.anual) {
       rows.push(
         { indicador: `Recibidas en ${c.anio}`, valor: c.recibidas },
         {
           indicador: `Atendidas de ${c.anio}`,
           valor: c.atendidas,
-          nota: `${c.atendidas_pct ?? 'sin datos'}% · ${c.cerradas} cerradas · ${c.canceladas} canceladas · ${c.abiertas} abiertas · ${c.sin_oc} sin OC`,
+          nota: `${c.atendidas_pct ?? 'sin datos'}% · ${c.cerradas} cerradas · ${c.canceladas} canceladas · ${c.abiertas} abiertas`,
         },
       );
     }
-    for (const moneda of p.montos.monedas) {
-      for (const mes of p.montos.meses) {
-        rows.push({
-          indicador: `Monto adjudicado ${mes.etiqueta} ${p.montos.anio} (${moneda})`,
-          valor: mes.montos[moneda] ?? 0,
-          money: true,
-        });
+    // K5: montos en la base de AVANCE_MONTO_BASE y un renglón del otro valor
+    const m = p.montos;
+    const base = montoBaseTexto(m.base);
+    const otro = montoBaseTexto(m.otro.base);
+    for (const moneda of m.monedas) {
+      if (m.total[moneda] !== undefined) {
+        for (const mes of m.meses) {
+          rows.push({
+            indicador: `Monto adjudicado ${mes.etiqueta} ${m.anio} (${moneda})`,
+            valor: mes.montos[moneda] ?? 0,
+            money: true,
+          });
+        }
       }
+      rows.push(
+        {
+          indicador: `Monto adjudicado total ${m.anio} (${moneda})`,
+          valor: m.total[moneda] ?? 'Sin datos',
+          nota: `OC no canceladas, ${base}, por mes de la OC`,
+          money: m.total[moneda] !== undefined,
+        },
+        {
+          indicador: `Monto adjudicado total ${m.anio} (${moneda}), ${otro}`,
+          valor: m.otro.total[moneda] ?? 'Sin datos',
+          nota:
+            m.otro.base === 'sin_iva'
+              ? 'El mismo total sin IVA (suma de las líneas), de las OC con subtotal'
+              : 'El mismo total con IVA, de todas las OC',
+          money: m.otro.total[moneda] !== undefined,
+        },
+      );
+    }
+    if (m.sin_subtotal.ordenes > 0) {
       rows.push({
-        indicador: `Monto adjudicado total ${p.montos.anio} (${moneda})`,
-        valor: p.montos.total[moneda] ?? 0,
-        nota: 'OC no canceladas, con IVA, por mes de la OC',
-        money: true,
+        indicador: `OC sin subtotal ${m.anio}`,
+        valor: m.sin_subtotal.ordenes,
+        nota: 'Sin líneas o con alguna sin importe: no entran a los montos sin IVA (no se estiman)',
       });
     }
     return rows;

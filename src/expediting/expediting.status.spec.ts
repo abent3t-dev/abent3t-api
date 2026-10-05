@@ -2,6 +2,10 @@ import {
   daysUntilDate,
   deriveDeliveryStatus,
   erpClosure,
+  integrationLabel,
+  integrationStatusLabel,
+  receiptLabel,
+  receiptStatusLabel,
   RISK_WINDOW_DAYS,
 } from './expediting.status';
 
@@ -128,5 +132,54 @@ describe('erpClosure (I1, 2026-09-30)', () => {
 
   it('SAP solo (sin Maximo ni recepción): sin cambio', () => {
     expect(closure({})).toBeNull();
+  });
+});
+
+describe('recepción e integración en palabras (K1/K2, 2026-10-05)', () => {
+  const sapMigrada = { source: 'sap', maximo_ponum: 'PO104896' };
+  const sapSola = { source: 'sap', maximo_ponum: null };
+
+  it('K1: Completa / Parcial / Sin recibir; sin dato = "No disponible"; "—" sin OC de Maximo', () => {
+    expect(receiptStatusLabel('COMPLETE')).toBe('Completa');
+    expect(receiptStatusLabel('partial')).toBe('Parcial');
+    expect(receiptStatusLabel('NONE')).toBe('Sin recibir');
+    expect(receiptStatusLabel(null)).toBe('No disponible');
+    expect(receiptStatusLabel('OTRO')).toBe('OTRO');
+    expect(receiptLabel({ ...sapMigrada, receipt_status: null })).toBe(
+      'No disponible',
+    );
+    expect(
+      receiptLabel({
+        source: 'maximo',
+        maximo_ponum: null,
+        receipt_status: 'COMPLETE',
+      }),
+    ).toBe('Completa');
+    expect(receiptLabel({ ...sapSola, receipt_status: null })).toBe('—');
+    expect(
+      receiptLabel({
+        source: 'abent',
+        maximo_ponum: null,
+        receipt_status: null,
+      }),
+    ).toBe('—');
+  });
+
+  it('K2: PO5 literal → Procesado / Error / Actualizar / Agregar; null = "Sin dato"; desconocido tal cual', () => {
+    expect(integrationStatusLabel('PROCESADO')).toBe('Procesado');
+    expect(integrationStatusLabel('ERROR')).toBe('Error');
+    expect(integrationStatusLabel('ACTUALIZAR')).toBe('Actualizar');
+    expect(integrationStatusLabel('AGREGAR')).toBe('Agregar');
+    expect(integrationStatusLabel(null)).toBe('Sin dato');
+    expect(integrationStatusLabel('PENDIENTE X')).toBe('PENDIENTE X');
+    expect(
+      integrationLabel({ ...sapMigrada, integration_status: 'PROCESADO' }),
+    ).toBe('Procesado');
+    expect(integrationLabel({ ...sapMigrada, integration_status: null })).toBe(
+      'Sin dato',
+    );
+    expect(integrationLabel({ ...sapSola, integration_status: null })).toBe(
+      '—',
+    );
   });
 });

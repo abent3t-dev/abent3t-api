@@ -12,10 +12,24 @@
  *
  * 2026-09-28: (6) G2 — una definición de gestión por sistema (SAP D3 y
  * Maximo OC − PR.ISSUEDATE) con mediana; (7) G3 — pendientes = RQ sin OC.
+ *
+ * K4 (2026-10-05): sin folio. Maximo: solicitudes por PR y por ISSUEDATE
+ * con "N llegaron a Compras"; pendientes = APPR sin OC ni contrato (WAPPR
+ * aparte); G2 con la fecha de la PR de AB_CONTRATOS como respaldo y el dato
+ * desde la aprobación.
+ *
+ * K6 (2026-10-05): Órdenes en la base de TABLERO_MONTO_BASE con el
+ * subtotal sin IVA y las OC sin él por moneda (mergeAmounts los suma; las
+ * propias de ABENT van a sin_subtotal); "por recibir" sin cambio;
+ * CAPEX/OPEX suma el subtotal de Maximo (antes TOTALCOST, con IVA).
  */
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { PurchaseDashboardService } from './purchase-dashboard.service';
+import { TABLERO_MONTO_BASE } from '../common/sql/erp-views.sql';
+import {
+  mergeAmounts,
+  PurchaseDashboardService,
+} from './purchase-dashboard.service';
 
 function makeService(sapEnabled: boolean | string = true) {
   const queryRaw = jest.fn();
@@ -37,40 +51,65 @@ describe('PurchaseDashboardService.getSummary', () => {
   it('agrega SAP + Maximo + ABENT, montos por moneda, migradas descontadas y días D3', async () => {
     const { service, queryRaw } = makeService();
     queryRaw
-      // G3: ventana de folios de las PR de Maximo (últimos 12 meses)
-      .mockResolvedValueOnce([{ lower: BigInt(104000), upper: null }])
       // G3: SAP sin OC (12 meses / sin límite)
       .mockResolvedValueOnce([{ pendientes: 5, sin_limite: 9 }])
-      // G3: Maximo PR sin OC ni contrato (12 meses / sin límite)
-      // I8: PR de contrato sin OC, aparte
+      // K4: Maximo APPR sin OC ni contrato (12 meses / sin límite); I8: de
+      // contrato; con OC (dato) y WAPPR aparte
       .mockResolvedValueOnce([
         {
           pendientes: 2,
           sin_limite: 40,
           de_contrato: 3,
-          de_contrato_sin_limite: 83,
+          de_contrato_sin_limite: 4,
+          aprobadas_con_oc: 1,
+          aprobadas_con_oc_sin_limite: 1,
+          en_aprobacion: 7,
+          en_aprobacion_sin_limite: 26,
+          con_estatus: 5197,
         },
       ])
       // sapPr total
       .mockResolvedValueOnce([{ total: 309 }])
-      // sapPo por moneda (la consulta ya excluye las migradas que existen en Maximo)
+      // sapPo por moneda (la consulta ya excluye las migradas que existen en
+      // Maximo); K6: con el subtotal sin IVA y las OC sin él
       .mockResolvedValueOnce([
-        { currency: 'MXN', total: '1000.50', count: 3000 },
-        { currency: 'USD', total: '20', count: 5 },
+        {
+          currency: 'MXN',
+          total: '1000.50',
+          subtotal: '862.50',
+          sin_subtotal: 0,
+          count: 3000,
+        },
+        {
+          currency: 'USD',
+          total: '20',
+          subtotal: 0,
+          sin_subtotal: 5,
+          count: 5,
+        },
       ])
       // sapPoOpen
       .mockResolvedValueOnce([{ currency: 'MXN', total: '100', count: 750 }])
-      // maximoPr total
-      .mockResolvedValueOnce([{ total: 6 }])
-      // G2: días de gestión Maximo (OC − PR.ISSUEDATE); null = OC sin PR
+      // K4.3: maximoPr = PR distintas por ISSUEDATE; llegaron a Compras
+      .mockResolvedValueOnce([{ total: 6, llegaron: 4 }])
+      // G2: días de gestión Maximo (OC − creación de su PR); null = OC sin PR.
+      // K4.3: y desde la aprobación (primer APPR)
       .mockResolvedValueOnce([
-        { dias: '19' },
-        { dias: '21' },
-        { dias: null },
-        { dias: '-2' },
+        { dias: '19', dias_desde_aprobacion: '15' },
+        { dias: '21', dias_desde_aprobacion: null },
+        { dias: null, dias_desde_aprobacion: null },
+        { dias: '-2', dias_desde_aprobacion: '-3' },
       ])
-      // maximoPo
-      .mockResolvedValueOnce([{ currency: 'MXN', total: '50', count: 7 }])
+      // maximoPo (K6: 2 de las 7 sin subtotal)
+      .mockResolvedValueOnce([
+        {
+          currency: 'MXN',
+          total: '50',
+          subtotal: '30',
+          sin_subtotal: 2,
+          count: 7,
+        },
+      ])
       // maximoPoOpen
       .mockResolvedValueOnce([{ currency: 'MXN', total: '10', count: 2 }])
       // abentRq
@@ -122,10 +161,15 @@ describe('PurchaseDashboardService.getSummary', () => {
         sap: { total: 309, pendientes: 5, pendientes_sin_limite: 9 },
         maximo: {
           total: 6,
+          llegaron_a_compras: 4,
           pendientes: 2,
           pendientes_sin_limite: 40,
           de_contrato: 3,
-          de_contrato_sin_limite: 83,
+          de_contrato_sin_limite: 4,
+          aprobadas_con_oc: 1,
+          aprobadas_con_oc_sin_limite: 1,
+          en_aprobacion: 7,
+          en_aprobacion_sin_limite: 26,
         },
         abent: { total: 0, pendientes: 0 },
       },
@@ -134,18 +178,28 @@ describe('PurchaseDashboardService.getSummary', () => {
         hasta: null,
       },
     });
-    // Misma moneda se suma entre fuentes; USD queda aparte; ABENT vacío no aparece
+    // Misma moneda se suma entre fuentes; USD queda aparte; ABENT vacío no
+    // aparece. K6: el subtotal y las OC sin él también se suman por moneda
     expect(summary.ordenes.total).toBe(3012);
     expect(summary.ordenes.monto_por_moneda).toEqual([
-      { currency: 'MXN', total: 1050.5, count: 3007 },
-      { currency: 'USD', total: 20, count: 5 },
+      {
+        currency: 'MXN',
+        total: 1050.5,
+        count: 3007,
+        subtotal: 892.5,
+        sin_subtotal: 2,
+      },
+      { currency: 'USD', total: 20, count: 5, subtotal: 0, sin_subtotal: 5 },
     ]);
+    expect(summary.ordenes.monto_base).toBe(TABLERO_MONTO_BASE);
     // D1: desglose de migradas visible (descontadas = las que existen en Maximo)
     expect(summary.ordenes.migradas).toEqual({ total: 1597, en_maximo: 1500 });
+    // K6: "por recibir" sin cambio (con IVA, sin subtotal)
     expect(summary.por_recibir.total).toBe(752);
     expect(summary.por_recibir.monto_por_moneda).toEqual([
       { currency: 'MXN', total: 110, count: 752 },
     ]);
+    expect(summary.por_recibir.monto_base).toBe('con_iva');
     // G2: una definición por sistema (RQ → OC) con promedio, mediana y N.
     // D3: SAP OC = (10 + 20) / 2 = 15 días, N = 2
     expect(summary.dias_gestion.sap).toMatchObject({
@@ -162,11 +216,23 @@ describe('PurchaseDashboardService.getSummary', () => {
       descartadas: 1,
       sin_solicitud: 1,
     });
+    // K4.3: el respaldo de la fecha de la PR va en la definición
+    expect(summary.dias_gestion.maximo.definicion).toContain('AB_CONTRATOS');
+    // K4.3: dato secundario desde la aprobación (15 días; sin APPR, fuera)
+    expect(summary.dias_gestion.maximo_desde_aprobacion).toMatchObject({
+      promedio_dias: 15,
+      mediana_dias: 15,
+      total: 1,
+      descartadas: 1,
+      sin_solicitud: 2,
+    });
     expect(summary.dias_gestion.abent).toBeNull();
-    // Ya no salen "SAP solicitudes" ni el tiempo de aprobación de Maximo
+    // Ya no salen "SAP solicitudes" ni el tiempo de aprobación de las OC de
+    // Maximo; K4.3 agrega el dato desde la aprobación de la PR
     expect(Object.keys(summary.dias_gestion).sort()).toEqual([
       'abent',
       'maximo',
+      'maximo_desde_aprobacion',
       'sap',
     ]);
     expect(summary.datos.sap_desde).toBe('2023-12-31T00:00:00.000Z');
@@ -176,7 +242,8 @@ describe('PurchaseDashboardService.getSummary', () => {
       sap_sync_enabled: true,
       maximo_sync_enabled: false,
     });
-    expect(queryRaw).toHaveBeenCalledTimes(19);
+    // K4: sin la ventana de folios (antes 19)
+    expect(queryRaw).toHaveBeenCalledTimes(18);
   });
 
   it('D1: la consulta de OC de SAP descuenta las migradas que existen en Maximo', async () => {
@@ -184,19 +251,76 @@ describe('PurchaseDashboardService.getSummary', () => {
     queryRaw.mockResolvedValue([]);
     await service.getSummary(2025);
     const calls = queryRaw.mock.calls as unknown as Array<
-      [{ strings?: string[] } | string]
+      [{ sql: string; values: unknown[] }]
     >;
-    const sqlTexts = calls.map(([first]) =>
-      typeof first === 'string' ? first : (first.strings?.join('?') ?? ''),
-    );
+    const sqlTexts = calls.map(([q]) => q.sql.replace(/\s+/g, ' '));
+    // K6: el monto de Órdenes ya no es `sum(doc_total)` fijo (va en la base
+    // del tablero): se ubican por moneda (Órdenes y por recibir)
     const sapPoQueries = sqlTexts.filter(
       (t) =>
-        t.includes('FROM sap_purchase_orders') && t.includes('sum(doc_total)'),
+        t.includes('FROM sap_purchase_orders') &&
+        t.includes('GROUP BY currency'),
     );
     expect(sapPoQueries.length).toBe(2);
     for (const q of sapPoQueries) {
       expect(q).toContain('maximo_ponum IS NOT NULL AND EXISTS');
       expect(q).toContain('doc_date >=');
+    }
+  });
+
+  it('K6: Órdenes en la base del tablero con subtotal y OC sin él; por recibir sin cambio; ABENT a sin_subtotal', async () => {
+    const { service, queryRaw } = makeService();
+    // abentPo: 2 OC propias, base desconocida; lo demás vacío
+    queryRaw.mockImplementation((q: { sql: string }) =>
+      Promise.resolve(
+        q.sql.includes(
+          'FROM purchase_orders WHERE is_active = true AND status <>',
+        )
+          ? [{ currency: 'MXN', total: '300', count: 2 }]
+          : [],
+      ),
+    );
+    const summary = await service.getSummary(2026);
+    expect(summary.ordenes.por_fuente.abent.monto_por_moneda).toEqual([
+      { currency: 'MXN', total: 300, count: 2, subtotal: 0, sin_subtotal: 2 },
+    ]);
+    expect(summary.ordenes.monto_por_moneda).toEqual([
+      { currency: 'MXN', total: 300, count: 2, subtotal: 0, sin_subtotal: 2 },
+    ]);
+    expect(summary.ordenes.monto_nota).toContain('IVA');
+
+    const texts = (
+      queryRaw.mock.calls as unknown as Array<[{ sql: string }]>
+    ).map(([q]) => q.sql.replace(/\s+/g, ' '));
+    const sapMonto =
+      TABLERO_MONTO_BASE === 'sin_iva'
+        ? 'sum(sap_purchase_orders.subtotal), 0) AS total'
+        : 'sum(sap_purchase_orders.doc_total), 0) AS total';
+    const maximoMonto =
+      TABLERO_MONTO_BASE === 'sin_iva'
+        ? 'sum(c.subtotal), 0) AS total'
+        : 'sum(c.total_cost), 0) AS total';
+    const sapOrdenes = texts.filter((t) => t.includes(sapMonto));
+    expect(sapOrdenes).toHaveLength(1);
+    expect(sapOrdenes[0]).toContain(
+      'count(*) FILTER (WHERE sap_purchase_orders.subtotal IS NULL)::int AS sin_subtotal',
+    );
+    const maximoOrdenes = texts.filter((t) => t.includes(maximoMonto));
+    expect(maximoOrdenes).toHaveLength(1);
+    expect(maximoOrdenes[0]).toContain(
+      'coalesce(sum(c.subtotal), 0) AS subtotal',
+    );
+    // por recibir: las mismas consultas de antes, con IVA y sin subtotal
+    const abiertas = texts.filter(
+      (t) =>
+        t.includes('GROUP BY currency') &&
+        (t.includes("document_status = 'bost_Open'") ||
+          t.includes("status IN ('APPR', 'INPRG')")),
+    );
+    expect(abiertas).toHaveLength(2);
+    for (const t of abiertas) {
+      expect(t).toMatch(/sum\((doc_total|total_cost)\)/);
+      expect(t).not.toContain('subtotal');
     }
   });
 
@@ -221,6 +345,42 @@ describe('PurchaseDashboardService.getSummary', () => {
     expect(years).not.toContain('created_at_source FROM maximo_contracts');
   });
 
+  it('K4.3: solicitudes de Maximo = PR distintas por ISSUEDATE (vista por PR); G2 con la fecha de la PR de respaldo; sin folio', async () => {
+    const { service, queryRaw } = makeService();
+    queryRaw.mockResolvedValue([]);
+    await service.getSummary(2026);
+    const calls = queryRaw.mock.calls as unknown as Array<
+      [{ sql: string; values: unknown[] }]
+    >;
+    const queries = calls.map(([q]) => ({
+      text: q.sql.replace(/\s+/g, ' '),
+      values: q.values,
+    }));
+    const yearFrom = new Date(Date.UTC(2026, 0, 1));
+    // ya no hay ventana de folios en ninguna consulta
+    expect(queries.some((q) => q.text.includes('regexp_replace'))).toBe(false);
+
+    const prs = queries.filter((q) => q.text.includes('AS llegaron'));
+    expect(prs).toHaveLength(1);
+    expect(prs[0].text).toContain('count(DISTINCT p.prnum)::int AS total');
+    expect(prs[0].text).toContain('DISTINCT ON (prnum)');
+    expect(prs[0].text).toContain('superseded_at IS NULL');
+    expect(prs[0].text).toContain(
+      'AND p.pr_issue_date >= ? AND p.pr_issue_date < ?',
+    );
+    expect(prs[0].text).toContain('p.pr_approved_at IS NOT NULL');
+    expect(prs[0].values).toContainEqual(yearFrom);
+
+    const gestion = queries.filter((q) =>
+      q.text.includes('dias_desde_aprobacion'),
+    );
+    expect(gestion).toHaveLength(1);
+    expect(gestion[0].text).toContain('coalesce(oc.pr_issue_date, f.emision)');
+    expect(gestion[0].text).toContain('unnest(oc.pr_nums)');
+    expect(gestion[0].text).toContain('v.created_at_source >= ?');
+    expect(gestion[0].values).toContainEqual(yearFrom);
+  });
+
   it('acepta la bandera de sync como string (sin Joi en tests)', async () => {
     const { service, queryRaw } = makeService('true');
     queryRaw.mockResolvedValue([]);
@@ -229,8 +389,14 @@ describe('PurchaseDashboardService.getSummary', () => {
     expect(summary.solicitudes.total).toBe(0);
     expect(summary.ordenes.monto_por_moneda).toEqual([]);
     expect(summary.dias_gestion.sap.promedio_dias).toBeNull();
-    // sin fechas de PR conocidas, los pendientes de Maximo no se inventan
-    expect(summary.solicitudes.por_fuente.maximo.pendientes).toBeNull();
+    // sin estatus de PR (antes del primer full), los pendientes de Maximo
+    // no se inventan (K4: tampoco las que llegaron ni las en aprobación)
+    expect(summary.solicitudes.por_fuente.maximo).toMatchObject({
+      pendientes: null,
+      llegaron_a_compras: null,
+      en_aprobacion: null,
+      de_contrato: null,
+    });
   });
 });
 
@@ -245,7 +411,14 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
         { clas: 'CAPEX', currency: 'USD', docs: 1, total: '99' },
       ])
       .mockResolvedValueOnce([
-        { clas: 'OPEX', currency: 'MXN', docs: 3, total: '100' },
+        // K6: subtotal sin IVA; 1 de las 3 sin subtotal (no suma)
+        {
+          clas: 'OPEX',
+          currency: 'MXN',
+          docs: 3,
+          total: '100',
+          sin_subtotal: 1,
+        },
       ]);
     const kpis = await service.getOrdersKpis(null);
     expect(kpis.ahorro.disponible).toBe(false);
@@ -258,5 +431,67 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
     expect(kpis.clasificacion.capex.por_fuente.sap.por_moneda).toEqual([
       { currency: 'USD', total: 99, count: 1 },
     ]);
+    // K6: las OC sin subtotal se cuentan aparte y la nota lo dice
+    expect(kpis.clasificacion.opex.sin_subtotal).toBe(1);
+    expect(kpis.clasificacion.opex.por_fuente.maximo.sin_subtotal).toBe(1);
+    expect(kpis.clasificacion.capex.sin_subtotal).toBe(0);
+    expect(kpis.clasificacion.nota).toContain(
+      '1 OC clasificada no tiene subtotal',
+    );
+    expect(kpis.clasificacion.nota).toContain('sin IVA');
+  });
+
+  it('K6: CAPEX/OPEX de Maximo suma el subtotal (no TOTALCOST): misma base que SAP; sin "no lo expone"', async () => {
+    const { service, queryRaw } = makeService();
+    queryRaw.mockResolvedValue([]);
+    const kpis = await service.getOrdersKpis(2026);
+    const texts = (
+      queryRaw.mock.calls as unknown as Array<[{ sql: string }]>
+    ).map(([q]) => q.sql.replace(/\s+/g, ' '));
+    const maximoClas = texts.find((t) => t.includes('upper(ab_clasfpo)'));
+    expect(maximoClas).toContain('coalesce(sum(current.subtotal), 0) AS total');
+    expect(maximoClas).toContain(
+      'count(*) FILTER (WHERE subtotal IS NULL)::int AS sin_subtotal',
+    );
+    expect(maximoClas).not.toContain('total_cost');
+    // SAP: importe de la línea (sin IVA), como antes
+    const sapClas = texts.find((t) => t.includes("line->>'U_Clas_gts'"));
+    expect(sapClas).toContain("line->>'LineTotal'");
+    expect(sapClas).not.toContain('doc_total');
+    // las notas ya no dicen que la Object Structure no lo expone
+    expect(kpis.ahorro.nota).not.toMatch(/no lo expone|aún no expone/);
+    expect(kpis.clasificacion.nota).not.toContain('pendiente CIISA');
+    expect(kpis.clasificacion.nota).toContain(
+      '0 OC clasificadas no tienen subtotal',
+    );
+  });
+});
+
+describe('mergeAmounts (K6)', () => {
+  it('suma por moneda el total, el subtotal y las OC sin subtotal; monedas distintas aparte', () => {
+    const sap = [
+      { currency: 'MXN', total: 116, count: 2, subtotal: 100, sin_subtotal: 0 },
+      { currency: 'USD', total: 58, count: 1, subtotal: 50, sin_subtotal: 0 },
+    ];
+    const maximo = [
+      { currency: 'MXN', total: 232, count: 3, subtotal: 100, sin_subtotal: 1 },
+    ];
+    // ABENT: base desconocida, todas a sin_subtotal
+    const abent = [
+      { currency: 'MXN', total: 10, count: 2, subtotal: 0, sin_subtotal: 2 },
+    ];
+    expect(mergeAmounts([sap, maximo, abent])).toEqual([
+      { currency: 'MXN', total: 358, count: 7, subtotal: 200, sin_subtotal: 3 },
+      { currency: 'USD', total: 58, count: 1, subtotal: 50, sin_subtotal: 0 },
+    ]);
+  });
+
+  it('sin subtotal en las filas (por recibir, ahorro) no inventa los campos', () => {
+    expect(
+      mergeAmounts([
+        [{ currency: 'MXN', total: 1, count: 1 }],
+        [{ currency: 'MXN', total: 2, count: 1 }],
+      ]),
+    ).toEqual([{ currency: 'MXN', total: 3, count: 2 }]);
   });
 });

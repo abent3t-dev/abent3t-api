@@ -1,6 +1,8 @@
 import type { ColumnDefs } from '../common/column-filters/column-filters';
 import {
   ERP_CLOSED_BY_LABELS,
+  integrationLabel,
+  receiptLabel,
   type DerivedDeliveryStatus,
   type ErpClosedBy,
 } from './expediting.status';
@@ -15,6 +17,9 @@ export { buyerLabel };
  *
  * I1/I2 (2026-09-30): "PO Maximo" y "OC SAP" en columnas propias, y el
  * cierre en el otro sistema ("Cerrada en Maximo", "Cancelada en SAP", …).
+ *
+ * K1/K2 (2026-10-05): "Recepción" (RECEIPTS de Maximo) e "Integración SAP"
+ * (PO5), las dos con "—" en ABENT y en la OC de SAP sola.
  */
 
 /** Forma mínima de una fila de expeditación que leen las columnas. */
@@ -26,6 +31,10 @@ export interface ExpeditingColumnRow {
   po_maximo: string | null;
   oc_sap: string | null;
   closed_by: ErpClosedBy | null;
+  /** K1: recepción de Maximo (RECEIPTS); null = sin dato. */
+  receipt_status: string | null;
+  /** K2: PO5 de Maximo, literal; null = sin dato. */
+  integration_status: string | null;
   supplier: { legal_name: string } | null;
   buyer_name: string | null;
   buyer_kind: BuyerKind;
@@ -64,6 +73,7 @@ export function expeditingClosedBy(row: {
 export const EXPEDITING_FILTER_COLUMNS: ColumnDefs<ExpeditingColumnRow> = {
   po: { type: 'text', value: (r) => r.po_number },
   po_maximo: { type: 'text', value: (r) => r.po_maximo },
+  integracion: { type: 'text', value: integrationLabel },
   oc_sap: {
     type: 'text',
     // ABENT: su propio número va en la columna de la OC
@@ -76,6 +86,7 @@ export const EXPEDITING_FILTER_COLUMNS: ColumnDefs<ExpeditingColumnRow> = {
   dias: { type: 'number', value: expeditingDays },
   estatus: { type: 'text', value: (r) => r.delivery_status },
   cierre: { type: 'text', value: expeditingClosedBy },
+  recepcion: { type: 'text', value: receiptLabel },
   alertas: {
     type: 'number',
     value: (r) => (r.purchase_order_id ? (r.tracking?.alert_count ?? 0) : null),

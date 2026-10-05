@@ -15,7 +15,9 @@ import { Prisma } from '@prisma/client';
  * Bloque K (2026-10-05): las vistas de Maximo viven SOLO aquí (se borraron
  * las copias de maximo-records, purchase-reports y expeditación). Las de
  * contratos excluyen las revisiones obsoletas (`superseded_at`, K8) y hay
- * una vista por PR (`CURRENT_MAXIMO_PRS`, K3).
+ * una vista por PR (`CURRENT_MAXIMO_PRS`, K3). K4: las definiciones por PR
+ * (pendiente, de contrato, en aprobación, llegada a Compras) y la consulta
+ * de G2 de Maximo también viven aquí; el folio ya no ubica a las PR.
  */
 
 export const CURRENT_MAXIMO_POS = Prisma.sql`
@@ -51,6 +53,62 @@ export const CURRENT_MAXIMO_PRS = Prisma.sql`
   WHERE prnum IS NOT NULL AND superseded_at IS NULL
   ORDER BY prnum, has_contract DESC, coalesce(revisionnum, 0) DESC, last_seen_at DESC`;
 
+/*
+ * K6 (2026-10-05) — Dos bases de montos de OC:
+ *  - con IVA: `doc_total` (DocTotal) en SAP y `total_cost` (TOTALCOST) en
+ *    Maximo;
+ *  - sin IVA: `subtotal` (0019) = suma de las líneas en la moneda del
+ *    documento (LineTotal/RowTotalFC en SAP, POLINE.LINECOST en Maximo).
+ *    null si la OC no tiene líneas o a alguna le falta importe: esas OC no
+ *    suman a la base sin IVA y se cuentan aparte (`sin_subtotal`); nunca se
+ *    estiman con TOTALCOST/1.16 ni con PRETAXTOTAL.
+ * El tablero, Reportes y el Top 10 usan `TABLERO_MONTO_BASE`; el avance
+ * semanal tiene su propia constante (AVANCE_MONTO_BASE, K5). Las
+ * solicitudes de SAP ya son sin IVA (suma de sus líneas) y no cambian.
+ */
+
+/** K6: base de un monto de OC. */
+export type MontoBase = 'con_iva' | 'sin_iva';
+
+/**
+ * K6: base del tablero, Reportes y el Top 10, hasta que conteste Ingrid
+ * ("¿montos sin IVA también en el tablero?"). Si cambia, se cambia aquí y
+ * nada más; el subtotal sin IVA ya viaja como dato secundario.
+ */
+export const TABLERO_MONTO_BASE: MontoBase = 'con_iva';
+
+/** K6: columna del monto de una OC de SAP (`alias`) en la base pedida. */
+export function sapPoMonto(alias: string, base: MontoBase): Prisma.Sql {
+  return Prisma.raw(
+    `${alias}.${base === 'sin_iva' ? 'subtotal' : 'doc_total'}`,
+  );
+}
+
+/** K6: columna del monto de una OC de Maximo (`alias`) en la base pedida. */
+export function maximoPoMonto(alias: string, base: MontoBase): Prisma.Sql {
+  return Prisma.raw(
+    `${alias}.${base === 'sin_iva' ? 'subtotal' : 'total_cost'}`,
+  );
+}
+
+/**
+ * K6: columnas `subtotal` (suma sin IVA de las OC que lo tienen) y
+ * `sin_subtotal` (cuántas no) para un SELECT agrupado sobre OC de SAP o de
+ * Maximo (las dos tablas llaman igual a la columna).
+ */
+export function poSubtotalColumns(alias: string): Prisma.Sql {
+  const col = Prisma.raw(`${alias}.subtotal`);
+  return Prisma.sql`coalesce(sum(${col}), 0) AS subtotal,
+    count(*) FILTER (WHERE ${col} IS NULL)::int AS sin_subtotal`;
+}
+
+/** K6: texto de la base para notas y tooltips (reemplaza los "con IVA" fijos). */
+export function montoBaseNota(base: MontoBase): string {
+  return base === 'sin_iva'
+    ? 'sin IVA (suma de las líneas; las OC sin subtotal no suman)'
+    : 'con IVA (DocTotal de SAP, TOTALCOST de Maximo)';
+}
+
 /**
  * Condición "la OC de SAP está duplicada en Maximo" para una tabla/alias
  * `sap_purchase_orders` referida como `alias`. Úsala negada para contar una
@@ -80,16 +138,17 @@ export function andYear(column: string, year: number | null | undefined) {
 }
 
 /**
- * G2/G3 (2026-09-28): folio numérico de una PR de Maximo (PR104531 → 104531).
- * Maximo numera las PR en orden; el folio ubicaba en el tiempo a las PR sin
- * fecha conocida. Desde el 2-oct AB_CONTRATOS trae ISSUEDATE, STATUSDATE y
- * el historial PRSTATUS en la raíz de la PR (K3: `pr_issue_date`,
- * `pr_approved_at`… en `maximo_contracts`), así que la fecha real de la PR
- * reemplaza a esta aproximación (K4).
+ * `AND` de una expresión de fecha dentro de [from, toExcl); cada límite null
+ * queda abierto (los dos null → nada).
  */
-export function maximoPrFolio(column: string): Prisma.Sql {
-  const col = Prisma.raw(column);
-  return Prisma.sql`NULLIF(regexp_replace(${col}, '[^0-9]', '', 'g'), '')::bigint`;
+export function andBetween(
+  expr: Prisma.Sql,
+  from: Date | null,
+  toExcl: Date | null,
+): Prisma.Sql {
+  const desde = from ? Prisma.sql`AND ${expr} >= ${from}` : Prisma.empty;
+  const hasta = toExcl ? Prisma.sql`AND ${expr} < ${toExcl}` : Prisma.empty;
+  return Prisma.sql`${desde} ${hasta}`;
 }
 
 /** PRNUM que ya tienen OC: las de las OC vigentes no canceladas (G3). */
@@ -98,74 +157,105 @@ export const MAXIMO_PRS_WITH_PO = Prisma.sql`
   FROM (${CURRENT_MAXIMO_POS}) p
   WHERE coalesce(p.status, '') NOT IN ('CAN', 'CANCEL')`;
 
-/**
- * G3: condición "la PR (fila de maximo_contracts `alias`) está pendiente de
- * gestionar" = sin contrato y sin OC vigente que la use. Úsala con AND.
+/*
+ * K4 (2026-10-05) — Definiciones por PR de Maximo, sobre el alias de
+ * `CURRENT_MAXIMO_PRS` (una fila por PR, sin obsoletas; `de_contrato` solo
+ * existe ahí). Miran el estatus DE LA PR (`pr_status`, raíz de
+ * AB_CONTRATOS, K3), no el del contrato: un contrato en APPR con la PR en
+ * CLOSE no es pendiente. Antes (G3) pendiente = fila sin contrato y sin OC,
+ * sin mirar el estatus: entraban las CAN y CLOSE sin OC (≈1,250 contra ≤45
+ * APPR) y se contaban filas, no PR.
+ *
+ *  - pendiente de gestionar = aprobada (APPR: ya llegó a Compras), sin
+ *    contrato y sin OC vigente que la use;
+ *  - I8 "de contrato" = lo mismo con contrato (la OC se genera en
+ *    automático, Ingrid); va aparte;
+ *  - aprobada con OC = APPR con OC vigente, con o sin contrato (solo dato).
+ *    Las tres juntas son todas las APPR;
+ *  - en aprobación = WAPPR: todavía no llega a Compras; va aparte, sin
+ *    sumarse (no confundir con `maximoInApproval`, que es de OC).
  */
-export function maximoPrWithoutPo(alias: string): Prisma.Sql {
+
+/** K4: PR aprobada (APPR) sin contrato ni OC vigente = pendiente de gestionar. */
+export function maximoPrPending(alias: string): Prisma.Sql {
   const a = Prisma.raw(alias);
-  return Prisma.sql`(${a}.prnum IS NOT NULL AND ${a}.has_contract = false
+  return Prisma.sql`(${a}.pr_status = 'APPR' AND NOT ${a}.de_contrato
     AND ${a}.prnum NOT IN (${MAXIMO_PRS_WITH_PO}))`;
 }
 
-/**
- * I8 (go-live 2026-09-30): PR DE CONTRATO sin OC vigente. No son carga de
- * Compras: la OC se genera en automático (Ingrid); se muestran aparte.
- */
-export function maximoContractPrWithoutPo(alias: string): Prisma.Sql {
+/** K4/I8: PR de contrato aprobada (APPR) sin OC vigente. */
+export function maximoContractPrPending(alias: string): Prisma.Sql {
   const a = Prisma.raw(alias);
-  return Prisma.sql`(${a}.prnum IS NOT NULL AND ${a}.has_contract = true
+  return Prisma.sql`(${a}.pr_status = 'APPR' AND ${a}.de_contrato
     AND ${a}.prnum NOT IN (${MAXIMO_PRS_WITH_PO}))`;
 }
 
-/** Ventana de folios [lower, upper) de las PR de Maximo creadas en un periodo. */
-export interface MaximoPrFolioWindow {
-  lower: bigint | null;
-  upper: bigint | null;
+/** K4: PR aprobada (APPR) que ya tiene OC vigente, con o sin contrato. */
+export function maximoPrApprovedWithPo(alias: string): Prisma.Sql {
+  const a = Prisma.raw(alias);
+  return Prisma.sql`(${a}.pr_status = 'APPR'
+    AND ${a}.prnum IN (${MAXIMO_PRS_WITH_PO}))`;
+}
+
+/** K4: PR en aprobación (WAPPR); se ubica por su emisión (`pr_issue_date`). */
+export function maximoPrInApproval(alias: string): Prisma.Sql {
+  const a = Prisma.raw(alias);
+  return Prisma.sql`(${a}.pr_status = 'WAPPR')`;
 }
 
 /**
- * G3: límites de folio para [from, toExcl). Fechas conocidas = ISSUEDATE de
- * la PR más antigua de cada OC con su folio menor. `lower` = primer folio
- * conocido desde `from` (o el siguiente al último anterior); `upper` =
- * primer folio conocido desde `toExcl` (null = abierto: las PR más nuevas
- * todavía no tienen OC y sí cuentan). `lower` null = sin fechas conocidas.
+ * K4: llegada a Compras de la PR = su primer APPR (`pr_approved_at`); sin
+ * APPR en el historial, su emisión. FIJA para tablero, Reportes y listados:
+ * no lee `AVANCE_REGLAS` (si el default del avance cambia tras la
+ * conciliación, los pendientes no se mueven) y erp-views no importa nada de
+ * purchase-reports.
  */
-export async function loadMaximoPrFolioWindow(
-  prisma: { $queryRaw: <T>(query: Prisma.Sql) => Prisma.PrismaPromise<T> },
-  from: Date,
+export function maximoPrLlegada(alias: string): Prisma.Sql {
+  const a = Prisma.raw(alias);
+  return Prisma.sql`coalesce(${a}.pr_approved_at, ${a}.pr_issue_date)`;
+}
+
+/** Fila de `maximoGestionSql`: días por OC; null = sin la fecha de su PR. */
+export interface MaximoGestionRow {
+  dias: unknown;
+  dias_desde_aprobacion: unknown;
+}
+
+/**
+ * G2 de Maximo (K4.3, 2026-10-05), una fila por OC vigente no cancelada con
+ * fecha (`created_at_source`) en [from, toExcl) (sin límites = todas):
+ *  - `dias` = fecha de la OC − creación de su solicitud (definición de
+ *    Ingrid del 28-sep): `pr_issue_date` de la OC (ISSUEDATE de la PR de su
+ *    línea, 0016) y, si la línea no la trae, la más antigua de sus PR
+ *    (`pr_nums`) en `CURRENT_MAXIMO_PRS` (ISSUEDATE de AB_CONTRATOS, K3).
+ *    Misma definición; solo sube la N;
+ *  - `dias_desde_aprobacion` = fecha de la OC − el primer APPR más antiguo
+ *    de sus PR (llegada a Compras), dato secundario.
+ * Un solo lugar para el tablero y Reportes.
+ */
+export function maximoGestionSql(
+  from: Date | null,
   toExcl: Date | null,
-): Promise<MaximoPrFolioWindow> {
-  const rows = await prisma.$queryRaw<
-    Array<{ lower: bigint | null; upper: bigint | null }>
-  >(Prisma.sql`
-    WITH known AS (
-      SELECT p.pr_issue_date AS d, min(${maximoPrFolio('f.prnum')}) AS folio
-      FROM (${CURRENT_MAXIMO_POS}) p, unnest(p.pr_nums) AS f(prnum)
-      WHERE p.pr_issue_date IS NOT NULL
-      GROUP BY p.ponum, coalesce(p.siteid, ''), p.pr_issue_date
-    )
-    SELECT coalesce(
-             (SELECT min(folio) FROM known WHERE d >= ${from}),
-             (SELECT max(folio) + 1 FROM known WHERE d < ${from})
-           ) AS lower,
-           CASE WHEN ${toExcl}::timestamptz IS NULL THEN NULL
-                ELSE (SELECT min(folio) FROM known WHERE d >= ${toExcl}::timestamptz)
-           END AS upper`);
-  return { lower: rows[0]?.lower ?? null, upper: rows[0]?.upper ?? null };
-}
-
-/** `AND` del folio de `alias.prnum` dentro de la ventana (sin ventana → nada). */
-export function andMaximoPrInWindow(
-  alias: string,
-  window: MaximoPrFolioWindow | null,
 ): Prisma.Sql {
-  if (!window) return Prisma.empty;
-  if (window.lower === null) return Prisma.sql`AND false`;
-  const folio = maximoPrFolio(`${alias}.prnum`);
-  return window.upper === null
-    ? Prisma.sql`AND ${folio} >= ${window.lower}`
-    : Prisma.sql`AND ${folio} >= ${window.lower} AND ${folio} < ${window.upper}`;
+  return Prisma.sql`
+    WITH oc AS (
+      SELECT v.* FROM (${CURRENT_MAXIMO_POS}) v
+      WHERE coalesce(v.status, '') NOT IN ('CAN', 'CANCEL')
+        ${andBetween(Prisma.sql`v.created_at_source`, from, toExcl)}
+    ),
+    fechas AS (
+      SELECT oc.id, min(p.pr_issue_date) AS emision,
+             min(p.pr_approved_at) AS aprobacion
+      FROM oc
+      CROSS JOIN LATERAL unnest(oc.pr_nums) AS u(prnum)
+      JOIN (${CURRENT_MAXIMO_PRS}) p ON p.prnum = u.prnum
+      GROUP BY oc.id
+    )
+    SELECT extract(epoch FROM (oc.created_at_source
+             - coalesce(oc.pr_issue_date, f.emision))) / 86400 AS dias,
+           extract(epoch FROM (oc.created_at_source - f.aprobacion)) / 86400
+             AS dias_desde_aprobacion
+    FROM oc LEFT JOIN fechas f ON f.id = oc.id`;
 }
 
 /** Inicio de la ventana de "pendientes" sin año: hace 12 meses (G3). */

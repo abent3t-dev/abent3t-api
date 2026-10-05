@@ -30,6 +30,13 @@ const clasif = (row: { lines_total: number; lines_classified: number }) =>
       ? 'Sin clasificar'
       : `${row.lines_classified}/${row.lines_total}`;
 
+/**
+ * K6: subtotal sin IVA (suma de las líneas); sin líneas, con alguna sin
+ * importe o sin el sync 1.3.0 → "No disponible" (no se estima).
+ */
+export const sapPoSubtotal = (row: SapPurchaseOrderRow) =>
+  row.subtotal ?? NO_DISPONIBLE;
+
 /** Saldo: una cancelada no tiene (vacío); sin calcular → "No disponible". */
 export const sapPoSaldo = (row: SapPurchaseOrderRow) =>
   row.status_key === 'cancelled' ? null : (row.open_total ?? NO_DISPONIBLE);
@@ -51,7 +58,13 @@ export const sapPoOrigin = (row: SapPurchaseOrderRow) =>
       ? `Migrada de Maximo (${row.maximo_ponum})`
       : `Referencia Maximo (${row.maximo_ponum}, no existe en Maximo)`;
 
-/** Columnas del export = columnas visibles de la pestaña "Ordenes SAP" (B1). */
+/**
+ * Columnas del export = columnas visibles de la pestaña "Ordenes SAP" (B1).
+ * El reporte semanal elige de aquí por el TEXTO del encabezado
+ * (`SAP_PO_HEADERS`): renombrar uno lo saca de la hoja "OC SAP" sin error.
+ * K6: "Monto" es DocTotal (con IVA) y se queda con ese nombre; el sin IVA
+ * va en "Subtotal (sin IVA)", justo después.
+ */
 export const SAP_PO_EXPORT_COLUMNS: ExcelColumn<SapPurchaseOrderRow>[] = [
   { header: 'Número', value: (r) => r.doc_num, kind: 'int', width: 12 },
   { header: 'DocEntry', value: (r) => r.doc_entry, kind: 'int', width: 12 },
@@ -61,6 +74,12 @@ export const SAP_PO_EXPORT_COLUMNS: ExcelColumn<SapPurchaseOrderRow>[] = [
   { header: 'Código proveedor', value: (r) => r.card_code, width: 16 },
   { header: 'Estatus', value: sapStatusLabel, width: 12 },
   { header: 'Monto', value: (r) => r.doc_total, kind: 'money', width: 16 },
+  {
+    header: 'Subtotal (sin IVA)',
+    value: sapPoSubtotal,
+    kind: 'money',
+    width: 18,
+  },
   {
     header: 'Saldo disponible',
     value: sapPoSaldo,

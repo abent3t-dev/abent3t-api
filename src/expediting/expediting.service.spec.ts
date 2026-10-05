@@ -7,6 +7,7 @@ import { poSearchNumber } from '../common/utils/po-search.util';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import { buildVendorXref } from '../erp-vendors/maximo-vendor-xref';
 import { cdmxDateUtc } from '../contracts/contracts.dates';
+import { EXPEDITING_COLUMNS } from './expediting.controller';
 
 /**
  * Fase Expeditación. Prisma EN MEMORIA — sin BD ni red. Cubre: job de
@@ -837,6 +838,7 @@ describe('ExpeditingService — cierre en el otro sistema y búsqueda por PO (I1
     maximo_exists: false,
     maximo_status: null,
     receipt_status: null,
+    integration_status: null,
     ...overrides,
   });
   const copy = (
@@ -1031,6 +1033,231 @@ describe('ExpeditingService — cierre en el otro sistema y búsqueda por PO (I1
       delivery_status: 'entregada',
       closed_by: 'recepcion_completa',
     });
+  });
+
+  /**
+   * K1/K2: ABENT, SAP sola, migradas (COMPLETE, PARTIAL, CLOSE sin recepción,
+   * sin recepción con un PO5 desconocido) y Maximo (COMPLETE y NONE).
+   */
+  function receivedSeeded() {
+    const h = makeHarness();
+    h.addPo({ po_number: 'PO-ABENT', expected_delivery_date: rel(30) });
+    h.prisma.$queryRaw
+      .mockResolvedValueOnce([
+        row({
+          external_key: '1',
+          po_number: '7101',
+          maximo_ponum: 'PO300',
+          maximo_exists: true,
+          maximo_status: 'INPRG',
+          receipt_status: 'COMPLETE',
+          integration_status: 'PROCESADO',
+        }),
+        row({
+          external_key: '2',
+          po_number: '7102',
+          maximo_ponum: 'PO301',
+          maximo_exists: true,
+          maximo_status: 'INPRG',
+          receipt_status: 'PARTIAL',
+          integration_status: 'ERROR',
+        }),
+        row({
+          external_key: '3',
+          po_number: '7103',
+          maximo_ponum: 'PO303',
+          maximo_exists: true,
+          maximo_status: 'CLOSE',
+        }),
+        row({ external_key: '4', po_number: '7104' }),
+        row({
+          external_key: '5',
+          po_number: '7105',
+          maximo_ponum: 'PO304',
+          maximo_exists: true,
+          maximo_status: 'INPRG',
+          integration_status: 'RARO',
+        }),
+      ])
+      .mockResolvedValueOnce([
+        row({
+          source: 'maximo',
+          external_key: 'PO302',
+          po_number: 'PO302',
+          po_status: 'INPRG',
+          maximo_status: 'INPRG',
+          receipt_status: 'COMPLETE',
+          integration_status: 'ACTUALIZAR',
+        }),
+        row({
+          source: 'maximo',
+          external_key: 'PO305',
+          po_number: 'PO305',
+          po_status: 'APPR',
+          maximo_status: 'APPR',
+          receipt_status: 'NONE',
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    return h;
+  }
+
+  /** Celdas del Excel de una fila, por encabezado. */
+  const excelCells = (
+    row: Parameters<(typeof EXPEDITING_COLUMNS)[number]['value']>[0],
+  ) =>
+    Object.fromEntries(EXPEDITING_COLUMNS.map((c) => [c.header, c.value(row)]));
+
+  it('K1: received_in_maximo=true trae la migrada INPRG+COMPLETE, no la de Maximo ni la de SAP sola; closed_in_maximo no la incluye', async () => {
+    let h = receivedSeeded();
+    const received = await h.service.findAll({
+      received_in_maximo: 'true',
+      limit: 50,
+    });
+    expect(received.meta.total).toBe(1);
+    expect(received.data[0]).toMatchObject({
+      po_number: '7101',
+      source: 'sap',
+      delivery_status: 'entregada',
+      closed_by: 'recepcion_completa',
+      receipt_status: 'COMPLETE',
+      integration_status: 'PROCESADO',
+    });
+
+    // la lista para depurar en SAP no cambia de significado
+    h = receivedSeeded();
+    const purge = await h.service.findAllForExport({
+      closed_in_maximo: 'true',
+    });
+    expect(purge.rows.map((r) => r.po_number)).toEqual(['7103']);
+  });
+
+  it('K1: /stats trae los dos conteos y solo_pendientes baja el total', async () => {
+    let h = receivedSeeded();
+    const stats = await h.service.getStats({});
+    expect(stats).toMatchObject({
+      total: 8,
+      closed_in_maximo: 1,
+      received_in_maximo: 1,
+    });
+    expect(stats.counts.entregada).toBe(3);
+
+    // el semáforo baja; los conteos de las dos listas no dependen del chip
+    h = receivedSeeded();
+    const pending = await h.service.getStats({ solo_pendientes: 'true' });
+    expect(pending).toMatchObject({
+      total: 5,
+      closed_in_maximo: 1,
+      received_in_maximo: 1,
+    });
+    expect(pending.counts.entregada).toBe(0);
+    expect(pending.counts.cancelada).toBe(0);
+
+    h = receivedSeeded();
+    const list = await h.service.findAll({
+      solo_pendientes: 'true',
+      limit: 50,
+    });
+    expect(list.meta.total).toBe(5);
+    expect(list.data.map((r) => r.po_number).sort()).toEqual([
+      '7102',
+      '7104',
+      '7105',
+      'PO-ABENT',
+      'PO305',
+    ]);
+  });
+
+  it('K1: faceta y filtro "recepcion"; el Excel no repite la recepción', async () => {
+    let h = receivedSeeded();
+    const facet = await h.service.facets({ column: 'recepcion' });
+    expect(facet).toMatchObject({ type: 'text', total: 8 });
+    const values = facet.type === 'text' ? facet.values : [];
+    expect(Object.fromEntries(values.map((v) => [v.value, v.count]))).toEqual({
+      Completa: 2,
+      Parcial: 1,
+      'Sin recibir': 1,
+      'No disponible': 2,
+      '—': 2,
+    });
+
+    h = receivedSeeded();
+    const complete = await h.service.findAll({
+      filters: JSON.stringify({ recepcion: { in: ['Completa'] } }),
+      limit: 50,
+    });
+    expect(complete.data.map((r) => r.po_number).sort()).toEqual([
+      '7101',
+      'PO302',
+    ]);
+
+    h = receivedSeeded();
+    const { rows } = await h.service.findAllForExport({});
+    const cells = (po: string) =>
+      excelCells(rows.find((r) => r.po_number === po)!);
+    expect(cells('7101')).toMatchObject({
+      'Estatus en Maximo': 'INPRG',
+      'Recepción en Maximo': 'Completa',
+      Cierre: 'Recepción completa en Maximo',
+    });
+    // PARCIAL: la recepción sale una vez, en su columna
+    const partial = cells('7102');
+    expect(partial).toMatchObject({
+      'Estatus en Maximo': 'INPRG',
+      'Recepción en Maximo': 'Parcial',
+    });
+    expect(
+      Object.entries(partial)
+        .filter(([, v]) => typeof v === 'string' && /recep|parcial/i.test(v))
+        .map(([header]) => header),
+    ).toEqual(['Recepción en Maximo']);
+    expect(cells('7104')['Recepción en Maximo']).toBe('—');
+    expect(cells('7105')['Recepción en Maximo']).toBe('No disponible');
+    expect(cells('PO-ABENT')['Recepción en Maximo']).toBe('—');
+  });
+
+  it('K2: faceta y filtro "integracion"; el Excel trae la columna de PO5 y rotula el monto con IVA', async () => {
+    let h = receivedSeeded();
+    const facet = await h.service.facets({ column: 'integracion' });
+    const values = facet.type === 'text' ? facet.values : [];
+    expect(Object.fromEntries(values.map((v) => [v.value, v.count]))).toEqual({
+      Procesado: 1,
+      Error: 1,
+      Actualizar: 1,
+      RARO: 1,
+      'Sin dato': 2,
+      '—': 2,
+    });
+
+    h = receivedSeeded();
+    const errors = await h.service.findAll({
+      filters: JSON.stringify({ integracion: { in: ['Error'] } }),
+    });
+    expect(errors.data.map((r) => r.po_number)).toEqual(['7102']);
+
+    h = receivedSeeded();
+    const { rows } = await h.service.findAllForExport({});
+    const headers = EXPEDITING_COLUMNS.map((c) => c.header);
+    // junto a "Estatus en Maximo"
+    expect(headers.indexOf('Integración SAP (PO5)')).toBe(
+      headers.indexOf('Estatus en Maximo') + 1,
+    );
+    expect(
+      Object.fromEntries(
+        rows.map((r) => [r.po_number, excelCells(r)['Integración SAP (PO5)']]),
+      ),
+    ).toEqual({
+      '7101': 'Procesado',
+      '7102': 'Error',
+      '7103': 'Sin dato',
+      '7104': '—',
+      '7105': 'RARO',
+      PO302: 'Actualizar',
+      PO305: 'Sin dato',
+      'PO-ABENT': '—',
+    });
+    // K6.9: los montos por fila se quedan con IVA y el encabezado lo dice
+    expect(headers).toContain('Monto (con IVA en SAP y Maximo)');
   });
 
   it('I2: las dos columnas (PO Maximo / OC SAP) y la búsqueda por PONUM con o sin "PO"', async () => {

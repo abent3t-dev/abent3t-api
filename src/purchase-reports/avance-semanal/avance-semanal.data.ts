@@ -1,16 +1,16 @@
 import { Prisma } from '@prisma/client';
 import {
-  CURRENT_MAXIMO_CONTRACTS,
   CURRENT_MAXIMO_POS,
-  maximoPrFolio,
+  CURRENT_MAXIMO_PRS,
   sapPoDuplicatedInMaximo,
 } from '../../common/sql/erp-views.sql';
 import type {
   AvanceData,
-  FechaOrigen,
   Gestion,
+  MaximoNoRecibida,
   OrdenMonto,
 } from './avance-semanal.engine';
+import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
 
 /**
  * H1 — Carga de datos del reporte de avance semanal: TODO de una vez (unos
@@ -18,19 +18,15 @@ import type {
  * Solo lectura; mismas reglas que el tablero:
  *  - SAP: solicitudes de pedido y su primera OC no cancelada por
  *    `base_request_entries` (G3); OC por moneda con `contada_en_maximo` (D1).
- *  - Maximo: PR = filas de AB_CONTRATOS (`maximo_contracts`, vista vigente,
- *    igual que G3); su OC por `pr_nums` de las OC vigentes no canceladas.
- *
- * Fecha de las PR de Maximo (AB_CONTRATOS no manda ISSUEDATE):
- *  1. exacta: ISSUEDATE de la PR más antigua de una OC (`pr_issue_date`,
- *     0016) para el folio menor de esa OC — los mismos pares que G3;
- *  2. alta: la fecha en que la plataforma vio la PR por primera vez, si fue
- *     después de la carga inicial de la integración (sync cada hora) y no
- *     queda a más de 30 días de lo que dice su folio (una PR vieja que
- *     aparece tarde no se toma como nueva);
- *  3. folio: la fecha conocida más reciente de las PR con folio menor o
- *     igual (Maximo numera las PR en orden) — la misma ventana de G3;
- *  4. sin fecha: folio menor a todos los conocidos → fuera del reporte.
+ *  - Maximo (K5, 2026-10-05): una fila por PR de `CURRENT_MAXIMO_PRS` con
+ *    sus fechas reales de AB_CONTRATOS (K3: ISSUEDATE, primer APPR, último
+ *    CLOSE y última CAN del historial PRSTATUS) y `de_contrato`; su OC por
+ *    `pr_nums` de las OC vigentes no canceladas con fecha (`maximoFirstPo`).
+ *    La recibida es el primer APPR o el ISSUEDATE según `reglas.recibida`;
+ *    sin esa fecha la PR queda fuera del universo y se cuenta aparte, sin
+ *    respaldo (ya no se ubica por folio ni por la fecha del contrato).
+ *  - Montos (K6): las OC traen el total con IVA y el `subtotal` sin IVA
+ *    (null = sin líneas o alguna sin importe).
  */
 
 type Queryable = {
@@ -52,19 +48,27 @@ export interface AvanceRows {
     fecha: Date;
     moneda: string | null;
     monto: unknown;
+    subtotal: unknown;
     contada_en_maximo: boolean;
   }>;
+  /** Una fila por PR (vista por PR, sin obsoletas). */
   maximoPrs: Array<{
     prnum: string;
-    con_contrato: boolean;
-    fecha_contrato: Date | null;
-    visto: Date | null;
+    pr_status: string | null;
+    pr_issue_date: Date | null;
+    pr_approved_at: Date | null;
+    pr_closed_at: Date | null;
+    pr_cancelled_at: Date | null;
+    de_contrato: boolean | null;
   }>;
-  /** Primera OC vigente no cancelada de cada PRNUM. */
+  /** Primera OC vigente no cancelada (con fecha) de cada PRNUM. */
   maximoFirstPo: Array<{ prnum: string; primera_oc: Date }>;
-  /** Fechas conocidas: folio menor de cada OC con su PR.ISSUEDATE. */
-  maximoKnown: Array<{ folio: unknown; fecha: Date }>;
-  maximoOrders: Array<{ fecha: Date; moneda: string | null; monto: unknown }>;
+  maximoOrders: Array<{
+    fecha: Date;
+    moneda: string | null;
+    monto: unknown;
+    subtotal: unknown;
+  }>;
 }
 
 export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
@@ -74,7 +78,6 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
     sapOrders,
     maximoPrs,
     maximoFirstPo,
-    maximoKnown,
     maximoOrders,
   ] = await Promise.all([
     prisma.$queryRaw<AvanceRows['sapRequests']>(Prisma.sql`
@@ -89,35 +92,24 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
       GROUP BY e`),
     prisma.$queryRaw<AvanceRows['sapOrders']>(Prisma.sql`
       SELECT s.doc_date AS fecha, s.currency AS moneda, s.doc_total AS monto,
+             s.subtotal,
              ${sapPoDuplicatedInMaximo('s')} AS contada_en_maximo
       FROM sap_purchase_orders s
       WHERE s.cancelled IS DISTINCT FROM true
         AND s.doc_date IS NOT NULL AND s.doc_total IS NOT NULL`),
     prisma.$queryRaw<AvanceRows['maximoPrs']>(Prisma.sql`
-      SELECT c.prnum, bool_or(c.has_contract) AS con_contrato,
-             min(c.created_at_source) FILTER (WHERE c.has_contract) AS fecha_contrato,
-             min(c.first_seen_at) AS visto
-      FROM (${CURRENT_MAXIMO_CONTRACTS}) c
-      WHERE c.prnum IS NOT NULL
-      GROUP BY c.prnum`),
+      SELECT p.prnum, p.pr_status, p.pr_issue_date, p.pr_approved_at,
+             p.pr_closed_at, p.pr_cancelled_at, p.de_contrato
+      FROM (${CURRENT_MAXIMO_PRS}) p`),
     prisma.$queryRaw<AvanceRows['maximoFirstPo']>(Prisma.sql`
       SELECT f.prnum, min(p.created_at_source) AS primera_oc
       FROM (${CURRENT_MAXIMO_POS}) p, unnest(p.pr_nums) AS f(prnum)
       WHERE coalesce(p.status, '') NOT IN ('CAN', 'CANCEL')
         AND p.created_at_source IS NOT NULL
       GROUP BY f.prnum`),
-    prisma.$queryRaw<AvanceRows['maximoKnown']>(Prisma.sql`
-      WITH known AS (
-        SELECT p.pr_issue_date AS fecha, min(${maximoPrFolio('f.prnum')}) AS folio
-        FROM (${CURRENT_MAXIMO_POS}) p, unnest(p.pr_nums) AS f(prnum)
-        WHERE p.pr_issue_date IS NOT NULL
-        GROUP BY p.ponum, coalesce(p.siteid, ''), p.pr_issue_date
-      )
-      SELECT folio, min(fecha) AS fecha FROM known
-      WHERE folio IS NOT NULL
-      GROUP BY folio`),
     prisma.$queryRaw<AvanceRows['maximoOrders']>(Prisma.sql`
-      SELECT p.created_at_source AS fecha, p.currency AS moneda, p.total_cost AS monto
+      SELECT p.created_at_source AS fecha, p.currency AS moneda,
+             p.total_cost AS monto, p.subtotal
       FROM (${CURRENT_MAXIMO_POS}) p
       WHERE coalesce(p.status, '') NOT IN ('CAN', 'CANCEL')
         AND p.created_at_source IS NOT NULL AND p.total_cost IS NOT NULL`),
@@ -128,59 +120,23 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
     sapOrders,
     maximoPrs,
     maximoFirstPo,
-    maximoKnown,
     maximoOrders,
-  };
-}
-
-const DAY_MS = 86_400_000;
-/** Una PR vista por primera vez a más de esto de su fecha por folio es vieja. */
-const ALTA_MAX_GAP_MS = 30 * DAY_MS;
-
-/** Folio numérico de una PR (PR104531 → 104531), igual que `maximoPrFolio`. */
-export function parseFolio(prnum: string): number | null {
-  const digits = prnum.replace(/[^0-9]/g, '');
-  return digits === '' ? null : Number(digits);
-}
-
-/**
- * Fecha aproximada por folio: la más reciente de las PR conocidas con folio
- * menor o igual. Equivale a la ventana de G3 (`loadMaximoPrFolioWindow`):
- * la PR cae en [desde, hasta) ⇔ su fecha aproximada cae ahí.
- */
-export function maximoFolioDater(
-  known: Array<{ folio: number; fecha: Date }>,
-): (folio: number) => Date | null {
-  const sorted = [...known].sort((a, b) => a.folio - b.folio);
-  const folios = sorted.map((k) => k.folio);
-  const latest: number[] = [];
-  let max = Number.NEGATIVE_INFINITY;
-  for (const k of sorted) {
-    max = Math.max(max, k.fecha.getTime());
-    latest.push(max);
-  }
-  return (folio: number) => {
-    let lo = 0;
-    let hi = folios.length - 1;
-    let found = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (folios[mid] <= folio) {
-        found = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    return found < 0 ? null : new Date(latest[found]);
   };
 }
 
 const toNumber = (value: unknown) =>
   value === null || value === undefined ? null : Number(value);
 
-/** Filas → gestiones y OC del motor (pura, para probarla con fixtures). */
-export function buildAvanceData(rows: AvanceRows): AvanceData {
+/**
+ * Filas → gestiones y OC del motor (pura, para probarla con fixtures). Con
+ * `reglas.recibida`/`reglas.dias_desde` (default = AVANCE_REGLAS) elige la
+ * recibida y el inicio de los días de las PR de Maximo; el motor debe
+ * armar la página con las mismas reglas.
+ */
+export function buildAvanceData(
+  rows: AvanceRows,
+  reglas: AvanceReglas = AVANCE_REGLAS,
+): AvanceData {
   const gestiones: Gestion[] = [];
 
   // SAP
@@ -197,68 +153,49 @@ export function buildAvanceData(rows: AvanceRows): AvanceData {
       sistema: 'sap',
       folio: String(r.doc_num ?? r.doc_entry),
       recibida: r.doc_date,
-      fecha_origen: 'exacta',
+      fecha_origen: 'documento',
+      inicio_dias: r.doc_date,
       primera_oc: primeraOc,
       cierre_sin_oc: closedByHand ? (r.update_date_source ?? r.doc_date) : null,
       cancelada: cancelled ? (r.update_date_source ?? r.doc_date) : null,
+      de_contrato: false,
     });
     if (!sapDesde || r.doc_date.getTime() < sapDesde.getTime()) {
       sapDesde = r.doc_date;
     }
   }
 
-  // Maximo
-  const known = rows.maximoKnown
-    .map((k) => ({ folio: Number(k.folio), fecha: k.fecha }))
-    .filter((k) => Number.isFinite(k.folio));
-  const exact = new Map<number, Date>();
-  for (const k of known) {
-    const prev = exact.get(k.folio);
-    if (!prev || k.fecha.getTime() < prev.getTime())
-      exact.set(k.folio, k.fecha);
-  }
-  const byFolio = maximoFolioDater(known);
+  // Maximo (K5): fechas reales de la PR, sin respaldo
   const firstPo = new Map(
     rows.maximoFirstPo.map((r) => [r.prnum, r.primera_oc]),
   );
-  const seen = rows.maximoPrs
-    .map((r) => r.visto?.getTime())
-    .filter((t): t is number => t !== undefined);
-  // Carga inicial de la integración: lo visto ese día no dice cuándo nació
-  const liveFrom = seen.length > 0 ? Math.min(...seen) + DAY_MS : Infinity;
-  let sinFecha = 0;
+  const fechaDe = (
+    r: AvanceRows['maximoPrs'][number],
+    inicio: AvanceReglas['recibida'],
+  ) => (inicio === 'aprobacion' ? r.pr_approved_at : r.pr_issue_date);
+  const noRecibidas: MaximoNoRecibida[] = [];
   for (const r of rows.maximoPrs) {
-    const folio = parseFolio(r.prnum);
-    let recibida = folio === null ? null : (exact.get(folio) ?? null);
-    let origen: FechaOrigen = 'exacta';
+    const recibida = fechaDe(r, reglas.recibida);
     if (!recibida) {
-      const porFolio = folio === null ? null : byFolio(folio);
-      const visto = r.visto?.getTime() ?? null;
-      if (
-        visto !== null &&
-        visto > liveFrom &&
-        (porFolio === null || visto - porFolio.getTime() <= ALTA_MAX_GAP_MS)
-      ) {
-        recibida = r.visto;
-        origen = 'alta';
-      } else if (porFolio) {
-        recibida = porFolio;
-        origen = 'folio';
-      }
-    }
-    if (!recibida) {
-      sinFecha += 1;
+      noRecibidas.push({
+        prnum: r.prnum,
+        emision: r.pr_issue_date,
+        pr_status: r.pr_status,
+      });
       continue;
     }
+    // cerrada = coalesce(primera OC, último CLOSE); cancelada = última CAN
+    const primeraOc = firstPo.get(r.prnum) ?? null;
     gestiones.push({
       sistema: 'maximo',
       folio: r.prnum,
       recibida,
-      fecha_origen: origen,
-      primera_oc: firstPo.get(r.prnum) ?? null,
-      // PR que se volvió contrato: cerrada (sin fecha del contrato → al recibirse)
-      cierre_sin_oc: r.con_contrato ? (r.fecha_contrato ?? recibida) : null,
-      cancelada: null,
+      fecha_origen: reglas.recibida,
+      inicio_dias: fechaDe(r, reglas.dias_desde),
+      primera_oc: primeraOc,
+      cierre_sin_oc: primeraOc ? null : r.pr_closed_at,
+      cancelada: r.pr_cancelled_at,
+      de_contrato: r.de_contrato === true,
     });
   }
 
@@ -271,6 +208,7 @@ export function buildAvanceData(rows: AvanceRows): AvanceData {
       fecha: o.fecha,
       moneda: o.moneda,
       monto,
+      subtotal: toNumber(o.subtotal),
       contada_en_maximo: o.contada_en_maximo === true,
     });
   }
@@ -282,6 +220,7 @@ export function buildAvanceData(rows: AvanceRows): AvanceData {
       fecha: o.fecha,
       moneda: o.moneda,
       monto,
+      subtotal: toNumber(o.subtotal),
       contada_en_maximo: false,
     });
   }
@@ -289,7 +228,7 @@ export function buildAvanceData(rows: AvanceRows): AvanceData {
   return {
     gestiones,
     ordenes,
-    maximo_sin_fecha: sinFecha,
+    maximo_no_recibidas: noRecibidas,
     sap_desde: sapDesde,
   };
 }

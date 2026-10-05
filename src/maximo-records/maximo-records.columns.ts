@@ -13,15 +13,29 @@ import type {
 
 const MS_PER_DAY = 86_400_000;
 
-/** Días de aprobación de la PR (solicitud → aprobación); null = N/D. */
-export function maximoPrApprovalDays(row: MaximoContractView): number | null {
-  if (!row.created_at_source || !row.approved_at) return null;
+/** Días enteros de `from` a `to`; null si falta alguna o es negativo. */
+function daysBetween(from: Date | null, to: Date | null): number | null {
+  if (!from || !to) return null;
   const days = Math.round(
-    (new Date(row.approved_at).getTime() -
-      new Date(row.created_at_source).getTime()) /
-      MS_PER_DAY,
+    (new Date(to).getTime() - new Date(from).getTime()) / MS_PER_DAY,
   );
   return days < 0 ? null : days;
+}
+
+/**
+ * Días de aprobación del contrato (solicitud → aprobación, fechas del
+ * contrato: `created_at_source` y `approved_at`); null = N/D. Contratos.
+ */
+export function maximoPrApprovalDays(row: MaximoContractView): number | null {
+  return daysBetween(row.created_at_source, row.approved_at);
+}
+
+/**
+ * K4.4: días de aprobación DE LA PR = primer APPR (llegada a Compras) −
+ * ISSUEDATE; null = N/D. Solicitudes (`vista=solicitudes`).
+ */
+export function maximoPrDays(row: MaximoContractView): number | null {
+  return daysBetween(row.pr_issue_date, row.pr_approved_at);
 }
 
 export const MAXIMO_PO_FILTER_COLUMNS: ColumnDefs<MaximoPurchaseOrderView> = {
@@ -67,4 +81,19 @@ export const MAXIMO_CONTRACT_FILTER_COLUMNS: ColumnDefs<MaximoContractView> = {
     type: 'text',
     value: (r) => r.requested_by_name ?? r.requested_by,
   },
+};
+
+/**
+ * K4.4 (2026-10-05): Solicitudes (`vista=solicitudes`, una fila por PR) =
+ * las de Contratos con las fechas y el estatus DE LA PR: `estatus_pr`
+ * nueva; `solicitud` = ISSUEDATE; `aprobacion` = primer APPR (llegada a
+ * Compras); `dias` = aprobación − emisión de la PR. `estatus` (el del
+ * contrato) se queda.
+ */
+export const MAXIMO_REQUEST_FILTER_COLUMNS: ColumnDefs<MaximoContractView> = {
+  ...MAXIMO_CONTRACT_FILTER_COLUMNS,
+  estatus_pr: { type: 'text', value: (r) => r.pr_status },
+  solicitud: { type: 'date', value: (r) => r.pr_issue_date },
+  aprobacion: { type: 'date', value: (r) => r.pr_approved_at },
+  dias: { type: 'number', value: maximoPrDays },
 };

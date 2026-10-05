@@ -2,7 +2,10 @@ import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
+import { TABLERO_MONTO_BASE } from '../common/sql/erp-views.sql';
 import { SapRecordsService } from './sap-records.service';
+import { SAP_PO_EXPORT_COLUMNS } from './sap-records.export';
+import { NO_DISPONIBLE } from '../common/utils/excel-export.util';
 
 /**
  * Fase INT-4. Lectura de dominio con Prisma mockeado — sin BD. Cubre:
@@ -24,6 +27,7 @@ const PO_ROW = {
   card_code: 'P0000788',
   card_name: 'PROVEEDOR UNO',
   doc_total: '1335149.25', // Decimal llega como string en el mock
+  subtotal: '1151007.97', // K6: sin IVA (suma de las líneas)
   currency: 'MXN',
   lines_total: 2,
   lines_classified: 0,
@@ -310,9 +314,22 @@ describe('SapRecordsService — resumen', () => {
         { document_status: 'bost_Close', cancelled: false, count: 5 },
         { document_status: 'bost_Close', cancelled: true, count: 2 },
       ])
+      // K6: el monto de las OC trae el subtotal sin IVA y las OC sin él
       .mockResolvedValueOnce([
-        { currency: 'MXN', total: '5000.50', count: 7 },
-        { currency: 'USD', total: '100', count: 1 },
+        {
+          currency: 'MXN',
+          total: '5000.50',
+          count: 7,
+          subtotal: '4000.43',
+          sin_subtotal: 1,
+        },
+        {
+          currency: 'USD',
+          total: '100',
+          count: 1,
+          subtotal: '86.21',
+          sin_subtotal: 0,
+        },
       ])
       .mockResolvedValueOnce([{ currency: 'MXN', total: '1000', count: 3 }])
       .mockResolvedValueOnce([
@@ -348,13 +365,28 @@ describe('SapRecordsService — resumen', () => {
       { status: 'open', count: 3 },
       { status: 'cancelled', count: 2 },
     ]);
-    // nunca se suma MXN con USD en una sola cifra
+    // nunca se suma MXN con USD en una sola cifra; K6: con el subtotal
     expect(summary.purchaseOrders.montoPorMoneda).toEqual([
-      { currency: 'MXN', total: 5000.5, count: 7 },
-      { currency: 'USD', total: 100, count: 1 },
+      {
+        currency: 'MXN',
+        total: 5000.5,
+        count: 7,
+        subtotal: 4000.43,
+        sin_subtotal: 1,
+      },
+      {
+        currency: 'USD',
+        total: 100,
+        count: 1,
+        subtotal: 86.21,
+        sin_subtotal: 0,
+      },
     ]);
+    expect(summary.purchaseOrders.montoBase).toBe(TABLERO_MONTO_BASE);
+    // "por recibir" sin cambio: con IVA y sin subtotal
     expect(summary.purchaseOrders.abiertas).toEqual({
       count: 3,
+      montoBase: 'con_iva',
       montoPorMoneda: [{ currency: 'MXN', total: 1000, count: 3 }],
     });
     expect(summary.purchaseOrders.linesTotal).toBe(30);
@@ -367,6 +399,91 @@ describe('SapRecordsService — resumen', () => {
     expect(summary.purchaseRequests.diasPromedioGestion).toBeNull();
     expect(summary.approvalRequests).toEqual({ total: 0, pending: 0 });
     expect(summary.lastSync.purchase_orders).toBeNull();
+    // K6: las solicitudes ya son sin IVA y no traen subtotal
+    expect(summary.purchaseRequests.montoBase).toBe('sin_iva');
+
+    const texts = (
+      prisma.$queryRaw.mock.calls as unknown as Array<[{ sql: string }]>
+    ).map(([q]) => q.sql.replace(/\s+/g, ' '));
+    const poCurrency = texts.filter(
+      (t) =>
+        t.includes('FROM sap_purchase_orders WHERE cancelled') &&
+        t.includes('GROUP BY currency'),
+    );
+    expect(poCurrency).toHaveLength(1);
+    expect(poCurrency[0]).toContain(
+      'coalesce(sum(sap_purchase_orders.subtotal), 0) AS subtotal',
+    );
+    const prCurrency = texts.filter(
+      (t) =>
+        t.includes('FROM sap_purchase_requests WHERE cancelled') &&
+        t.includes('GROUP BY currency'),
+    );
+    expect(prCurrency).toHaveLength(1);
+    expect(prCurrency[0]).toContain('sum(doc_total)');
+    expect(prCurrency[0]).not.toContain('subtotal');
+  });
+});
+
+describe('SapRecordsService — subtotal sin IVA de las OC (K6)', () => {
+  it('el listado y el detalle traen el subtotal (Decimal → number; null = no disponible)', async () => {
+    const { service, prisma } = makeService();
+    prisma.sap_purchase_orders.findMany.mockResolvedValueOnce([
+      PO_ROW,
+      { ...PO_ROW, id: 'row-2', doc_entry: 9001, subtotal: null },
+    ]);
+    const result = await service.listPurchaseOrders({});
+    expect(result.data.map((r) => r.subtotal)).toEqual([1151007.97, null]);
+    const args = (
+      prisma.sap_purchase_orders.findMany.mock.calls[0] as [
+        { select: Record<string, boolean> },
+      ]
+    )[0];
+    expect(args.select.subtotal).toBe(true);
+    const detail = await service.getPurchaseOrder(9000, false);
+    expect(detail.document.subtotal).toBe(1151007.97);
+    expect(detail.document.doc_total).toBe(1335149.25);
+  });
+
+  it('columna filtrable numérica `subtotal` (vacías = sin subtotal)', async () => {
+    const { service, prisma } = makeService();
+    const rows = [
+      PO_ROW,
+      { ...PO_ROW, id: 'row-2', doc_entry: 9001, subtotal: '100' },
+      { ...PO_ROW, id: 'row-3', doc_entry: 9002, subtotal: null },
+    ];
+    prisma.sap_purchase_orders.findMany.mockResolvedValue(rows);
+    await expect(
+      service.purchaseOrderFacets({ column: 'subtotal' }),
+    ).resolves.toMatchObject({
+      type: 'number',
+      min: 100,
+      max: 1151007.97,
+      empty: 1,
+    });
+    const filtered = await service.listPurchaseOrders({
+      filters: JSON.stringify({ subtotal: { empty: true } }),
+    });
+    expect(filtered.data.map((r) => r.doc_entry)).toEqual([9002]);
+  });
+
+  it('export: "Subtotal (sin IVA)" justo después de "Monto" (que no se renombra); sin subtotal → "No disponible"', async () => {
+    const headers = SAP_PO_EXPORT_COLUMNS.map((c) => c.header);
+    expect(headers[headers.indexOf('Monto') + 1]).toBe('Subtotal (sin IVA)');
+    const { service, prisma } = makeService();
+    prisma.sap_purchase_orders.findMany.mockResolvedValueOnce([
+      PO_ROW,
+      { ...PO_ROW, id: 'row-2', doc_entry: 9001, subtotal: null },
+    ]);
+    const { rows } = await service.listAllForExport('purchase_orders', {});
+    const column = SAP_PO_EXPORT_COLUMNS.find(
+      (c) => c.header === 'Subtotal (sin IVA)',
+    )!;
+    expect(column.kind).toBe('money');
+    const values = rows.map((r) =>
+      column.value(r as Parameters<typeof column.value>[0]),
+    );
+    expect(values).toEqual([1151007.97, NO_DISPONIBLE]);
   });
 });
 

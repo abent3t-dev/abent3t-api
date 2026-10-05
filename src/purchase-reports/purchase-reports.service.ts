@@ -8,17 +8,23 @@ import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import { maximoVendorAmounts, rankVendors, VendorAmount } from './vendor-tops';
 import {
-  andMaximoPrInWindow,
   andSapPoCountedOnce,
   CURRENT_MAXIMO_CONTRACTS,
   CURRENT_MAXIMO_POS,
-  loadMaximoPrFolioWindow,
+  CURRENT_MAXIMO_PRS,
+  maximoGestionSql,
   maximoInApproval,
+  maximoPoMonto,
   maximoStatusSince,
+  montoBaseNota,
   pendingWindowStart,
+  poSubtotalColumns,
+  sapPoMonto,
+  TABLERO_MONTO_BASE,
 } from '../common/sql/erp-views.sql';
+import type { MaximoGestionRow } from '../common/sql/erp-views.sql';
 import {
-  maximoGestionDays,
+  maximoGestion,
   sapGestionDays,
 } from '../purchase-dashboard/sap-gestion-days';
 import type { SapGestionResult } from '../purchase-dashboard/sap-gestion-days';
@@ -51,7 +57,23 @@ import { ReportPeriodDto } from './dto/report-period.dto';
  * Reunión con Ingrid 2026-09-28 (G1): tops de proveedores con código; el de
  * Maximo por proveedor EFECTIVO (según SAP cuando la OC migró o por cruce de
  * código) y un top SAP + Maximo contado una vez — ver vendor-tops.ts.
+ *
+ * K6 (2026-10-05): los montos de OC (resumen, series y tops) van en la base
+ * de `TABLERO_MONTO_BASE` (erp-views) con el subtotal sin IVA y las OC sin
+ * él por moneda, como dato secundario. Las solicitudes de SAP ya son sin
+ * IVA (suma de sus líneas): solo se rotulan.
  */
+
+/** K6: suma por moneda con el subtotal sin IVA (lo que viaja en el resumen). */
+export interface MontoMoneda {
+  currency: string;
+  total: number;
+  count: number;
+  subtotal: number;
+  sin_subtotal: number;
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 const MAX_RANGE_MONTHS = 24;
 const DEFAULT_RANGE_MONTHS = 12;
@@ -250,15 +272,16 @@ export class PurchaseReportsService {
       this.expeditingService.getStats(),
     ]);
     const erp = await this.resumenErp(period);
+    // K6: las OC propias no dicen si `amount` lleva IVA (base desconocida):
+    // no suman al subtotal y van todas a sin_subtotal
     const abentMontos = {
       currency: 'MXN',
       count: posAgg._count._all,
       total: toNumber(posAgg._sum.amount) ?? 0,
+      subtotal: 0,
+      sin_subtotal: posAgg._count._all,
     };
-    const montoPorMoneda = new Map<
-      string,
-      { currency: string; total: number; count: number }
-    >();
+    const montoPorMoneda = new Map<string, MontoMoneda>();
     for (const row of [...erp.montos, abentMontos]) {
       if (row.count === 0) continue;
       const key = row.currency ?? 'sin_moneda';
@@ -266,9 +289,13 @@ export class PurchaseReportsService {
         currency: key,
         total: 0,
         count: 0,
+        subtotal: 0,
+        sin_subtotal: 0,
       };
-      acc.total = Math.round((acc.total + row.total) * 100) / 100;
+      acc.total = round2(acc.total + row.total);
       acc.count += row.count;
+      acc.subtotal = round2(acc.subtotal + row.subtotal);
+      acc.sin_subtotal += row.sin_subtotal;
       montoPorMoneda.set(key, acc);
     }
     const abentDias = roundDays(avgGestion._avg.business_days_elapsed);
@@ -289,7 +316,8 @@ export class PurchaseReportsService {
       // propias (antes solo propias → todo en cero).
       todas_las_fuentes: {
         // G3: pendientes de gestionar = RQ sin OC (al día de hoy, últimos
-        // 12 meses); Maximo null = sin fechas de PR para ubicarlas
+        // 12 meses); Maximo (K4) = APPR sin OC ni contrato por fecha de
+        // aprobación; null = ninguna PR con estatus todavía
         solicitudes: {
           creadas: erp.sap.rq_creadas + erp.maximo.rq_creadas + rqsCreadas,
           pendientes:
@@ -312,7 +340,11 @@ export class PurchaseReportsService {
         // G2: una definición por sistema (de la RQ a la OC, OC del periodo)
         dias_gestion: {
           sap: gestionOut(erp.sap.gestion),
-          maximo: gestionOut(erp.maximo.gestion),
+          maximo: gestionOut(erp.maximo.gestion.creacion),
+          // K4.3: dato secundario, desde la llegada a Compras (primer APPR)
+          maximo_desde_aprobacion: gestionOut(
+            erp.maximo.gestion.desde_aprobacion,
+          ),
           abent: abentDias,
         },
         ordenes: {
@@ -325,6 +357,9 @@ export class PurchaseReportsService {
             maximo: erp.maximo.oc,
             abent: posAgg._count._all,
           },
+          // K6: base de `total`; `subtotal` (sin IVA) va por moneda
+          monto_base: TABLERO_MONTO_BASE,
+          monto_nota: montoBaseNota(TABLERO_MONTO_BASE),
         },
         contratos_por_vencer_30_dias: {
           total: contratosPorVencer + erp.maximo.contratos_por_vencer,
@@ -354,9 +389,11 @@ export class PurchaseReportsService {
 
   /**
    * Parte ERP del resumen: solicitudes creadas (SAP por doc_date; Maximo PR
-   * ubicadas por folio, G3), pendientes de gestionar (G3), días de gestión de
-   * las OC del periodo (G2, misma definición que el dashboard), OC por
-   * moneda y contratos de Maximo que vencen en 30 días.
+   * distintas por su creación, `pr_issue_date`, K4.5), pendientes de
+   * gestionar (G3; Maximo K4), días de gestión de las OC del periodo (G2,
+   * misma consulta que el dashboard: `maximoGestionSql`), OC por moneda (K6:
+   * en la base del tablero, con el subtotal sin IVA) y contratos de Maximo
+   * que vencen en 30 días.
    */
   private async resumenErp(period: ReportPeriod) {
     type CountsRow = {
@@ -369,37 +406,35 @@ export class PurchaseReportsService {
       doc_date: Date | null;
       base_request_entries: number[];
     };
-    const [prWindow, pending] = await Promise.all([
-      loadMaximoPrFolioWindow(
-        this.prisma,
-        period.from,
-        new Date(period.to.getTime() + 1),
-      ),
-      loadPendingRequests(this.prisma, pendingWindowStart(), null),
-    ]);
     type MontoRow = {
       fuente: 'sap' | 'maximo';
       currency: string | null;
       count: number;
       total: unknown;
+      subtotal: unknown;
+      sin_subtotal: number;
     };
-    const [counts, montos, gestionPos, maximoGestion] = await Promise.all([
-      this.prisma.$queryRaw<CountsRow[]>(Prisma.sql`
-        WITH current_contracts AS (${CURRENT_MAXIMO_CONTRACTS})
+    const [pending, counts, montos, gestionPos, maximoGestionRows] =
+      await Promise.all([
+        loadPendingRequests(this.prisma, pendingWindowStart(), null),
+        this.prisma.$queryRaw<CountsRow[]>(Prisma.sql`
+        WITH current_contracts AS (${CURRENT_MAXIMO_CONTRACTS}),
+             current_prs AS (${CURRENT_MAXIMO_PRS})
         SELECT
           (SELECT count(*) FROM sap_purchase_requests
             WHERE cancelled IS DISTINCT FROM true
               AND doc_date BETWEEN ${period.from} AND ${period.to})::int AS sap_rq_creadas,
-          (SELECT count(*) FROM current_contracts c
-            WHERE c.prnum IS NOT NULL
-              ${andMaximoPrInWindow('c', prWindow)})::int AS maximo_rq_creadas,
+          (SELECT count(DISTINCT p.prnum) FROM current_prs p
+            WHERE p.pr_issue_date BETWEEN ${period.from} AND ${period.to})::int AS maximo_rq_creadas,
           (SELECT count(*) FROM current_contracts
             WHERE contractnum IS NOT NULL
               AND coalesce(status, '') NOT IN ('CAN', 'CANCEL', 'CLOSE')
               AND end_date BETWEEN now() AND now() + interval '30 days')::int AS maximo_contratos_por_vencer`),
-      this.prisma.$queryRaw<MontoRow[]>(Prisma.sql`
+        // K6: en la base del tablero, con el subtotal sin IVA de dato
+        this.prisma.$queryRaw<MontoRow[]>(Prisma.sql`
         SELECT 'sap' AS fuente, currency, count(*)::int AS count,
-               coalesce(sum(doc_total), 0) AS total
+               coalesce(sum(${sapPoMonto('sap_purchase_orders', TABLERO_MONTO_BASE)}), 0) AS total,
+               ${poSubtotalColumns('sap_purchase_orders')}
         FROM sap_purchase_orders
         WHERE cancelled IS DISTINCT FROM true
           AND doc_date BETWEEN ${period.from} AND ${period.to}
@@ -407,27 +442,25 @@ export class PurchaseReportsService {
         GROUP BY currency
         UNION ALL
         SELECT 'maximo' AS fuente, currency, count(*)::int AS count,
-               coalesce(sum(total_cost), 0) AS total
+               coalesce(sum(${maximoPoMonto('current', TABLERO_MONTO_BASE)}), 0) AS total,
+               ${poSubtotalColumns('current')}
         FROM (${CURRENT_MAXIMO_POS}) current
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
           AND created_at_source BETWEEN ${period.from} AND ${period.to}
         GROUP BY currency`),
-      // G2: gestión de las OC del periodo (SAP: OC − solicitud base)
-      this.prisma.$queryRaw<GestionPoRow[]>(Prisma.sql`
+        // G2: gestión de las OC del periodo (SAP: OC − solicitud base)
+        this.prisma.$queryRaw<GestionPoRow[]>(Prisma.sql`
         SELECT doc_entry, doc_date, base_request_entries
         FROM sap_purchase_orders
         WHERE cancelled IS DISTINCT FROM true
           AND cardinality(base_request_entries) > 0
           AND doc_date BETWEEN ${period.from} AND ${period.to}`),
-      // G2: Maximo: fecha de la OC − PR.ISSUEDATE
-      this.prisma.$queryRaw<Array<{ dias: unknown }>>(Prisma.sql`
-        SELECT CASE WHEN pr_issue_date IS NOT NULL
-                    THEN extract(epoch FROM (created_at_source - pr_issue_date)) / 86400
-               END AS dias
-        FROM (${CURRENT_MAXIMO_POS}) current
-        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
-          AND created_at_source BETWEEN ${period.from} AND ${period.to}`),
-    ]);
+        // G2: Maximo: fecha de la OC − creación de su PR (K4.3: con el
+        // respaldo de AB_CONTRATOS y el dato desde la aprobación)
+        this.prisma.$queryRaw<MaximoGestionRow[]>(
+          maximoGestionSql(period.from, new Date(period.to.getTime() + 1)),
+        ),
+      ]);
     const requestEntries = [
       ...new Set(gestionPos.flatMap((po) => po.base_request_entries)),
     ];
@@ -452,10 +485,9 @@ export class PurchaseReportsService {
         oc: ocDe('sap'),
       },
       maximo: {
-        rq_creadas:
-          prWindow.lower === null ? 0 : Number(row?.maximo_rq_creadas ?? 0),
+        rq_creadas: Number(row?.maximo_rq_creadas ?? 0),
         rq_pendientes: pending.maximo.pendientes,
-        gestion: maximoGestionDays(maximoGestion),
+        gestion: maximoGestion(maximoGestionRows),
         oc: ocDe('maximo'),
         contratos_por_vencer: Number(row?.maximo_contratos_por_vencer ?? 0),
       },
@@ -464,6 +496,8 @@ export class PurchaseReportsService {
         currency: m.currency,
         count: Number(m.count),
         total: toNumber(m.total) ?? 0,
+        subtotal: toNumber(m.subtotal) ?? 0,
+        sin_subtotal: Number(m.sin_subtotal ?? 0),
       })),
     };
   }
@@ -832,8 +866,13 @@ export class PurchaseReportsService {
 
   /**
    * Volumen, estatus y montos POR MONEDA de los dos ERPs en el periodo (SAP
-   * por doc_date; Maximo OC por created_at_source y contratos por
-   * start_date). Nada se suma entre monedas ni entre fuentes.
+   * por doc_date; Maximo OC por created_at_source, solicitudes (PR) por
+   * pr_issue_date y contratos por start_date). Nada se suma entre monedas
+   * ni entre fuentes.
+   *
+   * K6: series y tops de OC en la base de `TABLERO_MONTO_BASE`, con el
+   * subtotal sin IVA y las OC sin él por moneda; la serie de solicitudes de
+   * SAP ya es sin IVA (suma de sus líneas) y solo se rotula.
    */
   async getErp(dto: ReportPeriodDto) {
     const period = this.resolvePeriod(dto);
@@ -842,6 +881,9 @@ export class PurchaseReportsService {
       currency: string | null;
       count: number;
       monto: unknown;
+      /** K6: solo en las series de OC. */
+      subtotal?: unknown;
+      sin_subtotal?: number;
     };
     type StatusRow = { status: string | null; count: number };
     type SapVendorRow = {
@@ -850,6 +892,8 @@ export class PurchaseReportsService {
       currency: string | null;
       count: number;
       monto: unknown;
+      subtotal: unknown;
+      sin_subtotal: number;
     };
     type MaximoPoRow = {
       ponum: string;
@@ -857,6 +901,7 @@ export class PurchaseReportsService {
       vendor_name: string | null;
       currency: string | null;
       total_cost: unknown;
+      subtotal: unknown;
     };
     const [
       sapPoSerie,
@@ -868,16 +913,19 @@ export class PurchaseReportsService {
       maximoPoStatus,
       maximoContractStatus,
       maximoPos,
+      maximoPrStatus,
       xref,
     ] = await Promise.all([
       this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
         SELECT date_trunc('month', doc_date) AS month, currency, count(*)::int AS count,
-               coalesce(sum(doc_total), 0) AS monto
+               coalesce(sum(${sapPoMonto('sap_purchase_orders', TABLERO_MONTO_BASE)}), 0) AS monto,
+               ${poSubtotalColumns('sap_purchase_orders')}
         FROM sap_purchase_orders
         WHERE cancelled IS DISTINCT FROM true
           AND doc_date BETWEEN ${period.from} AND ${period.to}
           ${andSapPoCountedOnce('sap_purchase_orders')}
         GROUP BY 1, 2 ORDER BY 1`),
+      // solicitudes de SAP: doc_total ya es la suma de sus líneas (sin IVA)
       this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
         SELECT date_trunc('month', doc_date) AS month, currency, count(*)::int AS count,
                coalesce(sum(doc_total), 0) AS monto
@@ -907,11 +955,12 @@ export class PurchaseReportsService {
       // maestro de SAP; sin LIMIT porque también alimenta el top combinado
       this.prisma.$queryRaw<SapVendorRow[]>(Prisma.sql`
         SELECT t.card_code, coalesce(bp.card_name, t.card_name) AS card_name,
-               t.currency, t.count, t.monto
+               t.currency, t.count, t.monto, t.subtotal, t.sin_subtotal
         FROM (
           SELECT card_code, mode() WITHIN GROUP (ORDER BY card_name) AS card_name,
                  currency, count(*)::int AS count,
-                 coalesce(sum(doc_total), 0) AS monto
+                 coalesce(sum(${sapPoMonto('sap_purchase_orders', TABLERO_MONTO_BASE)}), 0) AS monto,
+                 ${poSubtotalColumns('sap_purchase_orders')}
           FROM sap_purchase_orders
           WHERE cancelled IS DISTINCT FROM true
             AND doc_date BETWEEN ${period.from} AND ${period.to}
@@ -922,7 +971,8 @@ export class PurchaseReportsService {
       this.prisma.$queryRaw<MonthAmount[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT date_trunc('month', created_at_source) AS month, currency, count(*)::int AS count,
-               coalesce(sum(total_cost), 0) AS monto
+               coalesce(sum(${maximoPoMonto('current', TABLERO_MONTO_BASE)}), 0) AS monto,
+               ${poSubtotalColumns('current')}
         FROM current
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
           AND created_at_source BETWEEN ${period.from} AND ${period.to}
@@ -941,27 +991,43 @@ export class PurchaseReportsService {
         WHERE start_date IS NULL OR start_date BETWEEN ${period.from} AND ${period.to}
         GROUP BY 1 ORDER BY count DESC`),
       // G1: OC del periodo; el proveedor efectivo se resuelve en memoria
+      // (K6: el monto en la base del tablero lo elige maximoVendorAmounts)
       this.prisma.$queryRaw<MaximoPoRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
-        SELECT ponum, vendor_id, vendor_name, currency, total_cost
+        SELECT ponum, vendor_id, vendor_name, currency, total_cost, subtotal
         FROM current
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
           AND created_at_source BETWEEN ${period.from} AND ${period.to}`),
+      // K4.5: solicitudes (PR) por el estatus DE LA PR, una por PR, creadas
+      // en el periodo (ISSUEDATE); el de contratos sigue aparte
+      this.prisma.$queryRaw<StatusRow[]>(Prisma.sql`
+        WITH prs AS (${CURRENT_MAXIMO_PRS})
+        SELECT coalesce(pr_status, 'sin_estatus') AS status,
+               count(DISTINCT prnum)::int AS count
+        FROM prs
+        WHERE pr_issue_date BETWEEN ${period.from} AND ${period.to}
+        GROUP BY 1 ORDER BY count DESC`),
       this.vendors.get(),
     ]);
 
-    // Serie mensual por moneda, zero-filled dentro del periodo.
-    const serie = (rows: MonthAmount[]) => {
+    // Serie mensual por moneda, zero-filled dentro del periodo. K6: las de
+    // OC traen además el subtotal sin IVA y las OC sin él por moneda.
+    const serie = (rows: MonthAmount[], conSubtotal = false) => {
       const currencies = Array.from(
         new Set(rows.map((r) => r.currency ?? 'sin_moneda')),
       );
       const months = zeroFilledMonths(period);
-      const index = new Map<string, { count: number; monto: number }>();
+      const index = new Map<
+        string,
+        { count: number; monto: number; subtotal: number; sin_subtotal: number }
+      >();
       for (const r of rows) {
         if (!r.month) continue;
         index.set(`${monthKey(r.month)}|${r.currency ?? 'sin_moneda'}`, {
           count: Number(r.count),
           monto: toNumber(r.monto) ?? 0,
+          subtotal: toNumber(r.subtotal) ?? 0,
+          sin_subtotal: Number(r.sin_subtotal ?? 0),
         });
       }
       return {
@@ -972,11 +1038,20 @@ export class PurchaseReportsService {
             (sum, c) => sum + (index.get(`${month}|${c}`)?.count ?? 0),
             0,
           ),
-          por_moneda: currencies.map((currency) => ({
-            currency,
-            count: index.get(`${month}|${currency}`)?.count ?? 0,
-            monto: index.get(`${month}|${currency}`)?.monto ?? 0,
-          })),
+          por_moneda: currencies.map((currency) => {
+            const entry = index.get(`${month}|${currency}`);
+            return {
+              currency,
+              count: entry?.count ?? 0,
+              monto: entry?.monto ?? 0,
+              ...(conSubtotal
+                ? {
+                    subtotal: entry?.subtotal ?? 0,
+                    sin_subtotal: entry?.sin_subtotal ?? 0,
+                  }
+                : {}),
+            };
+          }),
         })),
       };
     };
@@ -987,25 +1062,40 @@ export class PurchaseReportsService {
       currency: r.currency,
       count: Number(r.count),
       monto: toNumber(r.monto) ?? 0,
+      subtotal: toNumber(r.subtotal) ?? 0,
+      sin_subtotal: Number(r.sin_subtotal ?? 0),
       source: 'sap',
     }));
     const maximoAmounts = maximoVendorAmounts(maximoPos, xref);
 
     return {
       periodo: this.periodOut(period),
+      // K6: base de los montos de OC (series y tops); `subtotal` sin IVA va
+      // por moneda como dato secundario
+      monto_base: TABLERO_MONTO_BASE,
+      monto_nota: montoBaseNota(TABLERO_MONTO_BASE),
       sap: {
-        ordenes: { serie_mensual: serie(sapPoSerie), por_estatus: sapPoStatus },
+        ordenes: {
+          serie_mensual: serie(sapPoSerie, true),
+          por_estatus: sapPoStatus,
+        },
         solicitudes: {
           serie_mensual: serie(sapPrSerie),
           por_estatus: sapPrStatus,
+          // K6: ya era sin IVA (el SL no da el total de la solicitud)
+          monto_base: 'sin_iva' as const,
+          monto_nota: 'sin IVA (suma de las líneas de la solicitud)',
         },
         top_proveedores: rankVendors(sapAmounts, new Map()),
       },
       maximo: {
         ordenes: {
-          serie_mensual: serie(maximoPoSerie),
+          serie_mensual: serie(maximoPoSerie, true),
           por_estatus: maximoPoStatus,
         },
+        // K4.5: estatus de la PR (WAPPR, APPR, CLOSE, CAN) por su creación
+        solicitudes: { por_estatus: maximoPrStatus },
+        // estatus del contrato (periodo por start_date), como antes
         contratos: { por_estatus: maximoContractStatus },
         // G1: por proveedor efectivo (según SAP si la OC migró o por cruce)
         top_proveedores: rankVendors(maximoAmounts, xref.bpNames),

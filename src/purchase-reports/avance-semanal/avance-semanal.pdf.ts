@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import type { Response } from 'express';
 import type { AvancePage, DiasStats } from './avance-semanal.engine';
+import { montoBaseTexto } from './avance-semanal.reglas';
 import {
   LOGO_A3T_PNG,
   POPPINS_BOLD,
@@ -17,6 +18,11 @@ import {
  * I3 (2026-09-30): el sistema de la página va junto al título (Maximo / SAP)
  * y los marcadores del PDF agrupan las semanas por sistema (el índice del
  * acumulado, sin páginas extra).
+ *
+ * K5 (2026-10-05): la página de Maximo con el mismo formato que la de SAP
+ * (cerradas · canceladas · abiertas, días de cancelación con dato), sin
+ * fechas aproximadas ni "sin OC"; los montos dicen su base y el otro valor
+ * va en una línea chica.
  */
 
 type Doc = PDFKit.PDFDocument;
@@ -239,7 +245,7 @@ function header(doc: Doc, page: AvancePage) {
   });
   text(
     doc,
-    `Fuente: ${page.fuente.etiqueta}   ·   Datos al domingo ${page.semana.corte}   ·   Generado el ${generadoTexto(page.generado)} (hora del centro)`,
+    `Fuente: ${page.fuente.etiqueta}   ·   Datos al ${page.semana.corte_dia} ${page.semana.corte}   ·   Generado el ${generadoTexto(page.generado)} (hora del centro)`,
     M,
     80,
     { size: 7.5, color: C.grisTexto, width: W - 2 * M },
@@ -296,23 +302,23 @@ function avanceCard(
   const a = page.avance;
   const anio = page.semana.anio;
   const viernes = viernesCorto(page.semana.lunes);
+  // K5: las PR de Maximo emitidas sin aprobar no son recibidas; se dicen
+  const noRecibidas =
+    a.maximo_no_recibidas && page.opciones.reglas.recibida === 'aprobacion'
+      ? `${fmtInt(a.maximo_no_recibidas)} ${a.maximo_no_recibidas === 1 ? 'PR emitida sin aprobar va' : 'PR emitidas sin aprobar van'} aparte`
+      : undefined;
   const rows: Array<[string, string, string | undefined]> = [
     [
       fmtInt(a.recibidas_anio),
       `gestiones recibidas en ${anio} al ${viernes}`,
-      porFuente(page, (s) => s.recibidas_anio),
+      [porFuente(page, (s) => s.recibidas_anio), noRecibidas]
+        .filter(Boolean)
+        .join(' · ') || undefined,
     ],
     [
       fmtInt(a.nuevas_semana),
       'gestiones nuevas recibidas en la semana',
-      [
-        porFuente(page, (s) => s.nuevas_semana),
-        a.nuevas_aproximadas > 0
-          ? `${fmtInt(a.nuevas_aproximadas)} aprox.`
-          : undefined,
-      ]
-        .filter(Boolean)
-        .join(' · ') || undefined,
+      porFuente(page, (s) => s.nuevas_semana),
     ],
     [
       fmtInt(a.cerradas_anio),
@@ -334,23 +340,21 @@ function avanceCard(
   }
   if (a.anio_anterior) {
     const prev = a.anio_anterior;
-    const partes = [
-      page.fuente.clave !== 'maximo'
-        ? `${fmtInt(prev.abiertas)} abiertas`
-        : null,
-      page.fuente.clave !== 'sap'
-        ? `${fmtInt(prev.sin_oc)} sin OC (Maximo)`
-        : null,
-    ].filter(Boolean);
     const boxY = y + h - footerH - 8;
     doc.roundedRect(x + 10, boxY, w - 20, footerH, 5).fill(C.verdeFondo);
-    text(doc, `De ${prev.anio}: ${partes.join(' · ')}`, x + 16, boxY + 7, {
-      font: F.s,
-      size: 7,
-      color: C.gris,
-      width: w - 32,
-      height: 12,
-    });
+    text(
+      doc,
+      `De ${prev.anio}: ${fmtInt(prev.abiertas)} abiertas`,
+      x + 16,
+      boxY + 7,
+      {
+        font: F.s,
+        size: 7,
+        color: C.gris,
+        width: w - 32,
+        height: 12,
+      },
+    );
   }
 }
 
@@ -421,29 +425,10 @@ function diasCard(
     /** Qué cuenta la N del promedio ("cerradas con OC de 2026"). */
     nLabel: string;
     semanas: Array<{ lunes: string; n: number; dias: DiasStats }>;
-    noDisponible?: string | null;
   },
 ) {
   const top = card(doc, x, y, w, h, opts.title, opts.subtitle);
-  if (opts.noDisponible || !opts.anio) {
-    doc.roundedRect(x + 12, top + 6, w - 24, 60, 6).fill(C.fondo);
-    text(doc, 'No disponible', x + 20, top + 14, {
-      font: F.s,
-      size: 11,
-      color: C.grisTexto,
-      width: w - 40,
-    });
-    // la nota del motor dice "No disponible: …"; aquí ya va de título
-    const motivo = (opts.noDisponible ?? '').replace(/^No disponible:\s*/, '');
-    text(doc, motivo, x + 20, top + 32, {
-      size: 7.2,
-      color: C.grisTexto,
-      width: w - 40,
-      height: 30,
-    });
-    return;
-  }
-  const a = opts.anio;
+  const a = opts.anio ?? { promedio_dias: null, mediana_dias: null, total: 0 };
   if (a.total === 0) {
     text(
       doc,
@@ -485,7 +470,6 @@ const ESTADOS = [
   { key: 'cerradas', label: 'Cerradas', color: C.verde },
   { key: 'canceladas', label: 'Canceladas', color: C.grisSuave },
   { key: 'abiertas', label: 'Abiertas', color: C.dorado },
-  { key: 'sin_oc', label: 'Sin OC (Maximo)', color: C.marino },
 ] as const;
 
 function donaCard(
@@ -501,15 +485,8 @@ function donaCard(
   const cx = x + w / 2;
   const cy = top + 58;
   const total = e.recibidas;
-  const items = ESTADOS.filter((s) =>
-    s.key === 'abiertas'
-      ? page.fuente.clave !== 'maximo'
-      : s.key === 'sin_oc'
-        ? page.fuente.clave !== 'sap'
-        : s.key === 'canceladas'
-          ? page.fuente.clave !== 'maximo'
-          : true,
-  );
+  // K5: las mismas tres en todas las fuentes (Maximo ya trae la CAN)
+  const items = ESTADOS;
   if (total === 0) {
     ring(doc, cx, cy, 34, 52, 0, 2 * Math.PI, C.track);
   } else {
@@ -630,20 +607,7 @@ function medidoresCard(
     const detalle =
       c.recibidas === 0
         ? 'Sin gestiones'
-        : page.fuente.clave === 'maximo'
-          ? // Maximo no manda canceladas: solo cerradas y sin OC
-            `${fmtInt(c.cerradas)} cerradas\n${fmtInt(c.sin_oc)} sin OC`
-          : [
-              `${fmtInt(c.cerradas)} cerradas · ${fmtInt(c.canceladas)} canceladas`,
-              [
-                `${fmtInt(c.abiertas)} abiertas`,
-                page.fuente.clave !== 'sap'
-                  ? `${fmtInt(c.sin_oc)} sin OC`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(' · '),
-            ].join('\n');
+        : `${fmtInt(c.cerradas)} cerradas · ${fmtInt(c.canceladas)} canceladas\n${fmtInt(c.abiertas)} abiertas`;
     text(doc, detalle, cx - cellW / 2 + 2, cy + 12, {
       size: 6.3,
       color: C.grisTexto,
@@ -663,6 +627,8 @@ function montosCard(
   h: number,
 ) {
   const m = page.montos;
+  const deSapMigradas =
+    page.fuente.clave === 'maximo' && m.fuente_maximo === 'sap_migradas';
   const top = card(
     doc,
     x,
@@ -670,25 +636,57 @@ function montosCard(
     w,
     h,
     `Montos adjudicados ${m.anio}`,
-    'OC no canceladas, con IVA, por mes de la OC',
+    `${deSapMigradas ? 'OC de SAP creadas desde Maximo' : 'OC'} no canceladas, ${montoBaseTexto(m.base)}, por mes de la OC`,
   );
+  // K5: el otro valor (por moneda) y las OC sin subtotal, en una línea chica
+  const otroTexto = m.monedas
+    .filter((c) => m.otro.total[c] !== undefined)
+    .map((c) => `${c} ${fmtMoney(m.otro.total[c])}`)
+    .join(' · ');
+  const pie = [
+    otroTexto
+      ? `${m.otro.base === 'con_iva' ? 'Con IVA' : 'Sin IVA'}: ${otroTexto}`
+      : null,
+    m.sin_subtotal.ordenes > 0
+      ? `${fmtInt(m.sin_subtotal.ordenes)} OC sin subtotal (no se estiman)`
+      : null,
+  ].filter(Boolean);
   if (m.ordenes === 0) {
-    text(doc, 'Sin OC en el año.', x + 14, top + 6, {
-      size: 8,
-      color: C.grisTexto,
-      width: w - 28,
-    });
+    text(
+      doc,
+      m.sin_subtotal.ordenes > 0
+        ? `Ninguna OC del año trae el monto ${montoBaseTexto(m.base)}.`
+        : 'Sin OC en el año.',
+      x + 14,
+      top + 6,
+      { size: 8, color: C.grisTexto, width: w - 28 },
+    );
+    if (pie.length > 0) {
+      text(doc, pie.join('  ·  '), x + 14, top + 22, {
+        size: 6.5,
+        color: C.grisTexto,
+        width: w - 28,
+        height: 30,
+      });
+    }
     return;
   }
   const tableCur = m.monedas.filter((c) => c === 'MXN' || c === 'USD');
   const shown = tableCur.length > 0 ? tableCur : m.monedas.slice(0, 1);
-  const extra = m.monedas.filter((c) => !shown.includes(c));
+  const extra = m.monedas.filter(
+    (c) => !shown.includes(c) && m.total[c] !== undefined,
+  );
+  if (extra.length > 0) {
+    pie.unshift(
+      `Además: ${extra.map((c) => `${c} ${fmtMoney(m.total[c] ?? 0)}`).join(' · ')} (sin convertir)`,
+    );
+  }
   const tx = x + 10;
   const tw = w - 20;
   const mesW = 58;
   const curW = (tw - mesW) / shown.length;
   const rows = m.meses.length + 2;
-  const avail = y + h - top - (extra.length > 0 ? 18 : 8);
+  const avail = y + h - top - (pie.length > 0 ? 22 : 8);
   const rowH = Math.min(13, avail / rows);
   const size = rowH >= 12 ? 7.8 : 7;
   let ry = top;
@@ -750,9 +748,10 @@ function montosCard(
     width: mesW - 4,
   });
   shown.forEach((cur, i) => {
+    const t = m.total[cur];
     text(
       doc,
-      fmtMoney(m.total[cur] ?? 0),
+      t === undefined ? '—' : fmtMoney(t),
       tx + mesW + i * curW,
       ry + (rowH - size) / 2 - 1,
       {
@@ -764,14 +763,13 @@ function montosCard(
     );
   });
   ry += rowH + 3;
-  if (extra.length > 0) {
-    text(
-      doc,
-      `Además: ${extra.map((c) => `${c} ${fmtMoney(m.total[c] ?? 0)}`).join(' · ')} (sin convertir)`,
-      tx,
-      ry,
-      { size: 6.5, color: C.grisTexto, width: tw, height: 14 },
-    );
+  if (pie.length > 0) {
+    text(doc, pie.join('  ·  '), tx, ry, {
+      size: 6.5,
+      color: C.grisTexto,
+      width: tw,
+      height: 18,
+    });
   }
 }
 
@@ -865,7 +863,7 @@ function drawPage(doc: Doc, page: AvancePage, index: number, total: number) {
   avanceCard(doc, page, xs[0], upperY, widths[0], upperH);
   diasCard(doc, xs[1], upperY, widths[1], upperH, {
     title: 'Tiempo de cierre de gestiones',
-    subtitle: 'De la solicitud a su primera OC',
+    subtitle: page.cierre.nota,
     anio: page.cierre.anio,
     anioLabel: String(page.semana.anio),
     eventLabel: 'Cerradas',
@@ -878,9 +876,7 @@ function drawPage(doc: Doc, page: AvancePage, index: number, total: number) {
   });
   diasCard(doc, xs[2], upperY, widths[2], upperH, {
     title: 'Tiempo de cancelación',
-    subtitle: page.cancelacion.disponible
-      ? (page.cancelacion.nota ?? 'De la solicitud a su cancelación')
-      : null,
+    subtitle: page.cancelacion.nota,
     anio: page.cancelacion.anio,
     anioLabel: String(page.semana.anio),
     eventLabel: 'Canceladas',
@@ -890,7 +886,6 @@ function drawPage(doc: Doc, page: AvancePage, index: number, total: number) {
       n: s.canceladas,
       dias: s.dias,
     })),
-    noDisponible: page.cancelacion.disponible ? null : page.cancelacion.nota,
   });
   donaCard(doc, page, xs[3], upperY, widths[3], upperH);
 

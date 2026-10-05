@@ -1,6 +1,14 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AvanceSemanalDto } from '../dto/avance-semanal.dto';
+import {
+  AvanceConciliacionDto,
+  AvanceSemanalDto,
+} from '../dto/avance-semanal.dto';
+import {
+  type ConciliacionAvance,
+  conciliarAvance,
+  opcionesConciliacion,
+} from './avance-semanal.conciliacion';
 import { buildAvanceData, loadAvanceRows } from './avance-semanal.data';
 import {
   type AvanceData,
@@ -16,6 +24,7 @@ import {
   weeksBetween,
 } from './avance-semanal.engine';
 import { renderAvancePdf } from './avance-semanal.pdf';
+import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
 
 /**
  * H1 (reunión con Ingrid 2026-09-29) — "Reporte de avance semanal" en un
@@ -27,6 +36,10 @@ import { renderAvancePdf } from './avance-semanal.pdf';
  * de Maximo y una de SAP, homologadas. El acumulado va por sección: todas las
  * semanas de Maximo (de la más nueva a la más vieja) y luego las de SAP; el
  * índice son los marcadores del PDF (sin páginas extra).
+ *
+ * K5 (2026-10-05): el reporte usa las reglas de avance-semanal.reglas.ts
+ * (defaults); la conciliación contra la serie de Jorge prueba variantes con
+ * los mismos datos y el mismo motor.
  */
 
 /** Tope del acumulado: poco más de un año de semanas. */
@@ -36,8 +49,8 @@ const MAX_WEEKS = 60;
 export class AvanceSemanalService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async loadData(): Promise<AvanceData> {
-    return buildAvanceData(await loadAvanceRows(this.prisma));
+  async loadData(reglas: AvanceReglas = AVANCE_REGLAS): Promise<AvanceData> {
+    return buildAvanceData(await loadAvanceRows(this.prisma), reglas);
   }
 
   /**
@@ -88,6 +101,23 @@ export class AvanceSemanalService {
         ? `reporte_avance_semanal_${newest}${suffix}.pdf`
         : `reporte_avance_semanal_${oldest}_al_${newest}${suffix}.pdf`;
     return { buffer, filename };
+  }
+
+  /**
+   * K5.7: conciliación de la página de Maximo contra la serie de Jorge con
+   * la variante pedida (lo que no viene = default). Solo lectura; la corre
+   * el principal en prod para decidir los defaults.
+   */
+  async getConciliacion(
+    dto: AvanceConciliacionDto,
+  ): Promise<ConciliacionAvance & { duracion_ms: number }> {
+    const t0 = Date.now();
+    const opciones = opcionesConciliacion(dto);
+    const data = await this.loadData(opciones.reglas);
+    return {
+      ...conciliarAvance(data, opciones, new Date()),
+      duracion_ms: Date.now() - t0,
+    };
   }
 
   private reporte(dto: AvanceSemanalDto): AvanceReporte {

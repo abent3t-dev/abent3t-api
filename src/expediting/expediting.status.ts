@@ -15,6 +15,9 @@ import { MS_PER_DAY } from '../contracts/contracts.dates';
  * CUALQUIERA de los dos sistemas no es una entrega pendiente, y en Maximo la
  * entrega se cierra por la recepción (RECEIPTS = COMPLETE), no por el
  * estatus. Ver `erpClosure`.
+ *
+ * K1/K2 (2026-10-05): recepción e integración con SAP (PO5) en palabras,
+ * para sus columnas y el Excel (`receiptLabel`, `integrationLabel`).
  */
 
 export const RISK_WINDOW_DAYS = 15;
@@ -82,24 +85,81 @@ export const ERP_CLOSED_BY_LABELS: Record<ErpClosedBy, string> = {
   recepcion_completa: 'Recepción completa en Maximo',
 };
 
-/** I1b: recepción de Maximo (RECEIPTS) en palabras. */
+/** Celda que no aplica: la fila no tiene OC de Maximo detrás. */
+export const NOT_APPLICABLE = '—';
+
+/**
+ * ¿La fila tiene una OC de Maximo detrás? La propia (Maximo) o la que
+ * originó la de SAP (migrada). ABENT y la OC de SAP sola, no.
+ */
+export function hasMaximoPo(row: {
+  source: string;
+  maximo_ponum: string | null;
+}): boolean {
+  return (
+    row.source === 'maximo' || (row.source === 'sap' && !!row.maximo_ponum)
+  );
+}
+
+/**
+ * K1 (2026-10-05): recepción de Maximo (RECEIPTS) en la columna "Recepción".
+ * Misma tabla en el front (`types/purchases.ts`), con su color.
+ */
 export const RECEIPT_STATUS_LABELS: Record<string, string> = {
-  COMPLETE: 'recepción completa',
-  PARTIAL: 'recepción parcial',
-  NONE: 'sin recepción',
+  COMPLETE: 'Completa',
+  PARTIAL: 'Parcial',
+  NONE: 'Sin recibir',
 };
 
-/** "INPRG en Maximo · recepción completa" (tooltip y export). */
-export function maximoStatusText(row: {
-  maximo_status: string | null;
+export const RECEIPT_NOT_AVAILABLE = 'No disponible';
+
+/** Recepción en palabras; null = "No disponible"; un valor desconocido, tal cual. */
+export function receiptStatusLabel(status: string | null): string {
+  if (!status) return RECEIPT_NOT_AVAILABLE;
+  return RECEIPT_STATUS_LABELS[status.toUpperCase()] ?? status;
+}
+
+/** K1: columna "Recepción": "—" en ABENT y en la OC de SAP sola. */
+export function receiptLabel(row: {
+  source: string;
+  maximo_ponum: string | null;
   receipt_status: string | null;
-}): string | null {
-  if (!row.maximo_status) return null;
-  const receipt = row.receipt_status
-    ? (RECEIPT_STATUS_LABELS[row.receipt_status.toUpperCase()] ??
-      `recepción ${row.receipt_status}`)
-    : null;
-  return receipt ? `${row.maximo_status} · ${receipt}` : row.maximo_status;
+}): string {
+  return hasMaximoPo(row)
+    ? receiptStatusLabel(row.receipt_status)
+    : NOT_APPLICABLE;
+}
+
+/**
+ * K2 (2026-10-05): estado de integración con SAP (PO.PO5 de Maximo, guardado
+ * literal). Misma tabla en el front, con el color y el hint del title:
+ * PROCESADO = migró sola a SAP; ERROR = se captura a mano en SAP;
+ * ACTUALIZAR y AGREGAR, significado preguntado a CIISA.
+ */
+export const INTEGRATION_STATUS_LABELS: Record<string, string> = {
+  PROCESADO: 'Procesado',
+  ERROR: 'Error',
+  ACTUALIZAR: 'Actualizar',
+  AGREGAR: 'Agregar',
+};
+
+export const INTEGRATION_NO_DATA = 'Sin dato';
+
+/** PO5 en palabras; null = "Sin dato"; un valor desconocido, tal cual. */
+export function integrationStatusLabel(status: string | null): string {
+  if (!status) return INTEGRATION_NO_DATA;
+  return INTEGRATION_STATUS_LABELS[status.toUpperCase()] ?? status;
+}
+
+/** K2: columna "Integración SAP (PO5)": "—" en ABENT y en la OC de SAP sola. */
+export function integrationLabel(row: {
+  source: string;
+  maximo_ponum: string | null;
+  integration_status: string | null;
+}): string {
+  return hasMaximoPo(row)
+    ? integrationStatusLabel(row.integration_status)
+    : NOT_APPLICABLE;
 }
 
 export interface ErpClosureInput {
@@ -119,7 +179,7 @@ const MAXIMO_CANCELLED = new Set(['CAN', 'CANCEL']);
  *  - I1a (ya): cerrada (CLOSE) o cancelada (CAN) en Maximo, o su copia en SAP
  *    cerrada o cancelada → entregada / cancelada, aunque el otro sistema la
  *    tenga abierta;
- *  - I1b (cuando CIISA exponga RECEIPTS): recepción COMPLETE → entregada.
+ *  - I1b (RECEIPTS llega desde el 2-oct): recepción COMPLETE → entregada.
  *    PARTIAL sigue abierta (con badge); NONE o null, como hoy.
  * null = sigue abierta y se deriva por su fecha comprometida.
  */

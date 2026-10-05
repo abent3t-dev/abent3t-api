@@ -104,9 +104,21 @@ export interface MaximoContractView extends SupplierFields {
   approved_by: string | null;
   approved_by_name: string | null;
   created_at_source: Date | null;
+  /**
+   * K3/K4 (2026-10-05): estatus DE LA PR (raíz de AB_CONTRATOS: WAPPR, APPR,
+   * CLOSE, CAN), aparte de `status` (el del contrato; sin contrato, el de la
+   * PR). null = sin dato (antes del primer full con el mapper de K3).
+   */
+  pr_status: string | null;
+  /** K3: ISSUEDATE de la PR (su creación). */
+  pr_issue_date: Date | null;
+  /** K3: primer APPR de la PR = llegada a Compras; null = sin APPR. */
+  pr_approved_at: Date | null;
+  /** K3: STATUSDATE de la PR (desde cuándo está en su estatus). */
+  pr_status_date: Date | null;
   contract_ref_num: string | null;
   contract_value: number | null;
-  /** D7: monto de la PR; null = la Object Structure no lo expone. */
+  /** D7: monto de la PR (PR.TOTALCOST, base desconocida); null = sin dato. */
   pr_total: number | null;
   /** D8: consumido del contrato; null = no expuesto por la OS. */
   consumed_value: number | null;
@@ -205,6 +217,11 @@ export interface MaximoSummary {
     withContract: number;
     byStatus: MaximoStatusCount[];
   };
+  /**
+   * K4.4 (2026-10-05): solicitudes (PR) por el estatus DE LA PR, una por PR
+   * (`CURRENT_MAXIMO_PRS`); con año, por su creación (`pr_issue_date`).
+   */
+  requests: { total: number; byStatus: MaximoStatusCount[] };
   lastSync: {
     purchase_orders: MaximoLastSyncRun | null;
     contracts: MaximoLastSyncRun | null;

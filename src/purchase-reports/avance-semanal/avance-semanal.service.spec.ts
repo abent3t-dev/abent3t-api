@@ -1,12 +1,18 @@
+import 'reflect-metadata';
 import { BadRequestException } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
+import { ROLES_KEY } from '../../common/decorators/roles.decorator';
 import type { PrismaService } from '../../prisma/prisma.service';
+import { PurchaseReportsController } from '../purchase-reports.controller';
 import { buildAvancePage, type AvanceData } from './avance-semanal.engine';
 import { renderAvancePdf } from './avance-semanal.pdf';
+import { AVANCE_REGLAS } from './avance-semanal.reglas';
 import { AvanceSemanalService } from './avance-semanal.service';
 
 /**
  * H1 — semanas pedidas, nombre del archivo y prueba de humo del PDF (no
- * vacío, una página por semana).
+ * vacío, una página por semana). K5 (2026-10-05): la página de Maximo con
+ * canceladas y la conciliación contra Jorge (solo super_admin).
  */
 
 const D = (iso: string) => new Date(`${iso}T00:00:00Z`);
@@ -136,19 +142,34 @@ describe('PDF del reporte de avance semanal', () => {
           sistema: 'sap',
           folio: '1',
           recibida: D('2026-01-12'),
-          fecha_origen: 'exacta',
+          fecha_origen: 'documento',
+          inicio_dias: D('2026-01-12'),
           primera_oc: D('2026-01-20'),
           cierre_sin_oc: null,
           cancelada: null,
+          de_contrato: false,
         },
         {
           sistema: 'maximo',
           folio: 'PR1',
           recibida: D('2025-12-15'),
-          fecha_origen: 'folio',
+          fecha_origen: 'aprobacion',
+          inicio_dias: D('2025-12-15'),
           primera_oc: null,
           cierre_sin_oc: null,
           cancelada: null,
+          de_contrato: false,
+        },
+        {
+          sistema: 'maximo',
+          folio: 'PR2',
+          recibida: D('2026-01-13'),
+          fecha_origen: 'aprobacion',
+          inicio_dias: D('2026-01-13'),
+          primera_oc: null,
+          cierre_sin_oc: null,
+          cancelada: D('2026-01-22'),
+          de_contrato: false,
         },
       ],
       ordenes: [
@@ -157,6 +178,7 @@ describe('PDF del reporte de avance semanal', () => {
           fecha: D('2026-01-20'),
           moneda: 'MXN',
           monto: 1234567.89,
+          subtotal: 1064282.66,
           contada_en_maximo: false,
         },
         {
@@ -164,17 +186,71 @@ describe('PDF del reporte de avance semanal', () => {
           fecha: D('2026-01-21'),
           moneda: 'EUR',
           monto: 500,
+          subtotal: null,
           contada_en_maximo: false,
         },
       ],
-      maximo_sin_fecha: 2,
+      maximo_no_recibidas: [
+        { prnum: 'PR3', emision: D('2026-01-14'), pr_status: 'WAPPR' },
+        { prnum: 'PR4', emision: null, pr_status: null },
+      ],
       sap_desde: D('2026-01-12'),
     };
-    const pages = ['2026-01-19', '2026-01-26'].map((lunes) =>
-      buildAvancePage(data, D(lunes), 'todas', NOW),
+    const pages = ['2026-01-19', '2026-01-26'].flatMap((lunes) =>
+      (['todas', 'maximo'] as const).map((fuente) =>
+        buildAvancePage(data, D(lunes), fuente, NOW),
+      ),
     );
+    expect(pages[1].cancelacion.semanas.map((s) => s.canceladas)).toEqual([
+      0, 0, 0, 1,
+    ]);
     const pdf = await renderAvancePdf(pages);
-    expect(pageCount(pdf)).toBe(2);
+    expect(pageCount(pdf)).toBe(4);
     expect(pdf.length).toBeGreaterThan(10_000);
+  });
+});
+
+describe('K5.7: conciliación contra la serie de Jorge', () => {
+  it('pide super_admin y no entra a las lecturas abiertas', () => {
+    const proto = PurchaseReportsController.prototype as unknown as Record<
+      string,
+      object
+    >;
+    const handler = proto.getAvanceConciliacion;
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
+      'avance-semanal/conciliacion',
+    );
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(0); // GET
+    expect(Reflect.getMetadata(ROLES_KEY, handler)).toEqual(['super_admin']);
+  });
+
+  it('sin datos: 38 semanas, el criterio no se cumple y los parámetros cambian solo su regla', async () => {
+    const prisma = { $queryRaw: jest.fn().mockResolvedValue([]) };
+    const service = new AvanceSemanalService(
+      prisma as unknown as PrismaService,
+    );
+    const conc = await service.getConciliacion({
+      recibida: 'emision',
+      corte: 'viernes',
+    });
+    expect(conc.semanas).toHaveLength(38);
+    expect(conc.semanas[0]).toMatchObject({ pagina: 1, lunes: '2026-09-21' });
+    expect(conc.semanas[37]).toMatchObject({
+      pagina: 38,
+      lunes: '2026-01-05',
+    });
+    expect(conc.criterio.cumple).toBe(false);
+    expect(conc.opciones.reglas).toEqual({
+      ...AVANCE_REGLAS,
+      recibida: 'emision',
+      corte: 'viernes',
+    });
+    expect(conc.montos.map((m) => m.anio)).toEqual([2026, 2025]);
+    expect(conc.anual.map((a) => a.anio)).toEqual([
+      2022, 2023, 2024, 2025, 2026,
+    ]);
+    expect(conc.duracion_ms).toBeGreaterThanOrEqual(0);
+    // una sola carga de datos (6 consultas)
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(6);
   });
 });

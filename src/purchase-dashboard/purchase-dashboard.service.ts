@@ -3,19 +3,24 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
-  andMaximoPrInWindow,
   andSapPoCountedOnce,
   andYear,
-  CURRENT_MAXIMO_CONTRACTS,
   CURRENT_MAXIMO_POS,
   CURRENT_MAXIMO_PRS,
-  loadMaximoPrFolioWindow,
+  maximoGestionSql,
+  maximoPoMonto,
+  montoBaseNota,
   pendingWindowStart,
+  poSubtotalColumns,
   sapPoDuplicatedInMaximo,
+  sapPoMonto,
+  TABLERO_MONTO_BASE,
 } from '../common/sql/erp-views.sql';
+import type { MaximoGestionRow } from '../common/sql/erp-views.sql';
 import {
+  MAXIMO_GESTION_APROBACION_DEFINICION,
   MAXIMO_GESTION_DEFINICION,
-  maximoGestionDays,
+  maximoGestion,
   SAP_GESTION_DEFINICION,
   sapGestionDays,
 } from './sap-gestion-days';
@@ -55,20 +60,39 @@ import { loadPendingRequests } from './pending-requests';
  *  - G3: pendientes de gestionar = RQ sin OC (ver pending-requests.ts), en el
  *    año elegido o en los últimos 12 meses.
  *
+ * Bloque K (2026-10-05, K4): sin folio. Las PR de Maximo se cuentan por PR
+ * (`CURRENT_MAXIMO_PRS`) con su fecha real; pendientes = APPR sin OC ni
+ * contrato (las WAPPR van aparte) y G2 toma la fecha de la PR de
+ * AB_CONTRATOS cuando la línea de la OC no la trae.
+ *
  * Definiciones (van también en los tooltips de las tarjetas):
- *  - Solicitudes: SAP por doc_date; Maximo PR (raíz de maximo_contracts)
- *    ubicadas por folio en el año (AB_CONTRATOS no expone su fecha).
+ *  - Solicitudes: SAP por doc_date; Maximo PR distintas por su creación
+ *    (`pr_issue_date`, ISSUEDATE), con "N llegaron a Compras" (primer APPR).
  *  - Pendientes de gestionar: G3.
  *  - Días de gestión: G2; propias = business_days.
  *  - Por recibir: SAP OC abiertas no canceladas; Maximo OC APPR/INPRG;
  *    propias emitida/en_transito (enum po_status real de la BD). SAP no
  *    reporta "tránsito".
+ *
+ * K6 (2026-10-05): los montos de Órdenes van en la base de
+ * `TABLERO_MONTO_BASE` (con IVA hasta que conteste Ingrid) con el subtotal
+ * sin IVA y las OC sin él como dato secundario, por moneda. "Por recibir"
+ * se queda con IVA. CAPEX/OPEX suma sin IVA en las dos fuentes.
  */
 
 export interface CurrencyAmount {
   currency: string | null;
+  /** Monto de la tarjeta (Órdenes: en la base de `TABLERO_MONTO_BASE`). */
   total: number;
   count: number;
+  /**
+   * K6: dato secundario sin IVA = suma del `subtotal` de las OC que lo
+   * tienen; `sin_subtotal` = cuántas no lo tienen (sin líneas o con alguna
+   * sin importe; las propias de ABENT siempre: base desconocida). Solo en
+   * Órdenes: por recibir, ahorro y CAPEX/OPEX no lo traen.
+   */
+  subtotal?: number;
+  sin_subtotal?: number;
 }
 
 export interface SourceCount {
@@ -83,7 +107,15 @@ export interface SourceOrders {
 
 type CountRow = { total: number; pendientes: number };
 type TotalRow = { total: number };
-type AmountRow = { currency: string | null; total: unknown; count: number };
+type MaximoPrTotalRow = { total: number; llegaron: number };
+type AmountRow = {
+  currency: string | null;
+  total: unknown;
+  count: number;
+  /** K6: solo en las consultas de OC con `poSubtotalColumns`. */
+  subtotal?: unknown;
+  sin_subtotal?: number;
+};
 type AvgRow = { dias: unknown };
 type MigratedRow = { total: number; en_maximo: number };
 type RangeRow = {
@@ -104,6 +136,8 @@ type ClasRow = {
   currency: string | null;
   docs: number;
   total: unknown;
+  /** K6: Maximo, OC clasificadas sin subtotal (no suman al monto). */
+  sin_subtotal?: number;
 };
 
 function toNumber(value: unknown): number | null {
@@ -112,15 +146,39 @@ function toNumber(value: unknown): number | null {
 
 function toAmounts(rows: AmountRow[]): CurrencyAmount[] {
   return rows
-    .map((r) => ({
-      currency: r.currency,
-      total: toNumber(r.total) ?? 0,
-      count: Number(r.count),
-    }))
+    .map(
+      (r): CurrencyAmount => ({
+        currency: r.currency,
+        total: toNumber(r.total) ?? 0,
+        count: Number(r.count),
+        // K6: solo las consultas de OC traen el subtotal
+        ...(r.subtotal === undefined
+          ? {}
+          : {
+              subtotal: toNumber(r.subtotal) ?? 0,
+              sin_subtotal: Number(r.sin_subtotal ?? 0),
+            }),
+      }),
+    )
     .filter((r) => r.count > 0);
 }
 
-/** Suma por moneda de varias fuentes (misma moneda se suma, distintas no). */
+/**
+ * K6: OC propias de ABENT. El modelo propio no dice si `amount` lleva IVA
+ * (base desconocida): no suman al subtotal y van todas a `sin_subtotal`.
+ */
+function abentAmounts(rows: AmountRow[]): CurrencyAmount[] {
+  return toAmounts(rows).map((r) => ({
+    ...r,
+    subtotal: 0,
+    sin_subtotal: r.count,
+  }));
+}
+
+/**
+ * Suma por moneda de varias fuentes (misma moneda se suma, distintas no).
+ * K6: también suma `subtotal` y `sin_subtotal` cuando las filas los traen.
+ */
 export function mergeAmounts(lists: CurrencyAmount[][]): CurrencyAmount[] {
   const map = new Map<string, CurrencyAmount>();
   for (const list of lists) {
@@ -133,6 +191,11 @@ export function mergeAmounts(lists: CurrencyAmount[][]): CurrencyAmount[] {
       };
       entry.total += row.total;
       entry.count += row.count;
+      if (row.subtotal !== undefined || row.sin_subtotal !== undefined) {
+        entry.subtotal = (entry.subtotal ?? 0) + (row.subtotal ?? 0);
+        entry.sin_subtotal =
+          (entry.sin_subtotal ?? 0) + (row.sin_subtotal ?? 0);
+      }
       map.set(key, entry);
     }
   }
@@ -160,27 +223,18 @@ export class PurchaseDashboardService {
     const maximoPoYear = andYear('created_at_source', year);
     const abentYear = andYear('created_at', year);
     const countedOnce = andSapPoCountedOnce('sap_purchase_orders');
-    // G3: periodo de las solicitudes: el año elegido o, para los
-    // pendientes sin año, los últimos 12 meses
+    // G3: periodo de los pendientes: el año elegido o, sin año, los últimos
+    // 12 meses
     const yearFrom = year ? new Date(Date.UTC(year, 0, 1)) : null;
     const yearTo = year ? new Date(Date.UTC(year + 1, 0, 1)) : null;
-    const [prYearWindow, pending] = await Promise.all([
-      yearFrom
-        ? loadMaximoPrFolioWindow(this.prisma, yearFrom, yearTo)
-        : Promise.resolve(null),
-      loadPendingRequests(
-        this.prisma,
-        yearFrom ?? pendingWindowStart(),
-        yearTo,
-      ),
-    ]);
 
     const [
+      pending,
       sapPr,
       sapPo,
       sapPoOpen,
       maximoPr,
-      maximoGestion,
+      maximoGestionRows,
       maximoPo,
       maximoPoOpen,
       abentRq,
@@ -192,42 +246,53 @@ export class PurchaseDashboardService {
       range,
       years,
     ] = await Promise.all([
+      loadPendingRequests(
+        this.prisma,
+        yearFrom ?? pendingWindowStart(),
+        yearTo,
+      ),
       // SAP — solicitudes de pedido (los pendientes vienen de G3)
       this.prisma.$queryRaw<TotalRow[]>(Prisma.sql`
         SELECT count(*)::int AS total
         FROM sap_purchase_requests WHERE true ${sapPrYear}`),
-      // SAP — órdenes de compra (no canceladas, contadas una vez), por moneda
+      // SAP — órdenes de compra (no canceladas, contadas una vez), por moneda;
+      // K6: en la base del tablero, con el subtotal sin IVA de dato
       this.prisma.$queryRaw<AmountRow[]>(Prisma.sql`
-        SELECT currency, coalesce(sum(doc_total), 0) AS total, count(*)::int AS count
+        SELECT currency,
+               coalesce(sum(${sapPoMonto('sap_purchase_orders', TABLERO_MONTO_BASE)}), 0) AS total,
+               ${poSubtotalColumns('sap_purchase_orders')}, count(*)::int AS count
         FROM sap_purchase_orders
         WHERE cancelled IS DISTINCT FROM true ${countedOnce} ${sapPoYear}
         GROUP BY currency`),
+      // por recibir: sin cambio en K6 (con IVA)
       this.prisma.$queryRaw<AmountRow[]>(Prisma.sql`
         SELECT currency, coalesce(sum(doc_total), 0) AS total, count(*)::int AS count
         FROM sap_purchase_orders
         WHERE document_status = 'bost_Open' AND cancelled IS DISTINCT FROM true
           ${countedOnce} ${sapPoYear}
         GROUP BY currency`),
-      // Maximo — PR (raíz de maximo_contracts, vista actual); con año, por folio
-      this.prisma.$queryRaw<TotalRow[]>(Prisma.sql`
-        WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
-        SELECT count(*)::int AS total
-        FROM current c WHERE c.prnum IS NOT NULL
-          ${andMaximoPrInWindow('c', prYearWindow)}`),
-      // G2: días de gestión Maximo = fecha de la OC − PR.ISSUEDATE
-      this.prisma.$queryRaw<Array<{ dias: unknown }>>(Prisma.sql`
-        WITH current AS (${CURRENT_MAXIMO_POS})
-        SELECT CASE WHEN pr_issue_date IS NOT NULL AND created_at_source IS NOT NULL
-                    THEN extract(epoch FROM (created_at_source - pr_issue_date)) / 86400
-               END AS dias
-        FROM current
-        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL') ${maximoPoYear}`),
-      // Maximo — OC vigentes (no canceladas), por moneda
+      // K4.3: Maximo — PR distintas por su creación (ISSUEDATE), como SAP por
+      // doc_date; `llegaron` = con primer APPR (llegaron a Compras)
+      this.prisma.$queryRaw<MaximoPrTotalRow[]>(Prisma.sql`
+        WITH prs AS (${CURRENT_MAXIMO_PRS})
+        SELECT count(DISTINCT p.prnum)::int AS total,
+               count(DISTINCT p.prnum) FILTER (WHERE p.pr_approved_at IS NOT NULL)::int AS llegaron
+        FROM prs p WHERE true ${andYear('p.pr_issue_date', year)}`),
+      // G2: días de gestión Maximo = fecha de la OC − creación de su PR
+      // (K4.3: con el respaldo de AB_CONTRATOS y el dato desde la aprobación)
+      this.prisma.$queryRaw<MaximoGestionRow[]>(
+        maximoGestionSql(yearFrom, yearTo),
+      ),
+      // Maximo — OC vigentes (no canceladas), por moneda; K6: en la base del
+      // tablero, con el subtotal sin IVA (Σ LINECOST) de dato
       this.prisma.$queryRaw<AmountRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
-        SELECT currency, coalesce(sum(total_cost), 0) AS total, count(*)::int AS count
-        FROM current WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL') ${maximoPoYear}
-        GROUP BY currency`),
+        SELECT c.currency,
+               coalesce(sum(${maximoPoMonto('c', TABLERO_MONTO_BASE)}), 0) AS total,
+               ${poSubtotalColumns('c')}, count(*)::int AS count
+        FROM current c WHERE coalesce(c.status, '') NOT IN ('CAN', 'CANCEL') ${maximoPoYear}
+        GROUP BY c.currency`),
+      // por recibir: sin cambio en K6 (con IVA)
       this.prisma.$queryRaw<AmountRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT currency, coalesce(sum(total_cost), 0) AS total, count(*)::int AS count
@@ -291,15 +356,18 @@ export class PurchaseDashboardService {
             SELECT doc_entry, doc_date FROM sap_purchase_requests
             WHERE doc_entry IN (${Prisma.join(requestEntries)})`);
     const sapOcGestion = sapGestionDays(gestionPos, gestionPrs);
-    const maximoOcGestion = maximoGestionDays(maximoGestion);
+    const maximoOcGestion = maximoGestion(maximoGestionRows);
 
     const src = (row: CountRow[] | undefined): SourceCount => ({
       total: Number(row?.[0]?.total ?? 0),
       pendientes: Number(row?.[0]?.pendientes ?? 0),
     });
     const totalOf = (rows: TotalRow[]) => Number(rows[0]?.total ?? 0);
-    const orders = (rows: AmountRow[]): SourceOrders => {
-      const amounts = toAmounts(rows);
+    const orders = (
+      rows: AmountRow[],
+      amountsOf: (rows: AmountRow[]) => CurrencyAmount[] = toAmounts,
+    ): SourceOrders => {
+      const amounts = amountsOf(rows);
       return {
         count: amounts.reduce((sum, r) => sum + r.count, 0),
         monto_por_moneda: amounts,
@@ -314,19 +382,32 @@ export class PurchaseDashboardService {
       },
       maximo: {
         total: totalOf(maximoPr),
-        // null = sin fechas de PR conocidas para ubicar el periodo
+        // K4.3: de esas, las que llegaron a Compras (primer APPR); null =
+        // ninguna PR tiene estatus todavía (antes del primer full)
+        llegaron_a_compras:
+          pending.maximo.pendientes === null
+            ? null
+            : Number(maximoPr[0]?.llegaron ?? 0),
+        // K4: APPR sin OC ni contrato, por fecha de aprobación; null = sin base
         pendientes: pending.maximo.pendientes,
         pendientes_sin_limite: pending.maximo.sin_limite,
-        // I8: PR de contrato sin OC, aparte (la OC se genera en automático)
+        // I8: APPR de contrato sin OC, aparte (la OC se genera en automático)
         de_contrato: pending.maximo.de_contrato,
         de_contrato_sin_limite: pending.maximo.de_contrato_sin_limite,
+        // K4: APPR que ya tienen OC (dato): pendientes + de_contrato + estas = APPR
+        aprobadas_con_oc: pending.maximo.aprobadas_con_oc,
+        aprobadas_con_oc_sin_limite: pending.maximo.aprobadas_con_oc_sin_limite,
+        // K4: WAPPR (todavía no llegan a Compras), por emisión; no se suman
+        en_aprobacion: pending.maximo.en_aprobacion,
+        en_aprobacion_sin_limite: pending.maximo.en_aprobacion_sin_limite,
       },
       abent: src(abentRq),
     };
     const ordenes = {
       sap: orders(sapPo),
       maximo: orders(maximoPo),
-      abent: orders(abentPo),
+      // K6: base desconocida → todas a sin_subtotal
+      abent: orders(abentPo, abentAmounts),
     };
     const porRecibir = {
       sap: orders(sapPoOpen),
@@ -359,7 +440,15 @@ export class PurchaseDashboardService {
       // G2: una definición por sistema; null = sin base ("No disponible").
       dias_gestion: {
         sap: { ...sapOcGestion, definicion: SAP_GESTION_DEFINICION },
-        maximo: { ...maximoOcGestion, definicion: MAXIMO_GESTION_DEFINICION },
+        maximo: {
+          ...maximoOcGestion.creacion,
+          definicion: MAXIMO_GESTION_DEFINICION,
+        },
+        // K4.3: dato secundario, desde la llegada a Compras (primer APPR)
+        maximo_desde_aprobacion: {
+          ...maximoOcGestion.desde_aprobacion,
+          definicion: MAXIMO_GESTION_APROBACION_DEFINICION,
+        },
         abent: avgOrNull(abentRqDias),
       },
       ordenes: {
@@ -369,6 +458,10 @@ export class PurchaseDashboardService {
         ),
         por_fuente: ordenes,
         migradas: migradasInfo,
+        // K6: base de `total`; `subtotal` (sin IVA) y `sin_subtotal` van
+        // por moneda como dato secundario
+        monto_base: TABLERO_MONTO_BASE,
+        monto_nota: montoBaseNota(TABLERO_MONTO_BASE),
       },
       por_recibir: {
         total: sum(porRecibir),
@@ -376,6 +469,9 @@ export class PurchaseDashboardService {
           Object.values(porRecibir).map((o) => o.monto_por_moneda),
         ),
         por_fuente: porRecibir,
+        // K6: se queda con IVA, sin subtotal
+        monto_base: 'con_iva' as const,
+        monto_nota: montoBaseNota('con_iva'),
       },
       datos: {
         sap_desde: iso(range[0]?.sap_desde),
@@ -400,6 +496,12 @@ export class PurchaseDashboardService {
    * en Maximo). Por moneda y por fuente; respeta el año (D4) y no cuenta dos
    * veces las OC migradas (D1). Sin captura → `disponible=false` (la UI
    * muestra "No disponible (sin captura)", nunca 0).
+   *
+   * K6 (2026-10-05): CAPEX/OPEX va sin IVA en las dos fuentes. SAP ya
+   * sumaba el importe de la línea; Maximo sumaba TOTALCOST (con IVA) y la
+   * tarjeta mezclaba bases: ahora suma el `subtotal` (Σ LINECOST). Las OC
+   * clasificadas sin subtotal cuentan en documentos, no en el monto, y la
+   * nota dice cuántas son. No depende de TABLERO_MONTO_BASE.
    */
   async getOrdersKpis(year: number | null = null) {
     const sapYear = andYear('po.doc_date', year);
@@ -420,8 +522,8 @@ export class PurchaseDashboardService {
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL') AND ab_ahorro IS NOT NULL ${maximoYear}
         GROUP BY currency`),
       // SAP: la clasificación vive en la línea (U_Clas_gts); el importe de
-      // la línea va en la moneda del documento (LineTotal en MXN, RowTotalFC
-      // en documentos extranjeros — misma regla que el mapper 1.2.0).
+      // la línea (sin IVA) va en la moneda del documento (LineTotal en MXN,
+      // RowTotalFC en documentos extranjeros — misma regla que el mapper).
       this.prisma.$queryRaw<ClasRow[]>(Prisma.sql`
         SELECT upper(line->>'U_Clas_gts') AS clas, po.currency,
                count(DISTINCT po.doc_entry)::int AS docs,
@@ -434,10 +536,13 @@ export class PurchaseDashboardService {
           AND upper(line->>'U_Clas_gts') IN ('CAPEX', 'OPEX')
           ${countedOnce} ${sapYear}
         GROUP BY 1, 2`),
+      // Maximo: AB_CLASFPO de la OC; K6: monto sin IVA (subtotal), igual
+      // que SAP
       this.prisma.$queryRaw<ClasRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT upper(ab_clasfpo) AS clas, currency, count(*)::int AS docs,
-               coalesce(sum(total_cost), 0) AS total
+               coalesce(sum(${maximoPoMonto('current', 'sin_iva')}), 0) AS total,
+               count(*) FILTER (WHERE subtotal IS NULL)::int AS sin_subtotal
         FROM current
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
           AND upper(ab_clasfpo) IN ('CAPEX', 'OPEX') ${maximoYear}
@@ -461,17 +566,27 @@ export class PurchaseDashboardService {
     const clas = (key: 'CAPEX' | 'OPEX') => {
       const sap = clasOf(sapClas, key);
       const maximo = clasOf(maximoClas, key);
+      // K6: OC de Maximo clasificadas sin subtotal (fuera del monto)
+      const sinSubtotal = maximoClas
+        .filter((r) => r.clas === key)
+        .reduce((s, r) => s + Number(r.sin_subtotal ?? 0), 0);
       return {
         por_moneda: mergeAmounts([sap, maximo]),
         documentos: docs(sap) + docs(maximo),
+        sin_subtotal: sinSubtotal,
         por_fuente: {
           sap: { documentos: docs(sap), por_moneda: sap },
-          maximo: { documentos: docs(maximo), por_moneda: maximo },
+          maximo: {
+            documentos: docs(maximo),
+            por_moneda: maximo,
+            sin_subtotal: sinSubtotal,
+          },
         },
       };
     };
     const capex = clas('CAPEX');
     const opex = clas('OPEX');
+    const sinSubtotal = capex.sin_subtotal + opex.sin_subtotal;
 
     return {
       anio: year,
@@ -483,13 +598,18 @@ export class PurchaseDashboardService {
           sap: { documentos: docs(ahorroSap), por_moneda: ahorroSap },
           maximo: { documentos: docs(ahorroMaximo), por_moneda: ahorroMaximo },
         },
-        nota: 'SAP: U_Imp_ahorro por línea (captura de Compras desde 2026-09-15, incremental). Maximo: AB_AHORRO (la Object Structure aún no lo expone).',
+        // K6: AB_AHORRO ya llega; sin dato = no se capturó en Maximo
+        nota: 'SAP: U_Imp_ahorro por línea (captura de Compras desde 2026-09-15, incremental). Maximo: AB_AHORRO de la OC (solo las que lo tienen capturado).',
       },
       clasificacion: {
         disponible: capex.documentos + opex.documentos > 0,
         capex,
         opex,
-        nota: 'SAP: U_Clas_gts por línea (una OC con líneas CAPEX y OPEX cuenta en ambas). Maximo: AB_CLASFPO (pendiente CIISA).',
+        nota: `Montos sin IVA. SAP: U_Clas_gts por línea, con el importe de la línea (una OC con líneas CAPEX y OPEX cuenta en ambas). Maximo: AB_CLASFPO de la OC (solo las que lo tienen capturado), con su subtotal (suma de POLINE.LINECOST); ${
+          sinSubtotal === 1
+            ? '1 OC clasificada no tiene subtotal (sin líneas o con alguna sin LINECOST): cuenta en documentos, no en el monto'
+            : `${sinSubtotal} OC clasificadas no tienen subtotal (sin líneas o con alguna sin LINECOST): cuentan en documentos, no en el monto`
+        }.`,
       },
       generated_at: new Date().toISOString(),
     };

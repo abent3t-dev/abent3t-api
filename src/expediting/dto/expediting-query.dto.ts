@@ -16,7 +16,8 @@ export const DERIVED_STATUSES = [
  * razón social), `page`/`limit` de PaginationDto. `status` filtra por el
  * estatus DERIVADO (se aplica tras derivar, no en SQL). E1 (2026-09-25):
  * filtros por columna `filters`/`sort`/`order` (y `column`/`facet_search`
- * en /facets).
+ * en /facets). Los parámetros nuevos se DECLARAN aquí: el ValidationPipe
+ * (`whitelist`) descarta en silencio lo que no está declarado.
  */
 export class ExpeditingQueryDto extends ColumnFilterablePaginationDto {
   @IsIn(DERIVED_STATUSES)
@@ -51,4 +52,17 @@ export class ExpeditingQueryDto extends ColumnFilterablePaginationDto {
   @IsIn(['true', 'false'])
   @IsOptional()
   closed_in_maximo?: 'true' | 'false';
+
+  /**
+   * K1 (2026-10-05): solo las OC abiertas en SAP con recepción completa en
+   * Maximo (I1b). Lista aparte de `closed_in_maximo`, que no cambia.
+   */
+  @IsIn(['true', 'false'])
+  @IsOptional()
+  received_in_maximo?: 'true' | 'false';
+
+  /** K1: chip "Solo pendientes": sin entregadas ni canceladas. */
+  @IsIn(['true'])
+  @IsOptional()
+  solo_pendientes?: 'true';
 }

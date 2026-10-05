@@ -611,6 +611,12 @@ describe('MaximoRecordsService', () => {
           { status: 'APPR', has_contract: true, count: 2 },
           { status: null, has_contract: false, count: 2 },
           { status: 'WAPPR', has_contract: true, count: 1 },
+        ])
+        // K4.4: solicitudes por el estatus DE LA PR (una por PR)
+        .mockResolvedValueOnce([
+          { status: 'CLOSE', count: 2 },
+          { status: 'APPR', count: 1 },
+          { status: 'WAPPR', count: 1 },
         ]);
       prisma.maximo_sync_runs.findFirst
         .mockResolvedValueOnce({
@@ -635,13 +641,50 @@ describe('MaximoRecordsService', () => {
         status: 'APPR',
         count: 2,
       });
+      // K4.4: `contracts` se queda; `requests` va por PR y su estatus
+      expect(summary.requests).toEqual({
+        total: 4,
+        byStatus: [
+          { status: 'CLOSE', count: 2 },
+          { status: 'APPR', count: 1 },
+          { status: 'WAPPR', count: 1 },
+        ],
+      });
       expect(summary.lastSync.purchase_orders?.records_inserted).toBe(7);
       expect(summary.lastSync.contracts).toBeNull();
     });
 
+    it('K4.4: requests sale de la vista por PR (sin obsoletas) y el año va por ISSUEDATE', async () => {
+      const { service, prisma } = makeService();
+      prisma.$queryRaw.mockResolvedValue([]);
+      const summary = await service.getSummary(2026);
+      expect(summary.requests).toEqual({ total: 0, byStatus: [] });
+      const calls = prisma.$queryRaw.mock.calls as Array<
+        [{ sql: string; values: unknown[] }]
+      >;
+      expect(calls).toHaveLength(3);
+      const [requests] = calls[2];
+      const text = requests.sql.replace(/\s+/g, ' ');
+      expect(text).toContain('DISTINCT ON (prnum)');
+      expect(text).toContain('superseded_at IS NULL');
+      expect(text).toContain('p.pr_status AS status');
+      expect(text).toContain('count(DISTINCT p.prnum)');
+      expect(text).toContain(
+        'AND p.pr_issue_date >= ? AND p.pr_issue_date < ?',
+      );
+      expect(requests.values).toEqual([
+        new Date(Date.UTC(2026, 0, 1)),
+        new Date(Date.UTC(2027, 0, 1)),
+      ]);
+      // los contratos siguen por la fecha del contrato
+      const [contracts] = calls[1];
+      expect(contracts.sql).toContain('created_at_source >=');
+    });
+
     it('K8: la última corrida trae records_remapped (el primer full no se ve como ~0 / =0)', async () => {
       const { service, prisma } = makeService();
-      prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      // OC, contratos y K4.4 solicitudes
+      prisma.$queryRaw.mockResolvedValue([]);
       prisma.maximo_sync_runs.findFirst
         .mockResolvedValueOnce({
           status: 'success',
@@ -672,7 +715,7 @@ describe('MaximoRecordsService', () => {
 
     it('sin flag en el env, syncEnabled=false', async () => {
       const { service, prisma } = makeService();
-      prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      prisma.$queryRaw.mockResolvedValue([]);
       const summary = await service.getSummary();
       expect(summary.syncEnabled).toBe(false);
       expect(summary.purchaseOrders.total).toBe(0);
@@ -914,6 +957,68 @@ describe('MaximoRecordsService — comprador y filtro tipo Excel (E1/E4)', () =>
     });
     expect(exported.rows.map((r) => r.prnum)).toEqual(['PR3']);
   });
+
+  it('E1 (K4.4): el mismo caso con vista=solicitudes — días, solicitud y aprobación son los DE LA PR; faceta estatus_pr', async () => {
+    const { service, prisma } = makeService();
+    const rows = [
+      // PR aprobada en 3 días; el contrato tardó 10 (fechas del contrato)
+      contractRow({
+        pr_status: 'CLOSE',
+        pr_issue_date: new Date('2026-01-02T15:00:00Z'),
+        pr_approved_at: new Date('2026-01-05T15:00:00Z'),
+      }),
+      contractRow({
+        id: 'c-2',
+        prnum: 'PR2',
+        pr_status: 'CLOSE',
+        pr_issue_date: new Date('2026-01-03T15:00:00Z'),
+        pr_approved_at: new Date('2026-01-08T15:00:00Z'),
+      }),
+      // sin contrato, en aprobación: sin APPR → días vacíos
+      contractRow({
+        id: 'c-3',
+        prnum: 'PR3',
+        contractnum: null,
+        has_contract: false,
+        approved_at: null,
+        pr_status: 'WAPPR',
+        pr_issue_date: new Date('2026-02-01T15:00:00Z'),
+        pr_approved_at: null,
+      }),
+    ];
+    prisma.$queryRaw.mockResolvedValue(rows);
+    await expect(
+      service.contractFacets({ vista: 'solicitudes', column: 'dias' }),
+    ).resolves.toMatchObject({ type: 'number', min: 3, max: 5, empty: 1 });
+    await expect(
+      service.contractFacets({ vista: 'solicitudes', column: 'estatus_pr' }),
+    ).resolves.toMatchObject({
+      values: [
+        { value: 'CLOSE', count: 2 },
+        { value: 'WAPPR', count: 1 },
+      ],
+    });
+    await expect(
+      service.contractFacets({ vista: 'solicitudes', column: 'solicitud' }),
+    ).resolves.toMatchObject({ min: '2026-01-02', max: '2026-02-01' });
+    const exported = await service.listContractsForExport({
+      vista: 'solicitudes',
+      filters: JSON.stringify({ estatus_pr: { in: ['WAPPR'] } }),
+    });
+    expect(exported.rows.map((r) => r.prnum)).toEqual(['PR3']);
+    // la base es la vista POR PR (una fila por PR, sin obsoletas)
+    const [sql] = prisma.$queryRaw.mock.calls[0] as [{ sql: string }];
+    expect(sql.sql).toContain('DISTINCT ON (prnum)');
+    expect(sql.sql).toContain('de_contrato');
+  });
+
+  it('E1 (K4.4): sin vista, estatus_pr no es columna de Contratos', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw.mockResolvedValue([contractRow()]);
+    await expect(
+      service.contractFacets({ column: 'estatus_pr' }),
+    ).rejects.toThrow('no tiene filtro');
+  });
 });
 
 describe('Contratos Maximo agrupados por contrato (E2)', () => {
@@ -1141,5 +1246,173 @@ describe('MaximoRecordsService — proveedor efectivo (G1, 2026-09-28)', () => {
       ]),
     );
     expect(facet.values.some((v) => v.value === ASOCIACION)).toBe(false);
+  });
+});
+
+describe('Solicitudes Maximo (K4.4, vista=solicitudes)', () => {
+  const row = (overrides: Record<string, unknown> = {}) => ({
+    id: 'r-1',
+    prnum: 'PR990002',
+    contractnum: null,
+    revisionnum: null,
+    status: 'APPR',
+    maxvol: null,
+    total_cost: null,
+    currency: null,
+    start_date: null,
+    end_date: null,
+    vendor_id: null,
+    vendor_name: null,
+    requested_by: 'USR001',
+    department: null,
+    approved_at: null,
+    approved_by: null,
+    created_at_source: null,
+    contract_ref_num: null,
+    contract_value: null,
+    pr_total: '1500',
+    consumed_value: null,
+    pr_status: 'APPR',
+    pr_issue_date: new Date('2026-09-14T15:00:00Z'),
+    pr_approved_at: new Date('2026-09-15T09:00:00Z'),
+    pr_status_date: new Date('2026-09-18T13:15:00Z'),
+    purchview_count: 0,
+    has_contract: false,
+    has_po: false,
+    last_changed_at: null,
+    last_seen_at: new Date('2026-10-05T00:00:00Z'),
+    ...overrides,
+  });
+
+  type SqlCall = [{ sql: string; values: unknown[] }];
+  const firstSql = (mock: jest.Mock) => {
+    const [arg] = mock.mock.calls[0] as SqlCall;
+    return { text: arg.sql.replace(/\s+/g, ' '), values: arg.values };
+  };
+  const Y2026 = new Date(Date.UTC(2026, 0, 1));
+  const Y2027 = new Date(Date.UTC(2027, 0, 1));
+
+  it('una fila por PR (vista por PR, sin obsoletas), con estatus y fechas de la PR; el año va por ISSUEDATE', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([row()])
+      .mockResolvedValueOnce([{ count: 1 }]);
+    const result = await service.listContracts({
+      vista: 'solicitudes',
+      year: 2026,
+    });
+    expect(result.data[0]).toMatchObject({
+      prnum: 'PR990002',
+      pr_status: 'APPR',
+      pr_issue_date: new Date('2026-09-14T15:00:00Z'),
+      pr_approved_at: new Date('2026-09-15T09:00:00Z'),
+      pr_status_date: new Date('2026-09-18T13:15:00Z'),
+    });
+    const { text, values } = firstSql(prisma.$queryRaw);
+    expect(text).toContain('DISTINCT ON (prnum)');
+    expect(text).toContain('superseded_at IS NULL');
+    expect(text).toContain(
+      'pr_status, pr_issue_date, pr_approved_at, pr_status_date',
+    );
+    expect(text).toContain('AND c.pr_issue_date >= ? AND c.pr_issue_date < ?');
+    expect(text).not.toContain('c.created_at_source >=');
+    expect(text).toContain('ORDER BY c.pr_issue_date DESC NULLS LAST');
+    expect(values).toEqual(expect.arrayContaining([Y2026, Y2027]));
+    // el conteo usa la misma base
+    const [count] = prisma.$queryRaw.mock.calls[1] as SqlCall;
+    expect(count.sql).toContain('DISTINCT ON (prnum)');
+  });
+
+  it('sin `vista`, Contratos no cambia: vista de contratos y año por la fecha del contrato', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([row({ has_contract: true, contractnum: '9906' })])
+      .mockResolvedValueOnce([{ count: 1 }]);
+    await service.listContracts({ year: 2026 });
+    const { text } = firstSql(prisma.$queryRaw);
+    expect(text).toContain(
+      "DISTINCT ON (coalesce(prnum, ''), coalesce(contractnum, ''))",
+    );
+    expect(text).not.toContain('DISTINCT ON (prnum)');
+    expect(text).toContain(
+      'AND c.created_at_source >= ? AND c.created_at_source < ?',
+    );
+    expect(text).not.toContain('pr_issue_date >=');
+    expect(text).toContain('ORDER BY c.end_date DESC NULLS LAST');
+  });
+
+  it('sin_oc implica la vista: APPR sin OC ni contrato y el año por la llegada a Compras (cuadra con la tarjeta)', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0 }]);
+    await service.listContracts({ sin_oc: 'true', year: 2026 });
+    const { text, values } = firstSql(prisma.$queryRaw);
+    expect(text).toContain('DISTINCT ON (prnum)');
+    expect(text).toContain("(c.pr_status = 'APPR' AND NOT c.de_contrato");
+    expect(text).toContain(
+      'AND coalesce(c.pr_approved_at, c.pr_issue_date) >= ? AND coalesce(c.pr_approved_at, c.pr_issue_date) < ?',
+    );
+    expect(text).not.toContain('regexp_replace');
+    expect(values).toEqual(expect.arrayContaining([Y2026, Y2027]));
+  });
+
+  it('contrato_sin_oc con pr_desde (llegada); en_aprobacion = WAPPR por emisión; pr_status por lista', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw.mockResolvedValue([]);
+    await service.listContracts({
+      contrato_sin_oc: 'true',
+      pr_desde: '2025-10-05',
+    });
+    let { text, values } = firstSql(prisma.$queryRaw);
+    expect(text).toContain("(c.pr_status = 'APPR' AND c.de_contrato");
+    expect(text).toContain(
+      'AND coalesce(c.pr_approved_at, c.pr_issue_date) >= ?',
+    );
+    expect(text).not.toContain('< ?');
+    expect(values).toContainEqual(new Date('2025-10-05'));
+
+    prisma.$queryRaw.mockClear();
+    await service.listContracts({ en_aprobacion: 'true', year: 2026 });
+    ({ text } = firstSql(prisma.$queryRaw));
+    expect(text).toContain('DISTINCT ON (prnum)');
+    expect(text).toContain("(c.pr_status = 'WAPPR')");
+    expect(text).toContain('AND c.pr_issue_date >= ? AND c.pr_issue_date < ?');
+
+    prisma.$queryRaw.mockClear();
+    await service.listContracts({ pr_status: ['APPR', 'WAPPR'] });
+    ({ text, values } = firstSql(prisma.$queryRaw));
+    expect(text).toContain('DISTINCT ON (prnum)');
+    expect(text).toContain('c.pr_status IN (?,?)');
+    expect(values).toEqual(expect.arrayContaining(['APPR', 'WAPPR']));
+  });
+
+  it('agrupado (sin vista): prs[] con el estatus y las fechas de la PR', async () => {
+    const { service, prisma } = makeService();
+    prisma.$queryRaw.mockResolvedValueOnce([
+      row({
+        prnum: 'PR990006',
+        contractnum: '9906',
+        revisionnum: 1,
+        has_contract: true,
+        status: 'APPR',
+        pr_status: 'CLOSE',
+        pr_issue_date: new Date('2026-06-10T14:00:00Z'),
+        pr_approved_at: new Date('2026-06-11T09:00:00Z'),
+      }),
+    ]);
+    const result = await service.listContractGroups({ group: 'contract' });
+    expect(result.data[0].status).toBe('APPR'); // el del contrato
+    expect(result.data[0].prs).toEqual([
+      expect.objectContaining({
+        prnum: 'PR990006',
+        status: 'APPR',
+        pr_status: 'CLOSE',
+        pr_issue_date: new Date('2026-06-10T14:00:00Z'),
+        pr_approved_at: new Date('2026-06-11T09:00:00Z'),
+      }),
+    ]);
+    const { text } = firstSql(prisma.$queryRaw);
+    expect(text).not.toContain('DISTINCT ON (prnum)');
   });
 });

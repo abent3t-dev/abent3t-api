@@ -80,11 +80,21 @@ import { CURRENT_MAXIMO_POS } from '../common/sql/erp-views.sql';
  * Go-live 2026-09-30:
  *  - I1: una OC cerrada o cancelada en cualquiera de los dos sistemas no es
  *    entrega pendiente (`erpClosure`): la de SAP con su PO de Maximo en
- *    CLOSE/CAN, y la de Maximo con su copia de SAP cerrada o cancelada; y,
- *    cuando CIISA mande RECEIPTS, la recepción COMPLETE. `closed_in_maximo`
- *    = la lista para depurar en SAP.
+ *    CLOSE/CAN, y la de Maximo con su copia de SAP cerrada o cancelada; y
+ *    la recepción COMPLETE (RECEIPTS, en el raw desde el 2-oct).
+ *    `closed_in_maximo` = la lista para depurar en SAP.
  *  - I2: columnas "PO Maximo" y "OC SAP"; la búsqueda encuentra cualquiera
  *    de los dos números ("104896", "PO104896" o "po 104896").
+ *
+ * Bloque K (2026-10-05):
+ *  - K1: `received_in_maximo` = abiertas en SAP con recepción completa en
+ *    Maximo, lista aparte de `closed_in_maximo` (que no cambia de
+ *    significado); columna "Recepción"; `solo_pendientes` quita entregadas y
+ *    canceladas para que "N resultados" baje.
+ *  - K2: `integration_status` = PO5 de Maximo (la propia o la que originó la
+ *    de SAP); null en ABENT y en la OC de SAP sola.
+ *  - K6.9: los montos por fila se quedan con IVA a propósito (DocTotal de SAP
+ *    y TOTALCOST de Maximo); el Excel lo dice en el encabezado.
  */
 
 const SAFETY_SCAN_LIMIT = 2000;
@@ -121,8 +131,10 @@ interface ErpRow {
   maximo_exists: boolean;
   /** I1: estatus en Maximo (el propio, o el de la PO que originó la de SAP). */
   maximo_status: string | null;
-  /** I1b: recepción de Maximo (RECEIPTS); null mientras CIISA no la exponga. */
+  /** I1b: recepción de Maximo (RECEIPTS); null = la OC no trae el dato. */
   receipt_status: string | null;
+  /** K2: estado de integración con SAP (PO5 de Maximo, literal); null = sin dato. */
+  integration_status: string | null;
 }
 
 /** I1/I2: copia en SAP de una PO de Maximo (puede haber varias por PONUM). */
@@ -146,6 +158,25 @@ function closedInMaximo(item: {
     item.source === 'sap' &&
     (item.closed_by === 'cerrada_maximo' ||
       item.closed_by === 'cancelada_maximo')
+  );
+}
+
+/**
+ * K1: OC abierta en SAP cuya PO de Maximo ya se recibió completa (I1b). La
+ * fila de Maximo con recepción completa no entra: no hay nada que cerrar en
+ * SAP.
+ */
+function receivedInMaximo(item: {
+  source: string;
+  closed_by: ErpClosedBy | null;
+}): boolean {
+  return item.source === 'sap' && item.closed_by === 'recepcion_completa';
+}
+
+/** K1 "Solo pendientes": ni entregada ni cancelada. */
+function isPending(item: { delivery_status: DerivedDeliveryStatus }): boolean {
+  return (
+    item.delivery_status !== 'entregada' && item.delivery_status !== 'cancelada'
   );
 }
 
@@ -279,11 +310,15 @@ export class ExpeditingService {
       if (da !== db) return da - db;
       return a.po_number.localeCompare(b.po_number);
     });
-    // I1a: la lista para depurar en SAP (abiertas allá, cerradas en Maximo)
-    const scoped =
-      query.closed_in_maximo === 'true'
-        ? mapped.filter((item) => closedInMaximo(item))
-        : mapped;
+    // I1a: la lista para depurar en SAP (abiertas allá, cerradas en Maximo);
+    // K1: la de las abiertas en SAP ya recibidas completas en Maximo, y
+    // "Solo pendientes". Todo antes de paginar, para que el total baje.
+    const scoped = mapped.filter(
+      (item) =>
+        (query.closed_in_maximo !== 'true' || closedInMaximo(item)) &&
+        (query.received_in_maximo !== 'true' || receivedInMaximo(item)) &&
+        (query.solo_pendientes !== 'true' || isPending(item)),
+    );
     const byStatus = query.status
       ? scoped.filter((item) => item.delivery_status === query.status)
       : scoped;
@@ -341,7 +376,12 @@ export class ExpeditingService {
    * total y por fuente (null = ninguna retrasada, nunca 0).
    */
   async getStats(query: ExpeditingQueryDto = {}) {
-    const items = await this.collect(query);
+    // K1: las dos listas para SAP son entregadas o canceladas, así que se
+    // cuentan sin "Solo pendientes" (con los demás filtros); el semáforo y
+    // el total, con él.
+    const all = await this.collect({ ...query, solo_pendientes: undefined });
+    const items =
+      query.solo_pendientes === 'true' ? all.filter(isPending) : all;
 
     const counts: Record<DerivedDeliveryStatus, number> = {
       sin_fecha: 0,
@@ -392,7 +432,9 @@ export class ExpeditingService {
       total: items.length,
       counts,
       // I1a: abiertas en SAP que ya están cerradas o canceladas en Maximo
-      closed_in_maximo: items.filter((item) => closedInMaximo(item)).length,
+      closed_in_maximo: all.filter((item) => closedInMaximo(item)).length,
+      // K1: abiertas en SAP con recepción completa en Maximo
+      received_in_maximo: all.filter((item) => receivedInMaximo(item)).length,
       by_source: bySource,
       avg_delay_days: avg(delay.all),
       avg_delay_by_source: {
@@ -763,11 +805,12 @@ export class ExpeditingService {
                    mx.created_by AS maximo_created_by,
                    (mx.ponum IS NOT NULL) AS maximo_exists,
                    mx.status AS maximo_status,
-                   mx.receipt_status
+                   mx.receipt_status,
+                   mx.integration_status
             FROM sap_purchase_orders s
             LEFT JOIN LATERAL (
               SELECT m.ponum, m.purchase_agent, m.purchase_agent_name, m.created_by,
-                     m.status, m.receipt_status
+                     m.status, m.receipt_status, m.integration_status
               FROM maximo_purchase_orders m
               WHERE s.maximo_ponum IS NOT NULL AND m.ponum = s.maximo_ponum
               ORDER BY coalesce(m.revisionnum, 0) DESC
@@ -803,7 +846,8 @@ export class ExpeditingService {
                    created_by AS maximo_created_by,
                    false AS maximo_exists,
                    status AS maximo_status,
-                   receipt_status
+                   receipt_status,
+                   integration_status
             FROM current
             WHERE status IN ('APPR', 'INPRG')
             ORDER BY ponum ASC
@@ -963,6 +1007,7 @@ export class ExpeditingService {
                 : String(copy.doc_num),
           maximo_status: row.maximo_status,
           receipt_status: row.receipt_status,
+          integration_status: row.integration_status,
           closed_by: closure?.closed_by ?? null,
         };
       });
@@ -1001,11 +1046,12 @@ export class ExpeditingService {
       currency: 'MXN' as string | null,
       requested_by: null as string | null,
       maximo_ponum: null as string | null,
-      // I1/I2: solo aplican a las OC de los ERP
+      // I1/I2/K2: solo aplican a las OC de los ERP
       po_maximo: null as string | null,
       oc_sap: null as string | null,
       maximo_status: null as string | null,
       receipt_status: null as string | null,
+      integration_status: null as string | null,
       closed_by: null as ErpClosedBy | null,
       buyer: row.profiles,
       buyer_name: row.profiles?.full_name ?? null,

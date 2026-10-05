@@ -10,6 +10,8 @@ import {
   buildVendorXref,
   MaximoVendorXref,
 } from '../erp-vendors/maximo-vendor-xref';
+import { TABLERO_MONTO_BASE } from '../common/sql/erp-views.sql';
+import { maximoVendorAmounts } from './vendor-tops';
 
 /**
  * Fase Reportes. Prisma y services consumidos MOCKEADOS — sin BD/red.
@@ -249,13 +251,11 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
 
   it('resumen: suma SAP + Maximo + ABENT; montos de la misma moneda se juntan, monedas distintas no', async () => {
     const d = (iso: string) => new Date(`${iso}T00:00:00Z`);
-    const { service } = makeService([
-      // G3: ventana de folios del periodo y la de pendientes (12 meses)
-      [{ lower: BigInt(104000), upper: null }],
-      [{ lower: BigInt(104500), upper: null }],
-      // G3: pendientes SAP y Maximo (RQ sin OC)
+    const { service, prisma } = makeService([
+      // G3: pendientes SAP (RQ sin OC) y Maximo (K4: APPR sin OC ni
+      // contrato, por PR; ya sin ventanas de folio)
       [{ pendientes: 27, sin_limite: 30 }],
-      [{ pendientes: 1, sin_limite: 50 }],
+      [{ pendientes: 1, sin_limite: 50, con_estatus: 5197 }],
       [
         {
           sap_rq_creadas: 300,
@@ -263,18 +263,44 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
           maximo_contratos_por_vencer: 2,
         },
       ],
+      // K6: con el subtotal sin IVA y las OC sin él
       [
-        { fuente: 'sap', currency: 'MXN', count: 1000, total: '5000.50' },
-        { fuente: 'sap', currency: 'USD', count: 10, total: '70' },
-        { fuente: 'maximo', currency: 'MXN', count: 5, total: '100' },
+        {
+          fuente: 'sap',
+          currency: 'MXN',
+          count: 1000,
+          total: '5000.50',
+          subtotal: '4310.78',
+          sin_subtotal: 0,
+        },
+        {
+          fuente: 'sap',
+          currency: 'USD',
+          count: 10,
+          total: '70',
+          subtotal: '60.34',
+          sin_subtotal: 0,
+        },
+        {
+          fuente: 'maximo',
+          currency: 'MXN',
+          count: 5,
+          total: '100',
+          subtotal: '43.10',
+          sin_subtotal: 2,
+        },
       ],
       // G2: OC de SAP del periodo con su solicitud base
       [
         { doc_entry: 1, doc_date: d('2026-03-11'), base_request_entries: [7] },
         { doc_entry: 2, doc_date: d('2026-03-04'), base_request_entries: [7] },
       ],
-      // G2: días de gestión de las OC de Maximo del periodo
-      [{ dias: null }],
+      // G2: días de gestión de las OC de Maximo del periodo (K4.3: y desde
+      // la aprobación de su PR)
+      [
+        { dias: null, dias_desde_aprobacion: null },
+        { dias: '9', dias_desde_aprobacion: '4' },
+      ],
       // fechas de las solicitudes base
       [{ doc_entry: 7, doc_date: d('2026-03-01') }],
     ]);
@@ -286,17 +312,51 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
     expect(todas.solicitudes.creadas).toBe(308); // 300 + 4 + 4 propias
     // G3: pendientes = RQ sin OC (27 SAP + 1 Maximo + 4 propias)
     expect(todas.solicitudes.pendientes).toBe(32);
-    // G2: SAP (10 + 3) / 2 = 6.5 días; Maximo sin OC con solicitud → null
+    // G2: SAP (10 + 3) / 2 = 6.5 días; Maximo 9 (una OC sin solicitud, fuera)
     expect(todas.dias_gestion).toEqual({
       sap: { promedio_dias: 6.5, mediana_dias: 6.5, total: 2 },
-      maximo: { promedio_dias: null, mediana_dias: null, total: 0 },
+      maximo: { promedio_dias: 9, mediana_dias: 9, total: 1 },
+      maximo_desde_aprobacion: { promedio_dias: 4, mediana_dias: 4, total: 1 },
       abent: 6.5,
     });
+    // K4.5: las PR creadas = distintas por ISSUEDATE en la vista por PR; G2
+    // con la consulta de erp-views (respaldo de la fecha de la PR)
+    const texts = (
+      prisma.$queryRaw.mock.calls as unknown as Array<[{ sql: string }]>
+    ).map(([q]) => q.sql.replace(/\s+/g, ' '));
+    expect(texts.some((t) => t.includes('regexp_replace'))).toBe(false);
+    const counts = texts.find((t) => t.includes('AS maximo_rq_creadas'));
+    expect(counts).toContain('count(DISTINCT p.prnum) FROM current_prs p');
+    expect(counts).toContain('p.pr_issue_date BETWEEN ? AND ?');
+    expect(counts).toContain('DISTINCT ON (prnum)');
+    expect(
+      texts.some((t) => t.includes('coalesce(oc.pr_issue_date, f.emision)')),
+    ).toBe(true);
     expect(todas.ordenes.total).toBe(1018); // 1000 + 10 + 5 + 3 propias
+    // K6: el merge lleva el subtotal y las OC sin él; las 3 propias de
+    // ABENT (base desconocida) van a sin_subtotal
     expect(todas.ordenes.monto_por_moneda).toEqual([
-      { currency: 'MXN', total: 6000.5, count: 1008 },
-      { currency: 'USD', total: 70, count: 10 },
+      {
+        currency: 'MXN',
+        total: 6000.5,
+        count: 1008,
+        subtotal: 4353.88,
+        sin_subtotal: 5,
+      },
+      {
+        currency: 'USD',
+        total: 70,
+        count: 10,
+        subtotal: 60.34,
+        sin_subtotal: 0,
+      },
     ]);
+    expect(todas.ordenes.monto_base).toBe(TABLERO_MONTO_BASE);
+    const montos = texts.find((t) => t.includes("'maximo' AS fuente"));
+    expect(montos).toContain(
+      'coalesce(sum(sap_purchase_orders.subtotal), 0) AS subtotal',
+    );
+    expect(montos).toContain('coalesce(sum(current.subtotal), 0) AS subtotal');
     expect(todas.contratos_por_vencer_30_dias).toEqual({
       total: 4,
       por_fuente: { abent: 2, maximo: 2 },
@@ -565,5 +625,194 @@ describe('PurchaseReportsService — top de proveedores (G1, 2026-09-28)', () =>
         maximo: { count: 3, monto: 13220000 },
       },
     });
+  });
+});
+
+describe('PurchaseReportsService — montos sin IVA (K6)', () => {
+  it('getErp: series y tops de OC con subtotal por moneda; la serie de solicitudes de SAP solo se rotula (sin IVA)', async () => {
+    const month = new Date(Date.UTC(2026, 8, 1));
+    const { service, prisma } = makeService([
+      // sap OC serie
+      [
+        {
+          month,
+          currency: 'MXN',
+          count: 2,
+          monto: '232',
+          subtotal: '200',
+          sin_subtotal: 0,
+        },
+      ],
+      // sap solicitudes serie (doc_total ya es sin IVA)
+      [{ month, currency: 'MXN', count: 1, monto: '50' }],
+      [], // sap OC estatus
+      [], // sap solicitudes estatus
+      // sap proveedores
+      [
+        {
+          card_code: 'P1',
+          card_name: 'UNO',
+          currency: 'MXN',
+          count: 2,
+          monto: '232',
+          subtotal: '200',
+          sin_subtotal: 0,
+        },
+      ],
+      // maximo OC serie: 1 de 3 sin subtotal
+      [
+        {
+          month,
+          currency: 'USD',
+          count: 3,
+          monto: '348',
+          subtotal: '200',
+          sin_subtotal: 1,
+        },
+      ],
+      [], // maximo OC estatus
+      [], // maximo contratos estatus
+      // maximo OC del periodo (top)
+      [
+        {
+          ponum: 'PO1',
+          vendor_id: 'P9',
+          vendor_name: 'NUEVE',
+          currency: 'USD',
+          total_cost: '116',
+          subtotal: '100',
+        },
+        {
+          ponum: 'PO2',
+          vendor_id: 'P9',
+          vendor_name: 'NUEVE',
+          currency: 'USD',
+          total_cost: '58',
+          subtotal: null,
+        },
+      ],
+      [], // estatus de la PR
+    ]);
+    const report = await service.getErp({
+      from: '2026-09-01',
+      to: '2026-09-30',
+    });
+    expect(report.monto_base).toBe(TABLERO_MONTO_BASE);
+    expect(report.sap.ordenes.serie_mensual.meses[0].por_moneda).toEqual([
+      { currency: 'MXN', count: 2, monto: 232, subtotal: 200, sin_subtotal: 0 },
+    ]);
+    expect(report.maximo.ordenes.serie_mensual.meses[0].por_moneda).toEqual([
+      { currency: 'USD', count: 3, monto: 348, subtotal: 200, sin_subtotal: 1 },
+    ]);
+    // solicitudes de SAP: ya sin IVA, sin subtotal; solo el rótulo
+    expect(report.sap.solicitudes.serie_mensual.meses[0].por_moneda).toEqual([
+      { currency: 'MXN', count: 1, monto: 50 },
+    ]);
+    expect(report.sap.solicitudes.monto_base).toBe('sin_iva');
+    // tops con el subtotal como dato secundario
+    expect(report.sap.top_proveedores[0]).toMatchObject({
+      codigo: 'P1',
+      monto: 232,
+      subtotal: 200,
+      sin_subtotal: 0,
+    });
+    expect(report.maximo.top_proveedores[0]).toMatchObject({
+      codigo: 'P9',
+      count: 2,
+      subtotal: 100,
+      sin_subtotal: 1,
+      monto: TABLERO_MONTO_BASE === 'sin_iva' ? 100 : 174,
+    });
+
+    // el SQL: monto en la base del tablero y subtotal en las OC; las
+    // solicitudes siguen con doc_total (suma de sus líneas)
+    const texts = (
+      prisma.$queryRaw.mock.calls as unknown as Array<[{ sql: string }]>
+    ).map(([q]) => q.sql.replace(/\s+/g, ' '));
+    const col = TABLERO_MONTO_BASE === 'sin_iva' ? 'subtotal' : 'doc_total';
+    expect(texts[0]).toContain(`sum(sap_purchase_orders.${col}), 0) AS monto`);
+    expect(texts[0]).toContain('AS sin_subtotal');
+    expect(texts[1]).toContain('FROM sap_purchase_requests');
+    expect(texts[1]).not.toContain('subtotal');
+    expect(texts[8]).toContain('total_cost, subtotal');
+  });
+
+  it('Top 10 de Maximo: la base la elige TABLERO_MONTO_BASE; sin subtotal no suma a la base sin IVA ni se estima', () => {
+    const xref = buildVendorXref([], new Map());
+    const rows = [
+      {
+        ponum: 'PO1',
+        vendor_id: 'P9',
+        vendor_name: 'NUEVE',
+        currency: 'MXN',
+        total_cost: '116',
+        subtotal: '100',
+      },
+      {
+        ponum: 'PO2',
+        vendor_id: 'P9',
+        vendor_name: 'NUEVE',
+        currency: 'MXN',
+        total_cost: '58',
+        subtotal: null,
+      },
+    ];
+    const conIva = maximoVendorAmounts(rows, xref, 'con_iva');
+    expect(conIva.map((a) => [a.monto, a.subtotal, a.sin_subtotal])).toEqual([
+      [116, 100, 0],
+      [58, 0, 1],
+    ]);
+    const sinIva = maximoVendorAmounts(rows, xref, 'sin_iva');
+    expect(sinIva.map((a) => a.monto)).toEqual([100, 0]);
+    // default = la constante del tablero
+    expect(maximoVendorAmounts(rows, xref).map((a) => a.monto)).toEqual(
+      TABLERO_MONTO_BASE === 'sin_iva' ? [100, 0] : [116, 58],
+    );
+  });
+});
+
+describe('PurchaseReportsService — solicitudes de Maximo por estatus de la PR (K4.5)', () => {
+  it('getErp trae maximo.solicitudes.por_estatus (PR por ISSUEDATE del periodo); contratos.por_estatus se queda', async () => {
+    const contratos = [{ status: 'APPR', count: 2 }];
+    const solicitudes = [
+      { status: 'CLOSE', count: 506 },
+      { status: 'CAN', count: 268 },
+      { status: 'APPR', count: 42 },
+      { status: 'WAPPR', count: 13 },
+    ];
+    const { service, prisma } = makeService([
+      [], // sap OC serie
+      [], // sap solicitudes serie
+      [], // sap OC estatus
+      [], // sap solicitudes estatus
+      [], // sap proveedores
+      [], // maximo OC serie
+      [], // maximo OC estatus
+      contratos, // maximo contratos estatus (estatus del contrato)
+      [], // maximo OC del periodo (top)
+      solicitudes, // K4.5: estatus de la PR
+    ]);
+    const report = await service.getErp({
+      from: '2026-01-01',
+      to: '2026-09-30',
+    });
+    expect(report.maximo.solicitudes.por_estatus).toEqual(solicitudes);
+    expect(report.maximo.contratos.por_estatus).toEqual(contratos);
+
+    const calls = prisma.$queryRaw.mock.calls as unknown as Array<
+      [{ sql: string; values: unknown[] }]
+    >;
+    const [query] = calls[9];
+    const text = query.sql.replace(/\s+/g, ' ');
+    // una por PR (vista por PR, sin obsoletas), por el estatus DE LA PR
+    expect(text).toContain('DISTINCT ON (prnum)');
+    expect(text).toContain('superseded_at IS NULL');
+    expect(text).toContain("coalesce(pr_status, 'sin_estatus') AS status");
+    expect(text).toContain('count(DISTINCT prnum)');
+    expect(text).toContain('pr_issue_date BETWEEN ? AND ?');
+    expect(query.values).toEqual([
+      new Date('2026-01-01T00:00:00.000Z'),
+      new Date('2026-09-30T23:59:59.999Z'),
+    ]);
   });
 });

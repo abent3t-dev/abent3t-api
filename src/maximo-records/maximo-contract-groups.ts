@@ -16,6 +16,12 @@ import type {
 export interface MaximoContractGroupPr {
   prnum: string | null;
   status: string | null;
+  /** K4.4 (2026-10-05): estatus DE LA PR (WAPPR, APPR, CLOSE, CAN). */
+  pr_status: string | null;
+  /** K4.4: ISSUEDATE de la PR. */
+  pr_issue_date: Date | null;
+  /** K4.4: primer APPR de la PR (llegada a Compras). */
+  pr_approved_at: Date | null;
   requested_by: string | null;
   requested_by_name: string | null;
   created_at_source: Date | null;
@@ -104,6 +110,9 @@ export function groupContracts(
         .map((m) => ({
           prnum: m.prnum,
           status: m.status,
+          pr_status: m.pr_status,
+          pr_issue_date: m.pr_issue_date,
+          pr_approved_at: m.pr_approved_at,
           requested_by: m.requested_by,
           requested_by_name: m.requested_by_name,
           created_at_source: m.created_at_source,

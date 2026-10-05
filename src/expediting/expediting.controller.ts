@@ -23,7 +23,7 @@ import {
   expeditingClosedBy,
   expeditingDays,
 } from './expediting.columns';
-import { maximoStatusText } from './expediting.status';
+import { integrationLabel, receiptLabel } from './expediting.status';
 import { ExpeditingQueryDto } from './dto/expediting-query.dto';
 import {
   FollowUpDto,
@@ -54,7 +54,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 /** D9: columnas del export = tabla de /compras/expeditacion (+ monto). */
-const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
+export const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
   // I2: los dos números (la OC propia de ABENT va en la columna de la OC)
   { header: 'PO Maximo', value: (r) => r.po_maximo, width: 14 },
   {
@@ -73,7 +73,14 @@ const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
   { header: 'Proveedor', value: (r) => r.supplier?.legal_name, width: 40 },
   // E4: comprador (o "Capturó: …" en las OC de SAP, que no lo traen)
   { header: 'Comprador', value: buyerLabel, width: 30 },
-  { header: 'Monto', value: (r) => r.amount, kind: 'money', width: 16 },
+  // K6.9: con IVA a propósito (DocTotal de SAP, TOTALCOST de Maximo); las
+  // propias de ABENT, como se capturaron
+  {
+    header: 'Monto (con IVA en SAP y Maximo)',
+    value: (r) => r.amount,
+    kind: 'money',
+    width: 18,
+  },
   { header: 'Moneda', value: (r) => r.currency, width: 10 },
   {
     header: 'Fecha vigente',
@@ -95,8 +102,12 @@ const EXPEDITING_COLUMNS: ExcelColumn<ExpeditingRow>[] = [
   },
   // I1: por qué ya no es entrega pendiente aunque su sistema la tenga abierta
   { header: 'Cierre', value: expeditingClosedBy, width: 26 },
-  // I1b: con la recepción cuando CIISA la mande ("INPRG · recepción parcial")
-  { header: 'Estatus en Maximo', value: maximoStatusText, width: 22 },
+  // K1: solo el estatus; la recepción va en su columna, sin repetirla
+  { header: 'Estatus en Maximo', value: (r) => r.maximo_status, width: 16 },
+  // K2: PO5 de Maximo ("—" en ABENT y en la OC de SAP sola)
+  { header: 'Integración SAP (PO5)', value: integrationLabel, width: 20 },
+  // K1: RECEIPTS de Maximo ("No disponible" si la OC de Maximo no lo trae)
+  { header: 'Recepción en Maximo', value: receiptLabel, width: 18 },
   {
     header: 'Alertas',
     value: (r) => (r.purchase_order_id ? (r.tracking?.alert_count ?? 0) : null),

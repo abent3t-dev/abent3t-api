@@ -106,8 +106,9 @@ export interface MaximoGestionResult extends SapGestionResult {
 /**
  * G2 (2026-09-28) — Días de gestión de Maximo con la misma definición:
  * fecha de la OC (created_at_source) − fecha de creación de su solicitud
- * (PR.ISSUEDATE, la más antigua; `pr_issue_date` de la 0016). `dias` null =
- * OC sin solicitud; negativos (OC fechada antes que su PR) se descartan.
+ * (PR.ISSUEDATE, la más antigua; `pr_issue_date` de la 0016 y, si la línea
+ * no la trae, la de la PR en AB_CONTRATOS, K4.3). `dias` null = OC sin
+ * solicitud; negativos (OC fechada antes que su PR) se descartan.
  */
 export function maximoGestionDays(
   rows: Array<{ dias: unknown }>,
@@ -135,7 +136,26 @@ export function maximoGestionDays(
   };
 }
 
+/**
+ * K4.3 (2026-10-05) — G2 de Maximo con las dos fechas de `maximoGestionSql`
+ * (erp-views): desde la creación de la PR (la definición de G2) y, como dato
+ * secundario, desde su aprobación (primer APPR: llegada a Compras). En
+ * `desde_aprobacion`, `sin_solicitud` = OC sin PR aprobada.
+ */
+export function maximoGestion(
+  rows: Array<{ dias: unknown; dias_desde_aprobacion: unknown }>,
+): { creacion: MaximoGestionResult; desde_aprobacion: MaximoGestionResult } {
+  return {
+    creacion: maximoGestionDays(rows),
+    desde_aprobacion: maximoGestionDays(
+      rows.map((r) => ({ dias: r.dias_desde_aprobacion })),
+    ),
+  };
+}
+
 export const SAP_GESTION_DEFINICION =
   'De la fecha de la solicitud de pedido (la más antigua) a la fecha de la OC; solo OC que nacieron de una solicitud de pedido en SAP';
 export const MAXIMO_GESTION_DEFINICION =
-  'De la fecha de creación de la solicitud (PR, la más antigua de la OC) a la fecha de la OC en Maximo; solo OC con solicitud';
+  'De la fecha de creación de la solicitud (PR, la más antigua de la OC) a la fecha de la OC en Maximo; si la línea de la OC no trae la fecha de su PR, se toma la de la PR en Maximo (AB_CONTRATOS); solo OC con solicitud';
+export const MAXIMO_GESTION_APROBACION_DEFINICION =
+  'Dato secundario: de la aprobación de la solicitud (primer APPR de la PR, la más antigua de la OC: cuando llegó a Compras) a la fecha de la OC en Maximo; solo OC con PR aprobada';

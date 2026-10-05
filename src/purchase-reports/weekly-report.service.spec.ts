@@ -3,7 +3,16 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SapRecordsService } from '../sap-records/sap-records.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { PurchaseReportsService } from './purchase-reports.service';
-import { WeeklyReportService } from './weekly-report.service';
+import {
+  SAP_PO_HEADERS,
+  SAP_PR_HEADERS,
+  WeeklyReportService,
+} from './weekly-report.service';
+import {
+  SAP_PO_EXPORT_COLUMNS,
+  SAP_PR_EXPORT_COLUMNS,
+} from '../sap-records/sap-records.export';
+import { TABLERO_MONTO_BASE } from '../common/sql/erp-views.sql';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import {
   buildVendorXref,
@@ -37,11 +46,24 @@ const resumen = (creadas: number, dias: number | null) => ({
       pendientes_periodo: { desde: '2025-09-28', hasta: null },
     },
     dias_gestion: { sap: gestion(dias), maximo: gestion(null), abent: null },
+    // K6: con el subtotal sin IVA; las 2 de MXN sin subtotal
     ordenes: {
       total: 3,
       monto_por_moneda: [
-        { currency: 'MXN', total: 1000.5, count: 2 },
-        { currency: 'USD', total: 22620, count: 1 },
+        {
+          currency: 'MXN',
+          total: 1000.5,
+          count: 2,
+          subtotal: 0,
+          sin_subtotal: 2,
+        },
+        {
+          currency: 'USD',
+          total: 22620,
+          count: 1,
+          subtotal: 19500,
+          sin_subtotal: 0,
+        },
       ],
       por_fuente: { sap: 3, maximo: 0, abent: 0 },
     },
@@ -88,8 +110,7 @@ function makeService() {
   const prisma = {
     $queryRaw: jest
       .fn()
-      // G3: ventana de folios de las PR de Maximo del periodo
-      .mockResolvedValueOnce([{ lower: BigInt(104000), upper: null }])
+      // K4.5: ya sin la ventana de folios de las PR de Maximo
       .mockResolvedValueOnce([
         {
           ponum: 'PO104851',
@@ -98,6 +119,7 @@ function makeService() {
           vendor_id: 'P0000440',
           vendor_name: 'ASOCIACION MEXICANA DE ENERGIA',
           total_cost: '4300000',
+          subtotal: '3706896.55', // K6: Σ LINECOST
           currency: 'MXN',
           requested_by: null,
           purchase_agent: null,
@@ -109,7 +131,39 @@ function makeService() {
           approved_by: null,
         },
       ]) // OC Maximo
-      .mockResolvedValueOnce([]) // solicitudes Maximo
+      // K4.5: solicitudes Maximo = PR creadas en el periodo, una por PR
+      .mockResolvedValueOnce([
+        {
+          prnum: 'PR990002',
+          contractnum: null,
+          pr_status: 'APPR',
+          status: 'APPR',
+          has_contract: false,
+          con_oc: false,
+          pendiente: true,
+          vendor_name: null,
+          contract_value: null,
+          currency: null,
+          requested_by: 'USR001',
+          pr_issue_date: new Date('2026-09-14T15:00:00Z'),
+          pr_approved_at: new Date('2026-09-15T09:00:00Z'),
+        },
+        {
+          prnum: 'PR990006',
+          contractnum: '9906',
+          pr_status: 'CLOSE',
+          status: 'APPR',
+          has_contract: true,
+          con_oc: false,
+          pendiente: false,
+          vendor_name: 'PROVEEDOR DEMO',
+          contract_value: '96000',
+          currency: 'MXN',
+          requested_by: 'USR030',
+          pr_issue_date: new Date('2026-09-16T14:00:00Z'),
+          pr_approved_at: null,
+        },
+      ])
       .mockResolvedValueOnce([
         {
           object_type: '22',
@@ -156,17 +210,42 @@ function makeService() {
         ),
     ),
   };
-  // H1: datos del avance semanal (una solicitud de SAP cerrada en la semana)
+  // H1: datos del avance semanal (una solicitud de SAP cerrada en la semana);
+  // K5: una PR de Maximo cancelada (CAN) y otra abierta
   const avanceData: AvanceData = {
     gestiones: [
       {
         sistema: 'sap',
         folio: '324',
         recibida: new Date('2026-09-14T00:00:00Z'),
-        fecha_origen: 'exacta',
+        fecha_origen: 'documento',
+        inicio_dias: new Date('2026-09-14T00:00:00Z'),
         primera_oc: new Date('2026-09-18T00:00:00Z'),
         cierre_sin_oc: null,
         cancelada: null,
+        de_contrato: false,
+      },
+      {
+        sistema: 'maximo',
+        folio: 'PR990003',
+        recibida: new Date('2026-08-21T09:10:00Z'),
+        fecha_origen: 'aprobacion',
+        inicio_dias: new Date('2026-08-21T09:10:00Z'),
+        primera_oc: null,
+        cierre_sin_oc: null,
+        cancelada: new Date('2026-08-28T16:40:00Z'),
+        de_contrato: false,
+      },
+      {
+        sistema: 'maximo',
+        folio: 'PR990002',
+        recibida: new Date('2026-09-15T09:00:00Z'),
+        fecha_origen: 'aprobacion',
+        inicio_dias: new Date('2026-09-15T09:00:00Z'),
+        primera_oc: null,
+        cierre_sin_oc: null,
+        cancelada: null,
+        de_contrato: false,
       },
     ],
     ordenes: [
@@ -175,10 +254,11 @@ function makeService() {
         fecha: new Date('2026-09-18T00:00:00Z'),
         moneda: 'MXN',
         monto: 1500.5,
+        subtotal: 1293.53,
         contada_en_maximo: false,
       },
     ],
-    maximo_sin_fecha: 0,
+    maximo_no_recibidas: [],
     sap_desde: new Date('2026-01-12T00:00:00Z'),
   };
   const avance = { loadData: jest.fn().mockResolvedValue(avanceData) };
@@ -192,7 +272,7 @@ function makeService() {
     vendors as unknown as MaximoVendorXrefService,
     avance as unknown as AvanceSemanalService,
   );
-  return { service, reports, sap };
+  return { service, reports, sap, prisma };
 }
 
 async function readBook(buffer: Buffer) {
@@ -202,6 +282,17 @@ async function readBook(buffer: Buffer) {
 }
 
 describe('WeeklyReportService', () => {
+  it('K6.7: cada encabezado de SAP_PO_HEADERS / SAP_PR_HEADERS existe en las columnas del export (pick por texto)', () => {
+    const po = SAP_PO_EXPORT_COLUMNS.map((c) => c.header);
+    const pr = SAP_PR_EXPORT_COLUMNS.map((c) => c.header);
+    for (const h of SAP_PO_HEADERS) expect(po).toContain(h);
+    for (const h of SAP_PR_HEADERS) expect(pr).toContain(h);
+    // "Monto" no se renombra y el subtotal va en las dos listas
+    expect(SAP_PO_HEADERS).toContain('Monto');
+    expect(SAP_PO_HEADERS).toContain('Subtotal (sin IVA)');
+    expect(po).toContain('Subtotal (sin IVA)');
+  });
+
   it('periodo anterior = misma duración justo antes', () => {
     const { service } = makeService();
     expect(service.previousPeriod('2026-09-14', '2026-09-20')).toEqual({
@@ -215,7 +306,7 @@ describe('WeeklyReportService', () => {
   });
 
   it('libro con resumen comparado, detalle y autorizaciones', async () => {
-    const { service, reports, sap } = makeService();
+    const { service, reports, sap, prisma } = makeService();
     const { buffer, filename } = await service.buildWorkbook({
       from: '2026-09-14',
       to: '2026-09-20',
@@ -257,6 +348,17 @@ describe('WeeklyReportService', () => {
     expect(rows.get('Monto de OC creadas (USD)')?.slice(0, 2)).toEqual([
       22620, 22620,
     ]);
+    // K6.7: renglón "… sin IVA" junto al de la base del tablero; si ninguna
+    // OC de la moneda tiene subtotal, "Sin datos" (no 0)
+    if (TABLERO_MONTO_BASE === 'con_iva') {
+      expect(
+        rows.get('Monto de OC creadas (USD), sin IVA')?.slice(0, 2),
+      ).toEqual([19500, 19500]);
+      expect(
+        rows.get('Monto de OC creadas (MXN), sin IVA')?.slice(0, 2),
+      ).toEqual(['Sin datos', 'Sin datos']);
+    }
+    expect(rows.get('Monto de OC creadas (USD)')?.[2]).toContain('IVA');
     // sin base → "Sin datos", nunca 0
     expect(rows.get('Días de gestión SAP (promedio)')?.slice(0, 2)).toEqual([
       2.6,
@@ -266,6 +368,8 @@ describe('WeeklyReportService', () => {
     const saldo = rows.get('Saldo por recibir de OC SAP abiertas (USD)');
     expect(saldo?.[0]).toBe(5220);
     expect(saldo?.[1]).toBeUndefined();
+    // K6.9: el saldo se queda con IVA y lo dice
+    expect(saldo?.[2]).toContain('con IVA');
 
     // G2: mediana junto al promedio; G3: pendientes = solicitudes sin OC
     expect(rows.get('Días de gestión SAP (mediana)')?.slice(0, 2)).toEqual([
@@ -288,8 +392,75 @@ describe('WeeklyReportService', () => {
     expect(po[header.indexOf('Estatus')]).toBe(
       'En aprobación · nivel 1 aprobado (APPR1)',
     );
+    // K6.7: "Monto" (TOTALCOST, con IVA) y junto el subtotal sin IVA
+    expect(header.indexOf('Subtotal (sin IVA)')).toBe(
+      header.indexOf('Monto') + 1,
+    );
+    expect(po[header.indexOf('Monto')]).toBe(4300000);
+    expect(po[header.indexOf('Subtotal (sin IVA)')]).toBe(3706896.55);
+    // OC SAP: el encabezado nuevo llega a la hoja (se elige por su texto)
+    const sapHeader = (
+      book.getWorksheet('OC SAP')!.getRow(1).values as unknown[]
+    ).map(String);
+    expect(sapHeader).toContain('Monto');
+    expect(sapHeader.indexOf('Subtotal (sin IVA)')).toBe(
+      sapHeader.indexOf('Monto') + 1,
+    );
+
+    // K4.5: Solicitudes Maximo con el estatus DE LA PR y "pendiente" =
+    // aprobada (APPR) sin OC ni contrato; el contrato APPR con la PR en
+    // CLOSE no es pendiente
+    const prSheet = book.getWorksheet('Solicitudes Maximo')!;
+    const prHeader = (prSheet.getRow(1).values as unknown[]).map(String);
+    const appr = prSheet.getRow(2).values as unknown[];
+    const conContrato = prSheet.getRow(3).values as unknown[];
+    expect(appr[prHeader.indexOf('Estatus PR')]).toBe('Aprobada (APPR)');
+    expect(appr[prHeader.indexOf('Pendiente de gestionar')]).toBe(
+      'Sí (aprobada, sin OC ni contrato)',
+    );
+    expect(appr[prHeader.indexOf('Estatus contrato')]).toBeUndefined();
+    expect(appr[prHeader.indexOf('Fecha PR (ISSUEDATE)')]).toEqual(
+      new Date('2026-09-14T15:00:00Z'),
+    );
+    expect(conContrato[prHeader.indexOf('Estatus PR')]).toBe('Cerrada (CLOSE)');
+    expect(conContrato[prHeader.indexOf('Estatus contrato')]).toBe(
+      'Aprobada (APPR)',
+    );
+    expect(conContrato[prHeader.indexOf('Pendiente de gestionar')]).toBe('No');
+    const nota = book.getWorksheet('Nota')!;
+    const notas: string[] = [];
+    nota.eachRow((row) => notas.push(row.getCell(1).text));
+    expect(
+      notas.some((n) => n.includes('aprobadas (APPR) sin OC ni contrato')),
+    ).toBe(true);
+    // la consulta: vista por PR, por ISSUEDATE del periodo, sin folio
+    const prQuery = (
+      prisma.$queryRaw.mock.calls as unknown as Array<
+        [{ sql: string; values: unknown[] }]
+      >
+    )
+      .map(([q]) => q)
+      .find((q) => q.sql.includes('AS pendiente'))!;
+    const prText = prQuery.sql.replace(/\s+/g, ' ');
+    expect(prText).toContain('DISTINCT ON (prnum)');
+    expect(prText).toContain('p.pr_issue_date BETWEEN ? AND ?');
+    expect(prText).toContain("p.pr_status = 'APPR' AND NOT p.de_contrato");
+    expect(prText).not.toContain('regexp_replace');
+    expect(prQuery.values).toEqual([
+      new Date('2026-09-14T00:00:00Z'),
+      new Date('2026-09-20T23:59:59.999Z'),
+    ]);
 
     const approvals = book.getWorksheet('Autorizaciones SAP')!;
+    // K6.9: las autorizaciones (borradores, sin líneas) se quedan con IVA
+    expect((approvals.getRow(1).values as unknown[]).map(String)).toContain(
+      'Monto (con IVA)',
+    );
+    expect(
+      notas.some((n) =>
+        n.includes('"Subtotal (sin IVA)" = suma de las líneas'),
+      ),
+    ).toBe(true);
     const first = approvals.getRow(2).values as unknown[];
     expect(first[1]).toBe('OC');
     expect(first[6]).toBe('Comprador Uno');
@@ -324,17 +495,28 @@ describe('WeeklyReportService', () => {
       expect(b.get('Semana')).toBe('Semana del 14 al 18 de septiembre de 2026');
     }
     expect(maximo.get('Fuente')).toBe('Maximo');
-    expect(maximo.get('Gestiones recibidas en 2026')).toBe(0);
-    expect(maximo.get('Canceladas de las recibidas en 2026')).toBe(
-      'No disponible',
-    );
-    expect(maximo.has('Sin OC de las recibidas en 2026')).toBe(true);
+    // K5.6: canceladas y abiertas con dato en las dos fuentes; sin "Sin OC"
+    expect(maximo.get('Gestiones recibidas en 2026')).toBe(2);
+    expect(maximo.get('Canceladas de las recibidas en 2026')).toBe(1);
+    expect(maximo.get('Abiertas de las recibidas en 2026')).toBe(1);
+    expect(maximo.get('Días de cancelación 2026 (promedio)')).toBe(7.3);
     expect(sapBlock.get('Fuente')).toBe('SAP');
     expect(sapBlock.get('Gestiones recibidas en 2026')).toBe(1);
     expect(sapBlock.get('Cerradas en la semana')).toBe(1);
     expect(sapBlock.get('Días de cierre 2026 (promedio)')).toBe(4);
-    expect(sapBlock.get('Monto adjudicado Septiembre 2026 (MXN)')).toBe(1500.5);
-    expect(sapBlock.has('Sin OC de las recibidas en 2026')).toBe(false);
+    expect(sapBlock.get('Canceladas de las recibidas en 2026')).toBe(0);
     expect(sapBlock.has('Abiertas de las recibidas en 2026')).toBe(true);
+    for (const b of [maximo, sapBlock]) {
+      expect(b.has('Sin OC de las recibidas en 2026')).toBe(false);
+      expect([...b.values()]).not.toContain('No disponible');
+    }
+    // K5.6: montos en la base de AVANCE_MONTO_BASE (sin IVA) y el otro valor
+    expect(sapBlock.get('Monto adjudicado Septiembre 2026 (MXN)')).toBe(
+      1293.53,
+    );
+    expect(sapBlock.get('Monto adjudicado total 2026 (MXN)')).toBe(1293.53);
+    expect(sapBlock.get('Monto adjudicado total 2026 (MXN), con IVA')).toBe(
+      1500.5,
+    );
   });
 });
