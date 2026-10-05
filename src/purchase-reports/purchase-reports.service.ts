@@ -8,6 +8,7 @@ import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { MaximoVendorXrefService } from '../erp-vendors/maximo-vendor-xref.service';
 import { maximoVendorAmounts, rankVendors, VendorAmount } from './vendor-tops';
 import {
+  abentMontoEnBase,
   andSapPoCountedOnce,
   CURRENT_MAXIMO_CONTRACTS,
   CURRENT_MAXIMO_POS,
@@ -273,13 +274,15 @@ export class PurchaseReportsService {
     ]);
     const erp = await this.resumenErp(period);
     // K6: las OC propias no dicen si `amount` lleva IVA (base desconocida):
-    // no suman al subtotal y van todas a sin_subtotal
+    // no suman al subtotal y van todas a sin_subtotal; H10: con base sin IVA
+    // tampoco al total (la misma regla del tablero)
     const abentMontos = {
       currency: 'MXN',
       count: posAgg._count._all,
-      total: toNumber(posAgg._sum.amount) ?? 0,
-      subtotal: 0,
-      sin_subtotal: posAgg._count._all,
+      ...abentMontoEnBase(
+        toNumber(posAgg._sum.amount) ?? 0,
+        posAgg._count._all,
+      ),
     };
     const montoPorMoneda = new Map<string, MontoMoneda>();
     for (const row of [...erp.montos, abentMontos]) {
@@ -319,7 +322,8 @@ export class PurchaseReportsService {
         // 12 meses); Maximo (K4) = APPR sin OC ni contrato por fecha de
         // aprobación; null = ninguna PR con estatus todavía
         solicitudes: {
-          creadas: erp.sap.rq_creadas + erp.maximo.rq_creadas + rqsCreadas,
+          creadas:
+            erp.sap.rq_creadas + (erp.maximo.rq_creadas ?? 0) + rqsCreadas,
           pendientes:
             erp.sap.rq_pendientes +
             (erp.maximo.rq_pendientes ?? 0) +
@@ -485,7 +489,12 @@ export class PurchaseReportsService {
         oc: ocDe('sap'),
       },
       maximo: {
-        rq_creadas: Number(row?.maximo_rq_creadas ?? 0),
+        // H8: por ISSUEDATE del periodo; sin ninguna PR con estatus (antes
+        // del primer full) es 0 sin base → null ("No disponible")
+        rq_creadas:
+          pending.maximo.pendientes === null
+            ? null
+            : Number(row?.maximo_rq_creadas ?? 0),
         rq_pendientes: pending.maximo.pendientes,
         gestion: maximoGestion(maximoGestionRows),
         oc: ocDe('maximo'),

@@ -1,4 +1,5 @@
 import { canonicalize } from '../../common/maximo/maximo-canonical';
+import { compareStatusChange } from '../../common/maximo/maximo-status-order';
 import {
   MAXIMO_CONTRACT_EXPENSE_TYPE,
   MaximoContractDto,
@@ -22,11 +23,20 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
 
 /**
  * Versión del mapper. Se persiste por fila de staging (Int-3): permite saber
- * qué reglas produjeron las columnas mapeadas y re-mapear (`maximo:remap`)
- * cuando cambien. Subirla en CADA cambio de reglas de mapeo.
- * 2026-09-21: Isaac confirmó CONTRACTVALUE=TOTALCOST y
- * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta) → tras desplegar, correr
- * `maximo:remap` para re-derivar las filas ya sincronizadas.
+ * qué reglas produjeron las columnas mapeadas. Subirla en CADA cambio de
+ * reglas de mapeo: si no sube, el sync ve la fila igual (mismo rowstamp,
+ * hash y versión → 'unchanged') y el cambio no se aplica a lo ya guardado.
+ * K8 (2026-10-05): tras desplegar NO hay paso manual: el primer full del
+ * sync re-mapea las filas con otra versión como 'remapped' (sin tocar
+ * `last_changed_at`; `records_remapped` en maximo_sync_runs). Si hace falta
+ * forzarlo, un full manual (`POST /integrations/maximo/sync
+ * {"target":"all"}`). `maximo:remap` queda para dev y emergencias y NUNCA
+ * con una corrida del sync en curso (el historial choca con el UNIQUE) ni
+ * antes del primer full (deja versión y hash nuevos y el full sale casi todo
+ * 'unchanged': el smoke de `records_remapped` fallaría sin defecto).
+ * Histórico (2026-09-21): Isaac confirmó CONTRACTVALUE=TOTALCOST y
+ * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta); antes de K8 eso se aplicaba
+ * con `maximo:remap`.
  */
 export const MAXIMO_MAPPER_VERSION = '2026.10.05-1'; // 10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas; 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
@@ -116,24 +126,18 @@ interface StatusRow<T extends MaximoStatusChangeDto> {
  * final). Maximo NO devuelve las filas ordenadas (86/100 POs de la evidencia
  * llegan desordenados) y hay cambios en el mismo segundo: el desempate es el
  * id monótono de la fila (POSTATUSID / CONTRACTSTATUSID / PRSTATUSID).
+ * H11: el comparador es común con el detalle de contrato.
  */
 function orderStatusRows<T extends MaximoStatusChangeDto>(
   rows: StatusRow<T>[],
 ): T[] {
   return [...rows]
-    .sort((a, b) => {
-      const da = a.dto.changeDate;
-      const db = b.dto.changeDate;
-      if (da !== db) {
-        if (da === null) return 1;
-        if (db === null) return -1;
-        return da < db ? -1 : 1;
-      }
-      if (a.id !== null && b.id !== null && a.id !== b.id) {
-        return a.id - b.id;
-      }
-      return 0;
-    })
+    .sort((a, b) =>
+      compareStatusChange(
+        { changeDate: a.dto.changeDate, id: a.id },
+        { changeDate: b.dto.changeDate, id: b.id },
+      ),
+    )
     .map((row) => row.dto);
 }
 

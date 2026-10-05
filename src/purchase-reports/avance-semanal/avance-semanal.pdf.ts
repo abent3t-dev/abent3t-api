@@ -618,6 +618,20 @@ function medidoresCard(
   });
 }
 
+/** Letra y tope del pie de la tarjeta de montos (H18: hasta 4 renglones). */
+const PIE_SIZE = 6.5;
+const PIE_MAX_ALTO = 40;
+
+/**
+ * H18: alto del pie de montos medido con su letra; +1 de holgura para que
+ * el `ellipsis` de `text` no corte el último renglón por redondeo.
+ */
+export function altoPie(doc: Doc, texto: string, ancho: number): number {
+  doc.font(F.r).fontSize(PIE_SIZE);
+  const alto = doc.heightOfString(texto, { width: ancho, lineGap: 0 });
+  return Math.min(Math.ceil(alto) + 1, PIE_MAX_ALTO);
+}
+
 function montosCard(
   doc: Doc,
   page: AvancePage,
@@ -662,11 +676,12 @@ function montosCard(
       { size: 8, color: C.grisTexto, width: w - 28 },
     );
     if (pie.length > 0) {
-      text(doc, pie.join('  ·  '), x + 14, top + 22, {
-        size: 6.5,
+      const texto = pie.join('  ·  ');
+      text(doc, texto, x + 14, top + 22, {
+        size: PIE_SIZE,
         color: C.grisTexto,
         width: w - 28,
-        height: 30,
+        height: altoPie(doc, texto, w - 28),
       });
     }
     return;
@@ -686,7 +701,11 @@ function montosCard(
   const mesW = 58;
   const curW = (tw - mesW) / shown.length;
   const rows = m.meses.length + 2;
-  const avail = y + h - top - (pie.length > 0 ? 22 : 8);
+  // H18: el pie ocupa los renglones que necesite (hasta PIE_MAX_ALTO) y la
+  // tabla le cede ese alto; antes cabía un renglón y se cortaba con "…"
+  const pieTexto = pie.join('  ·  ');
+  const pieAlto = pie.length > 0 ? altoPie(doc, pieTexto, tw) : 0;
+  const avail = y + h - top - (pie.length > 0 ? pieAlto + 7 : 8);
   const rowH = Math.min(13, avail / rows);
   const size = rowH >= 12 ? 7.8 : 7;
   let ry = top;
@@ -721,9 +740,14 @@ function montosCard(
     });
     shown.forEach((cur, i) => {
       const v = mes.montos[cur];
+      // H9: mes con OC sin subtotal (base sin IVA) ≠ mes sin compras ("—")
+      const sinBase =
+        v === undefined &&
+        m.base === 'sin_iva' &&
+        (mes.sin_subtotal[cur] ?? 0) > 0;
       text(
         doc,
-        v === undefined ? '—' : fmtMoney(v),
+        v !== undefined ? fmtMoney(v) : sinBase ? 'No disponible' : '—',
         tx + mesW + i * curW,
         ry + (rowH - size) / 2 - 1,
         {
@@ -764,11 +788,11 @@ function montosCard(
   });
   ry += rowH + 3;
   if (pie.length > 0) {
-    text(doc, pie.join('  ·  '), tx, ry, {
-      size: 6.5,
+    text(doc, pieTexto, tx, ry, {
+      size: PIE_SIZE,
       color: C.grisTexto,
       width: tw,
-      height: 18,
+      height: pieAlto,
     });
   }
 }

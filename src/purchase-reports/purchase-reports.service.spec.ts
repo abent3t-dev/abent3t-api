@@ -247,6 +247,36 @@ describe('PurchaseReportsService — fórmulas existentes (regla 3)', () => {
     expect(
       resumen.todas_las_fuentes.solicitudes.por_fuente.maximo.pendientes,
     ).toBeNull();
+    // H8: ni las creadas del periodo (por ISSUEDATE, 0 sin base)
+    expect(
+      resumen.todas_las_fuentes.solicitudes.por_fuente.maximo.creadas,
+    ).toBeNull();
+  });
+
+  it("H10: con TABLERO_MONTO_BASE='sin_iva' las OC propias (base desconocida) no suman al monto; con IVA sí", async () => {
+    const erpViews = jest.requireActual<{ TABLERO_MONTO_BASE: string }>(
+      '../common/sql/erp-views.sql',
+    );
+    const conIva = await makeService().service.getResumen({
+      from: '2026-01-01',
+      to: '2026-06-30',
+    });
+    expect(conIva.todas_las_fuentes.ordenes.monto_por_moneda).toEqual([
+      { currency: 'MXN', total: 900, count: 3, subtotal: 0, sin_subtotal: 3 },
+    ]);
+    jest.replaceProperty(erpViews, 'TABLERO_MONTO_BASE', 'sin_iva');
+    try {
+      const sinIva = await makeService().service.getResumen({
+        from: '2026-01-01',
+        to: '2026-06-30',
+      });
+      expect(sinIva.todas_las_fuentes.ordenes.monto_base).toBe('sin_iva');
+      expect(sinIva.todas_las_fuentes.ordenes.monto_por_moneda).toEqual([
+        { currency: 'MXN', total: 0, count: 3, subtotal: 0, sin_subtotal: 3 },
+      ]);
+    } finally {
+      jest.restoreAllMocks();
+    }
   });
 
   it('resumen: suma SAP + Maximo + ABENT; montos de la misma moneda se juntan, monedas distintas no', async () => {

@@ -81,3 +81,42 @@ export function montoBaseTexto(base: AvanceMontoBase): string {
 export function otraBase(base: AvanceMontoBase): AvanceMontoBase {
   return base === 'sin_iva' ? 'con_iva' : 'sin_iva';
 }
+
+/**
+ * Reglas vigentes del avance para quien no pide la semana (tarjeta de
+ * Reportes): `GET /compras/reportes/avance-semanal/reglas`, sin tocar la BD.
+ */
+export interface AvanceReglasVigentes {
+  monto_base: AvanceMontoBase;
+  /** "sin IVA" / "con IVA". */
+  monto_base_texto: string;
+  otra_base: AvanceMontoBase;
+  otra_base_texto: string;
+  /** Frase lista para la tarjeta: la base y dónde va el otro valor. */
+  monto_base_nota: string;
+  montos_fuente_maximo: AvanceMontosFuente;
+  reglas: AvanceReglas;
+}
+
+/**
+ * H4 (2026-10-05): la tarjeta de Reportes decía "Montos sin IVA" escrito a
+ * mano; con esto, cambiar AVANCE_MONTO_BASE basta (sin deploy de next).
+ */
+export function avanceReglasVigentes(
+  opciones: AvanceOpciones = AVANCE_OPCIONES,
+): AvanceReglasVigentes {
+  const base = opciones.monto_base;
+  const otra = otraBase(base);
+  return {
+    monto_base: base,
+    monto_base_texto: montoBaseTexto(base),
+    otra_base: otra,
+    otra_base_texto: montoBaseTexto(otra),
+    monto_base_nota:
+      base === 'sin_iva'
+        ? 'Montos sin IVA (suma de las líneas de la OC; las OC sin subtotal no se suman ni se estiman); el valor con IVA va en una línea chica.'
+        : 'Montos con IVA; el valor sin IVA (suma de las líneas de la OC, solo de las que lo traen) va en una línea chica.',
+    montos_fuente_maximo: opciones.montos_fuente_maximo,
+    reglas: { ...opciones.reglas },
+  };
+}

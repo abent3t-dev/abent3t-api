@@ -3,12 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  abentMontoEnBase,
   andSapPoCountedOnce,
   andYear,
   CURRENT_MAXIMO_POS,
   CURRENT_MAXIMO_PRS,
   maximoGestionSql,
   maximoPoMonto,
+  type MontoBase,
   montoBaseNota,
   pendingWindowStart,
   poSubtotalColumns,
@@ -95,6 +97,18 @@ export interface CurrencyAmount {
   sin_subtotal?: number;
 }
 
+/**
+ * H7 (2026-10-05): monto de CAPEX/OPEX por moneda (siempre sin IVA).
+ * `sin_subtotal` = OC de Maximo de esa moneda sin subtotal (cuentan en
+ * `count`, no en `total`); `monto_disponible` = false cuando ninguna OC de
+ * la moneda trae el monto (todas sin subtotal): el front pinta "No
+ * disponible", no $0.00.
+ */
+export interface ClasAmount extends CurrencyAmount {
+  sin_subtotal: number;
+  monto_disponible: boolean;
+}
+
 export interface SourceCount {
   total: number;
   pendientes: number;
@@ -166,12 +180,16 @@ function toAmounts(rows: AmountRow[]): CurrencyAmount[] {
 /**
  * K6: OC propias de ABENT. El modelo propio no dice si `amount` lleva IVA
  * (base desconocida): no suman al subtotal y van todas a `sin_subtotal`.
+ * H10 (2026-10-05): con base sin IVA tampoco suman al total
+ * (`abentMontoEnBase`, la misma regla del Resumen de Reportes).
  */
-function abentAmounts(rows: AmountRow[]): CurrencyAmount[] {
+export function abentAmounts(
+  rows: AmountRow[],
+  base: MontoBase = TABLERO_MONTO_BASE,
+): CurrencyAmount[] {
   return toAmounts(rows).map((r) => ({
     ...r,
-    subtotal: 0,
-    sin_subtotal: r.count,
+    ...abentMontoEnBase(r.total, r.count, base),
   }));
 }
 
@@ -381,7 +399,12 @@ export class PurchaseDashboardService {
         pendientes_sin_limite: pending.sap.sin_limite,
       },
       maximo: {
-        total: totalOf(maximoPr),
+        // H8: con año y sin ninguna PR con estatus, el conteo por ISSUEDATE
+        // da 0 sin base → null; sin año cuenta todas las PR (dato)
+        total:
+          year !== null && pending.maximo.pendientes === null
+            ? null
+            : totalOf(maximoPr),
         // K4.3: de esas, las que llegaron a Compras (primer APPR); null =
         // ninguna PR tiene estatus todavía (antes del primer full)
         llegaron_a_compras:
@@ -406,8 +429,8 @@ export class PurchaseDashboardService {
     const ordenes = {
       sap: orders(sapPo),
       maximo: orders(maximoPo),
-      // K6: base desconocida → todas a sin_subtotal
-      abent: orders(abentPo, abentAmounts),
+      // K6: base desconocida → todas a sin_subtotal (H10: sin IVA, fuera del total)
+      abent: orders(abentPo, (rows) => abentAmounts(rows)),
     };
     const porRecibir = {
       sap: orders(sapPoOpen),
@@ -427,7 +450,7 @@ export class PurchaseDashboardService {
       solicitudes: {
         total:
           solicitudes.sap.total +
-          solicitudes.maximo.total +
+          (solicitudes.maximo.total ?? 0) +
           solicitudes.abent.total,
         pendientes:
           solicitudes.sap.pendientes +
@@ -541,7 +564,7 @@ export class PurchaseDashboardService {
       this.prisma.$queryRaw<ClasRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT upper(ab_clasfpo) AS clas, currency, count(*)::int AS docs,
-               coalesce(sum(${maximoPoMonto('current', 'sin_iva')}), 0) AS total,
+               sum(${maximoPoMonto('current', 'sin_iva')}) AS total,
                count(*) FILTER (WHERE subtotal IS NULL)::int AS sin_subtotal
         FROM current
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
@@ -566,19 +589,38 @@ export class PurchaseDashboardService {
     const clas = (key: 'CAPEX' | 'OPEX') => {
       const sap = clasOf(sapClas, key);
       const maximo = clasOf(maximoClas, key);
-      // K6: OC de Maximo clasificadas sin subtotal (fuera del monto)
-      const sinSubtotal = maximoClas
-        .filter((r) => r.clas === key)
-        .reduce((s, r) => s + Number(r.sin_subtotal ?? 0), 0);
+      // K6: OC de Maximo clasificadas sin subtotal (fuera del monto); H7:
+      // también por moneda, para no pintar $0.00 sin base
+      const faltanPorMoneda = new Map<string, number>();
+      for (const r of maximoClas.filter((row) => row.clas === key)) {
+        const moneda = r.currency ?? 'sin_moneda';
+        faltanPorMoneda.set(
+          moneda,
+          (faltanPorMoneda.get(moneda) ?? 0) + Number(r.sin_subtotal ?? 0),
+        );
+      }
+      const sinSubtotal = [...faltanPorMoneda.values()].reduce(
+        (s, n) => s + n,
+        0,
+      );
+      const conDisponible = (list: CurrencyAmount[]): ClasAmount[] =>
+        list.map((a) => {
+          const faltan = faltanPorMoneda.get(a.currency ?? 'sin_moneda') ?? 0;
+          return {
+            ...a,
+            sin_subtotal: faltan,
+            monto_disponible: a.count > faltan,
+          };
+        });
       return {
-        por_moneda: mergeAmounts([sap, maximo]),
+        por_moneda: conDisponible(mergeAmounts([sap, maximo])),
         documentos: docs(sap) + docs(maximo),
         sin_subtotal: sinSubtotal,
         por_fuente: {
           sap: { documentos: docs(sap), por_moneda: sap },
           maximo: {
             documentos: docs(maximo),
-            por_moneda: maximo,
+            por_moneda: conDisponible(maximo),
             sin_subtotal: sinSubtotal,
           },
         },

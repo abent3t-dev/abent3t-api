@@ -109,6 +109,12 @@ export interface Gestion {
   cancelada: Date | null;
   /** Maximo: la PR tiene contrato (H1: cerradas sin OC ni contrato). */
   de_contrato: boolean;
+  /**
+   * H6 (2026-10-05), solo Maximo: ISSUEDATE de la PR. Con 'aprobacion', la
+   * PR emitida antes del corte y aprobada después no había llegado a Compras
+   * en esa semana: cuenta en `maximo_no_recibidas` de la página.
+   */
+  emision?: Date | null;
 }
 
 export interface OrdenMonto {
@@ -124,6 +130,13 @@ export interface OrdenMonto {
   subtotal: number | null;
   /** OC de SAP creada desde Maximo que existe en Maximo: con `todas` cuenta en Maximo (D1). */
   contada_en_maximo: boolean;
+  /**
+   * Solo SAP: copia extra de la misma PO de Maximo (la integración a veces
+   * crea varias OC con el mismo NumAtCard; vale la de menor DocNum). Con
+   * `sap_migradas` la página de Maximo la ignora para contar la PO una vez
+   * (D1). Ausente = false.
+   */
+  copia_migrada?: boolean;
 }
 
 /** PR de Maximo fuera del universo: sin la fecha de inicio de la regla. */
@@ -203,6 +216,12 @@ export interface MontosAnio {
     /** En la base; sin la moneda = sin OC con ese valor en el mes. */
     montos: Record<string, number>;
     ordenes: number;
+    /**
+     * H9 (2026-10-05): OC del mes sin subtotal, por moneda. Con base sin
+     * IVA distingue "sin compras" (sin la moneda aquí) de "con compras sin
+     * subtotal" (No disponible, nunca $0).
+     */
+    sin_subtotal: Record<string, number>;
   }>;
   total: Record<string, number>;
   /** OC sumadas en la base. */
@@ -254,8 +273,8 @@ export interface AvancePage {
     anio_anterior: { anio: number; abiertas: number } | null;
     /**
      * K5: PR de Maximo emitidas en el año (al corte) fuera del universo de
-     * la regla (con 'aprobacion', las que no se han aprobado); null sin
-     * Maximo.
+     * la regla (con 'aprobacion', las que no se habían aprobado al corte,
+     * H6: también las aprobadas después); null sin Maximo.
      */
     maximo_no_recibidas: number | null;
   };
@@ -738,7 +757,7 @@ function ordenMonedas(monedas: Iterable<string>): string[] {
 /**
  * OC que suma la página. I3/D1: la OC de SAP creada desde Maximo es de la
  * gestión de Maximo (nunca en la de SAP). Con `sap_migradas`, Maximo toma
- * esas OC de SAP en lugar de las suyas.
+ * esas OC de SAP en lugar de las suyas, una por PO (sin las copias extra).
  */
 function ordenDeLaPagina(
   o: OrdenMonto,
@@ -747,7 +766,7 @@ function ordenDeLaPagina(
 ): boolean {
   const deMaximo =
     montosFuente === 'sap_migradas'
-      ? o.sistema === 'sap' && o.contada_en_maximo
+      ? o.sistema === 'sap' && o.contada_en_maximo && o.copia_migrada !== true
       : o.sistema === 'maximo';
   const deSap = o.sistema === 'sap' && !o.contada_en_maximo;
   if (fuente === 'maximo') return deMaximo;
@@ -783,6 +802,7 @@ export function montosAdjudicados(
     etiqueta,
     montos: {} as Record<string, number>,
     ordenes: 0,
+    sin_subtotal: {} as Record<string, number>,
   }));
   const total: Record<string, number> = {};
   const otroTotal: Record<string, number> = {};
@@ -798,6 +818,7 @@ export function montosAdjudicados(
     }
     if (!ordenDeLaPagina(o, fuente, opciones.montos_fuente_maximo)) {
       // I3: la OC de SAP creada desde Maximo es de la gestión de Maximo
+      // (se cuentan documentos de SAP, copias incluidas, como Órdenes SAP)
       if (fuente === 'sap' && o.contada_en_maximo) migradas += 1;
       continue;
     }
@@ -809,6 +830,7 @@ export function montosAdjudicados(
     if (o.subtotal === null) {
       sinSubtotal.ordenes += 1;
       sumar(sinSubtotal.con_iva, moneda, o.monto);
+      sumar(mes.sin_subtotal, moneda, 1);
     }
     if (valor !== null) {
       sumar(mes.montos, moneda, valor);
@@ -901,14 +923,23 @@ export function buildAvancePage(
     }
   }
 
-  // K5: PR de Maximo emitidas en el año (al corte) que no entran al universo
+  // K5: PR de Maximo emitidas en el año (al corte) que no entran al universo.
+  // H6: al corte T, también las aprobadas después de T (hoy ya tienen APPR,
+  // pero esa semana todavía no llegaban a Compras); con 'emision' no hay
+  // ninguna (la llegada es la propia emisión).
   const finMaximo = ventanaSemana(semanaInicio, 'maximo', corte).fin;
+  const emitidaAlCorte = (emision: Date | null | undefined) =>
+    emision !== null &&
+    emision !== undefined &&
+    emision.getTime() < finMaximo &&
+    anioDe(emision, 'maximo') === anio;
   const noRecibidas = conMaximo
-    ? data.maximo_no_recibidas.filter(
-        (p) =>
-          p.emision !== null &&
-          p.emision.getTime() < finMaximo &&
-          anioDe(p.emision, 'maximo') === anio,
+    ? data.maximo_no_recibidas.filter((p) => emitidaAlCorte(p.emision)).length +
+      data.gestiones.filter(
+        (g) =>
+          g.sistema === 'maximo' &&
+          g.recibida.getTime() >= finMaximo &&
+          emitidaAlCorte(g.emision),
       ).length
     : null;
 

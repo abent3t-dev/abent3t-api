@@ -1,6 +1,7 @@
 import {
   compararSerie,
   conciliarAvance,
+  MOTIVO_COPIA,
   type NuestraSemana,
   opcionesConciliacion,
   validezPagina,
@@ -100,6 +101,8 @@ describe('validez por página (identidades de la propia serie)', () => {
       recibidas_nuevas: true,
       medidor: true,
       titular_cerradas: 'cerradas',
+      // H15: no repite la semana anterior
+      copia: false,
     });
   });
 
@@ -136,19 +139,52 @@ describe('validez por página (identidades de la propia serie)', () => {
     expect(validezPagina(semanas, 36).recibidas_nuevas).toBe(true);
   });
 
-  it('p.26: el titular de cerradas = cerradas + canceladas (216 = 162 + 54) se compara contra nuestras cerradas + canceladas', () => {
-    const v = validezPagina(semanas, 25);
+  it('p.27: el titular de cerradas = cerradas + canceladas (216 = 162 + 54) se compara contra nuestras cerradas + canceladas', () => {
+    const v = validezPagina(semanas, 26);
     expect(v.titular_cerradas).toBe('atendidas');
-    const nuestra = { ...sintetica(semanas[25]) };
+    expect(v.copia).toBe(false);
+    const nuestra = { ...sintetica(semanas[26]) };
     const s = compararSerie(
-      [semanas[25], semanas[26]],
-      [nuestra, sintetica(semanas[26])],
+      [semanas[26], semanas[27]],
+      [nuestra, sintetica(semanas[27])],
     ).semanas[0];
     expect(kpi(s, 'cerradas_anio')).toMatchObject({
       jorge: 216,
       nuestro: 216,
       valida: true,
     });
+  });
+
+  it('H15: la p.26 es copia de la p.27 (9 valores iguales) y no se compara en ningún KPI; la p.27 sí', () => {
+    expect(semanas[25].lunes).toBe('2026-03-30');
+    expect(validezPagina(semanas, 25).copia).toBe(true);
+    // sus identidades internas cuadran: por eso pasaba
+    expect(validezPagina(semanas, 25)).toMatchObject({
+      medidor: true,
+      titular_cerradas: 'atendidas',
+    });
+    expect(validezPagina(semanas, 26).copia).toBe(false);
+    // ninguna otra página de la serie es copia
+    expect(
+      semanas
+        .map((_, i) => (validezPagina(semanas, i).copia ? i + 1 : null))
+        .filter((p) => p !== null),
+    ).toEqual([26]);
+
+    const r = compararSerie(
+      semanas.slice(24, 28),
+      semanas.slice(24, 28).map((j) => sintetica(j)),
+    );
+    const p26 = r.semanas.find((s) => s.pagina === 26)!;
+    for (const k of p26.kpis) {
+      expect(k.valida).toBe(false);
+      expect(k.motivo).toBe(
+        k.jorge === null ? 'Jorge no tiene el dato' : MOTIVO_COPIA,
+      );
+    }
+    const p27 = r.semanas.find((s) => s.pagina === 27)!;
+    expect(kpi(p27, 'atendidas').valida).toBe(true);
+    expect(kpi(p27, 'medidor_abiertas').valida).toBe(true);
   });
 });
 

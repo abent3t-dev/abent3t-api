@@ -44,10 +44,14 @@ import {
  *    fijos: recibidas − recibidas de la semana anterior = nuevas (primera
  *    semana del año: recibidas = nuevas); cerradas + canceladas + abiertas
  *    del medidor = recibidas; titular de cerradas = cerradas del medidor
- *    (si cuadra con cerradas + canceladas, como la p.26, se compara contra
- *    nuestras cerradas + canceladas). Cada KPI se compara solo donde su
- *    identidad cuadra; los que no tienen identidad (cerradas de la semana,
- *    días), donde los dos lados tienen dato.
+ *    (si cuadra con cerradas + canceladas, como la p.27 y la p.28, se
+ *    compara contra nuestras cerradas + canceladas). Cada KPI se compara
+ *    solo donde su identidad cuadra; los que no tienen identidad (cerradas
+ *    de la semana, días), donde los dos lados tienen dato.
+ *  - H15 (2026-10-05): una página idéntica a la de la semana anterior en sus
+ *    9 valores es copia (la p.26 repite la p.27: recibidas 249 con 12
+ *    nuevas en las dos) y no se compara en ningún KPI; sus identidades
+ *    internas (medidor, titular) cuadran y la dejaban pasar.
  *  - Resumen por KPI: error = Σ|nuestro − Jorge| / Σ Jorge (ponderado, para
  *    que las semanas chicas no pesen de más), error absoluto medio y sesgo
  *    (media de nuestro − Jorge).
@@ -133,10 +137,32 @@ export interface ValidezPagina {
   medidor: boolean;
   /**
    * Con qué cuadra el titular de cerradas del año: las cerradas del medidor,
-   * las cerradas + canceladas (p.26) o con nada (null).
+   * las cerradas + canceladas (p.27, p.28) o con nada (null).
    */
   titular_cerradas: 'cerradas' | 'atendidas' | null;
+  /**
+   * H15: la página repite los 9 valores de la semana anterior (la más nueva
+   * del par es la copia): no se compara en ningún KPI.
+   */
+  copia: boolean;
 }
+
+/** Los 9 valores de una página de Jorge, en el orden de su archivo. */
+const VALORES_PAGINA = (j: JorgeSemana) => [
+  j.recibidas,
+  j.nuevas,
+  j.cerradas_anio,
+  j.cerradas_semana,
+  j.dias_cierre,
+  j.dias_cancelacion,
+  j.medidor_cerradas,
+  j.medidor_canceladas,
+  j.medidor_abiertas,
+];
+
+/** Motivo de una página copiada (H15). */
+export const MOTIVO_COPIA =
+  'página idéntica a la de la semana anterior (copia)';
 
 const DAY_MS = 86_400_000;
 
@@ -153,6 +179,15 @@ export function validezPagina(
   const primeraDelAnio =
     lunes.getTime() === firstMondayOfYear(lunes.getUTCFullYear()).getTime();
   const anterior = semanas[i + 1];
+  const esLaAnterior =
+    anterior !== undefined &&
+    parseDay(anterior.lunes).getTime() === lunes.getTime() - 7 * DAY_MS;
+  // H15: copia = los 9 valores iguales a los de la semana anterior
+  const valores = VALORES_PAGINA(j);
+  const copia =
+    esLaAnterior &&
+    valores.some((v) => v !== null) &&
+    VALORES_PAGINA(anterior).every((v, k) => v === valores[k]);
   let recibidasNuevas = false;
   if (j.recibidas !== null && j.nuevas !== null) {
     if (primeraDelAnio) {
@@ -187,6 +222,7 @@ export function validezPagina(
     recibidas_nuevas: recibidasNuevas,
     medidor,
     titular_cerradas: titular,
+    copia,
   };
 }
 
@@ -240,7 +276,7 @@ const KPI_DEF: Record<
   },
   cerradas_anio: {
     jorge: (j) => j.cerradas_anio,
-    // p.26: el titular son cerradas + canceladas; se compara contra eso
+    // p.27, p.28: el titular son cerradas + canceladas; se compara contra eso
     nuestro: (n, v) =>
       v.titular_cerradas === 'atendidas'
         ? n.cerradas_anio + n.canceladas_anio
@@ -371,11 +407,15 @@ export function compararSerie(
       const def = KPI_DEF[kpi];
       const deJorge = def.jorge(j);
       const nuestro = n ? def.nuestro(n, v) : null;
+      // H15: la copia va antes de la identidad (también cubre los KPI sin
+      // identidad: cerradas de la semana y días)
       const motivo =
         deJorge === null
           ? 'Jorge no tiene el dato'
-          : (def.identidad(v) ??
-            (nuestro === null ? 'no tenemos el dato' : null));
+          : v.copia
+            ? MOTIVO_COPIA
+            : (def.identidad(v) ??
+              (nuestro === null ? 'no tenemos el dato' : null));
       return {
         kpi,
         jorge: deJorge,
@@ -451,7 +491,10 @@ export interface MontosConciliados {
     mes: number;
     etiqueta: string;
     jorge: number;
-    /** MXN de la página de Maximo; null = la variante no tiene MXN. */
+    /**
+     * MXN de la página de Maximo; null = la variante no tiene MXN o (H9) el
+     * mes solo trae OC sin subtotal en una variante sin IVA.
+     */
     nuestro: Record<VarianteMonto, number | null>;
   }>;
   total: {
@@ -494,11 +537,14 @@ export function montosConciliados(
     mes: i + 1,
     etiqueta: MESES_TITULO[i],
     jorge: valor,
-    nuestro: record((v) =>
-      v.montos.total.MXN === undefined
-        ? null
-        : round2(v.montos.meses[i]?.montos.MXN ?? 0),
-    ),
+    nuestro: record((v) => {
+      if (v.montos.total.MXN === undefined) return null;
+      const mes = v.montos.meses[i];
+      const valor = mes?.montos.MXN;
+      if (valor !== undefined) return round2(valor);
+      // H9: mes con OC sin subtotal (sin IVA) = no disponible, no 0
+      return mes?.sin_subtotal.MXN ? null : 0;
+    }),
   }));
   const sumaJorge = round2(jorge.reduce((s, v) => s + v, 0));
   return {
@@ -554,7 +600,10 @@ export interface ConciliacionAvance {
   maximo: {
     /** PR del universo (con la fecha de inicio de la regla). */
     gestiones: number;
-    /** PR fuera del universo (todas las fechas). */
+    /**
+     * PR fuera del universo HOY (todas las fechas); cada página cuenta las
+     * suyas al corte (H6: también las aprobadas después del corte).
+     */
     no_recibidas: number;
   };
   semanas: SemanaConciliada[];

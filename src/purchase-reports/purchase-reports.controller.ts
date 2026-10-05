@@ -7,6 +7,7 @@ import { WeeklyReportService } from './weekly-report.service';
 import { ApprovalChainService } from './approval-chain.service';
 import { AvanceSemanalService } from './avance-semanal/avance-semanal.service';
 import { sendPdf } from './avance-semanal/avance-semanal.pdf';
+import { avanceReglasVigentes } from './avance-semanal/avance-semanal.reglas';
 import { ReportPeriodDto } from './dto/report-period.dto';
 import {
   AvanceConciliacionDto,
@@ -34,6 +35,14 @@ export class PurchaseReportsController {
   @Get('avance-semanal')
   getAvanceSemanal(@Query() query: AvanceSemanalDto) {
     return this.avance.getSemana(query);
+  }
+
+  // H4 (2026-10-05): base de los montos y reglas vigentes del avance, sin
+  // armar la semana ni tocar la BD (la tarjeta de Reportes arma su texto
+  // con esto). Lectura abierta.
+  @Get('avance-semanal/reglas')
+  getAvanceReglas() {
+    return avanceReglasVigentes();
   }
 
   // H1: el mismo reporte en PDF: `semana` = una página; `desde`/`hasta` =

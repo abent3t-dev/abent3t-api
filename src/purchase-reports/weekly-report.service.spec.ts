@@ -76,7 +76,7 @@ const resumen = (creadas: number, dias: number | null) => ({
   proveedores: { bloqueados: 0 },
 });
 
-function makeService() {
+function makeService(ordenesAvance?: AvanceData['ordenes']) {
   const reports = {
     resolvePeriod: jest.fn((dto: { from: string; to: string }) => ({
       from: new Date(`${dto.from}T00:00:00Z`),
@@ -248,7 +248,7 @@ function makeService() {
         de_contrato: false,
       },
     ],
-    ordenes: [
+    ordenes: ordenesAvance ?? [
       {
         sistema: 'sap',
         fecha: new Date('2026-09-18T00:00:00Z'),
@@ -521,5 +521,62 @@ describe('WeeklyReportService', () => {
     expect(sapBlock.get('Monto adjudicado total 2026 (MXN), con IVA')).toBe(
       1500.5,
     );
+  });
+
+  it('H9: un mes con OC sin subtotal sale "No disponible" en la base sin IVA; un mes sin OC sigue en 0', async () => {
+    const oc = (
+      fecha: string,
+      monto: number,
+      subtotal: number | null,
+    ): AvanceData['ordenes'][number] => ({
+      sistema: 'sap',
+      fecha: new Date(`${fecha}T00:00:00Z`),
+      moneda: 'MXN',
+      monto,
+      subtotal,
+      contada_en_maximo: false,
+    });
+    const { service } = makeService([
+      oc('2026-07-10', 116, 100),
+      // agosto: solo OC sin subtotal (sin líneas o alguna sin importe)
+      oc('2026-08-10', 58, null),
+      oc('2026-08-11', 29, null),
+      // septiembre: una con subtotal y otra sin él
+      oc('2026-09-15', 232, 200),
+      oc('2026-09-16', 11.6, null),
+    ]);
+    const { buffer } = await service.buildWorkbook({
+      from: '2026-09-14',
+      to: '2026-09-20',
+    });
+    const book = await readBook(buffer);
+    const filas = new Map<string, { valor: unknown; nota: unknown }>();
+    let enSap = false;
+    book.getWorksheet('Avance semanal')!.eachRow((row, n) => {
+      if (n === 1) return;
+      const values = row.values as unknown[];
+      if (
+        typeof values[2] === 'string' &&
+        values[2].startsWith('Reporte de avance semanal de')
+      ) {
+        enSap = values[1] === 'SAP';
+        return;
+      }
+      if (enSap) {
+        filas.set(String(values[1]), { valor: values[2], nota: values[3] });
+      }
+    });
+    expect(filas.get('Monto adjudicado Julio 2026 (MXN)')?.valor).toBe(100);
+    expect(filas.get('Monto adjudicado Agosto 2026 (MXN)')).toEqual({
+      valor: 'No disponible',
+      nota: '2 OC sin subtotal no suman (no se estiman)',
+    });
+    expect(filas.get('Monto adjudicado Septiembre 2026 (MXN)')).toEqual({
+      valor: 200,
+      nota: '1 OC sin subtotal no suma (no se estiman)',
+    });
+    // un mes sin OC no es "No disponible": no hubo compras
+    expect(filas.get('Monto adjudicado Junio 2026 (MXN)')?.valor).toBe(0);
+    expect(filas.get('Monto adjudicado total 2026 (MXN)')?.valor).toBe(300);
   });
 });

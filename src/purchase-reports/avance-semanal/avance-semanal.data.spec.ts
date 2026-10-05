@@ -60,6 +60,8 @@ describe('fecha de las PR de Maximo (K5: sin folio)', () => {
       primera_oc: null,
       cierre_sin_oc: null,
       cancelada: null,
+      // H6: la PR aprobada conserva su emisión (no recibida antes del APPR)
+      emision: T('2026-09-14T15:00:00Z'),
     });
   });
 
@@ -217,7 +219,7 @@ describe('buildAvanceData', () => {
     expect(data.sap_desde).toEqual(D('2026-01-12'));
   });
 
-  it('OC por moneda con el subtotal (K6): SAP marca las que cuentan en Maximo; sin subtotal = null', () => {
+  it('OC por moneda con el subtotal (K6): SAP marca las que cuentan en Maximo y sus copias extra; sin subtotal = null', () => {
     const rows = empty();
     rows.sapOrders = [
       {
@@ -226,6 +228,7 @@ describe('buildAvanceData', () => {
         monto: '10.50',
         subtotal: '9.05',
         contada_en_maximo: true,
+        copia_migrada: false,
       },
       {
         fecha: D('2026-01-03'),
@@ -233,6 +236,16 @@ describe('buildAvanceData', () => {
         monto: null,
         subtotal: null,
         contada_en_maximo: false,
+        copia_migrada: false,
+      },
+      // D1: copia extra de la misma PO de Maximo (no la de menor DocNum)
+      {
+        fecha: D('2026-01-02'),
+        moneda: 'MXN',
+        monto: '10.50',
+        subtotal: '9.05',
+        contada_en_maximo: true,
+        copia_migrada: true,
       },
     ];
     rows.maximoOrders = [
@@ -247,6 +260,16 @@ describe('buildAvanceData', () => {
         monto: 10.5,
         subtotal: 9.05,
         contada_en_maximo: true,
+        copia_migrada: false,
+      },
+      {
+        sistema: 'sap',
+        fecha: D('2026-01-02'),
+        moneda: 'MXN',
+        monto: 10.5,
+        subtotal: 9.05,
+        contada_en_maximo: true,
+        copia_migrada: true,
       },
       {
         sistema: 'maximo',
@@ -281,5 +304,27 @@ describe('loadAvanceRows', () => {
     expect(sql).toContain('p.subtotal');
     expect(sql).not.toContain('regexp_replace');
     expect(sql).not.toContain('first_seen_at');
+  });
+
+  it('D1: marca las copias extra de la misma PO de Maximo y se queda con la de menor DocNum (entre las no canceladas)', async () => {
+    const queries: Prisma.Sql[] = [];
+    const prisma = {
+      $queryRaw: jest.fn((query: Prisma.Sql) => {
+        queries.push(query);
+        return Promise.resolve([]);
+      }),
+    };
+    await loadAvanceRows(
+      prisma as unknown as Parameters<typeof loadAvanceRows>[0],
+    );
+    const sapOrders = queries.find((q) => q.sql.includes('copia_migrada'));
+    expect(sapOrders).toBeDefined();
+    const sql = (sapOrders as Prisma.Sql).sql.replace(/\s+/g, ' ');
+    expect(sql).toContain(
+      'row_number() OVER ( PARTITION BY s.maximo_ponum ORDER BY s.doc_num NULLS LAST, s.doc_entry) > 1',
+    );
+    expect(sql).toContain('s.maximo_ponum IS NOT NULL AND row_number()');
+    // la ventana corre sobre las no canceladas que ya filtra el WHERE
+    expect(sql).toContain('WHERE s.cancelled IS DISTINCT FROM true');
   });
 });

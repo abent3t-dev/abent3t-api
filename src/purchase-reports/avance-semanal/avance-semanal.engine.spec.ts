@@ -454,6 +454,62 @@ describe('montos adjudicados', () => {
       ).toEqual({ MXN: 200, USD: 10 });
     });
 
+    it('H9: cada mes cuenta sus OC sin subtotal por moneda (mes sin compras ≠ mes sin subtotal)', () => {
+      const conAbril = [
+        ...k5,
+        // abril: solo una OC en USD sin subtotal
+        o('maximo', '2026-04-10', 58, { subtotal: null, moneda: 'USD' }),
+      ];
+      const m = montosAdjudicados(conAbril, 'maximo', 2026, lunes);
+      expect(m.meses[0].sin_subtotal).toEqual({});
+      // febrero: sin OC
+      expect(m.meses[1]).toMatchObject({ montos: {}, sin_subtotal: {} });
+      // marzo: una con subtotal y otra sin él
+      expect(m.meses[2]).toMatchObject({
+        montos: { MXN: 100 },
+        sin_subtotal: { MXN: 1 },
+      });
+      // abril: con compras, pero ninguna con el monto sin IVA
+      expect(m.meses[3]).toMatchObject({
+        montos: {},
+        ordenes: 0,
+        sin_subtotal: { USD: 1 },
+      });
+      expect(m.sin_subtotal.ordenes).toBe(2);
+    });
+
+    it("con 'sap_migradas', las copias de la misma PO en SAP se suman una vez (D1); 'sap' y 'todas' no cambian", () => {
+      const conMigradas = opciones({ montos_fuente_maximo: 'sap_migradas' });
+      // PO103374: la integración creó varias OC con el mismo NumAtCard,
+      // total y fecha; vale la de menor DocNum (copia_migrada = false)
+      const copias = [
+        ...k5,
+        o('sap', '2026-03-12', 232, {
+          subtotal: 200,
+          contada_en_maximo: true,
+          copia_migrada: true,
+        }),
+        o('sap', '2026-03-12', 232, {
+          subtotal: 200,
+          contada_en_maximo: true,
+          copia_migrada: true,
+        }),
+      ];
+      const m = montosAdjudicados(copias, 'maximo', 2026, lunes, conMigradas);
+      expect(m.total).toEqual({ MXN: 200 });
+      expect(m.otro.total).toEqual({ MXN: 232 });
+      expect(m.ordenes).toBe(1);
+      const t = montosAdjudicados(copias, 'todas', 2026, lunes, conMigradas);
+      expect(t.total).toEqual({ MXN: 200, USD: 10 });
+      // la página de SAP sigue sin sumarlas (son de Maximo)
+      const s = montosAdjudicados(copias, 'sap', 2026, lunes, conMigradas);
+      expect(s.total).toEqual({ USD: 10 });
+      // con la fuente por defecto ('maximo') las copias no entran nunca
+      expect(montosAdjudicados(copias, 'maximo', 2026, lunes).total).toEqual(
+        montosAdjudicados(k5, 'maximo', 2026, lunes).total,
+      );
+    });
+
     it('la página dice la base y las OC sin subtotal', () => {
       const page = buildAvancePage(
         data([], k5),
@@ -596,6 +652,63 @@ describe('página de la semana', () => {
       buildAvancePage(conFuera, D('2026-09-21'), 'sap', now).avance
         .maximo_no_recibidas,
     ).toBeNull();
+  });
+
+  it('H6: la PR emitida antes del corte y aprobada después cuenta como no recibida en esa semana (con el estado al corte, no el de hoy)', () => {
+    // emitida el 1-sep y aprobada el 15-sep (hoy ya tiene APPR)
+    const pr = maximo({
+      folio: 'PR77',
+      recibida: T('2026-09-15T09:00:00Z'),
+      inicio_dias: T('2026-09-15T09:00:00Z'),
+      emision: T('2026-09-01T15:00:00Z'),
+    });
+    const conPr = data([pr]);
+    // semana del 31-ago (corte dom 6-sep 23:59 MX): emitida, sin aprobar
+    const antes = buildAvancePage(conPr, D('2026-08-31'), 'maximo', now);
+    expect(antes.avance.maximo_no_recibidas).toBe(1);
+    expect(antes.avance.recibidas_anio).toBe(0);
+    expect(antes.notas[0]).toBe(
+      '1 PR de Maximo emitida en 2026 no se ha aprobado (en aprobación o cancelada sin aprobar): no llegó a Compras y no cuenta como recibida.',
+    );
+    // semana del 14-sep: ya es recibida y no va aparte
+    const despues = buildAvancePage(conPr, D('2026-09-14'), 'maximo', now);
+    expect(despues.avance.maximo_no_recibidas).toBe(0);
+    expect(despues.avance.recibidas_anio).toBe(1);
+    expect(despues.avance.nuevas_semana).toBe(1);
+    // antes de su emisión no cuenta en ningún lado
+    expect(
+      buildAvancePage(conPr, D('2026-08-24'), 'maximo', now).avance
+        .maximo_no_recibidas,
+    ).toBe(0);
+  });
+
+  it('H6: emitida el domingo 23:30 de México y aprobada el lunes → no recibida en esa semana (corte en hora de México)', () => {
+    const pr = maximo({
+      folio: 'PR78',
+      // lunes 7-sep 05:30 UTC = domingo 6-sep 23:30 en México (UTC−6)
+      emision: T('2026-09-07T05:30:00Z'),
+      recibida: T('2026-09-07T15:00:00Z'),
+      inicio_dias: T('2026-09-07T15:00:00Z'),
+    });
+    const page = buildAvancePage(data([pr]), D('2026-08-31'), 'maximo', now);
+    expect(page.avance.maximo_no_recibidas).toBe(1);
+    expect(page.avance.recibidas_anio).toBe(0);
+    // con la regla 'emision' la recibida ES la emisión: nunca va aparte
+    const porEmision = maximo({
+      folio: 'PR79',
+      fecha_origen: 'emision',
+      recibida: T('2026-09-01T15:00:00Z'),
+      emision: T('2026-09-01T15:00:00Z'),
+    });
+    expect(
+      buildAvancePage(
+        data([porEmision]),
+        D('2026-08-31'),
+        'maximo',
+        now,
+        opciones({ reglas: { ...AVANCE_REGLAS, recibida: 'emision' } }),
+      ).avance.maximo_no_recibidas,
+    ).toBe(0);
   });
 
   it('solo SAP: sin notas de Maximo', () => {

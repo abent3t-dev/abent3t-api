@@ -102,6 +102,26 @@ export function poSubtotalColumns(alias: string): Prisma.Sql {
     count(*) FILTER (WHERE ${col} IS NULL)::int AS sin_subtotal`;
 }
 
+/**
+ * H10 (2026-10-05): monto de las OC propias de ABENT en la base del tablero.
+ * El modelo propio no dice si `amount` lleva IVA (base desconocida): nunca
+ * suman al subtotal y van todas a `sin_subtotal`; con base con IVA su
+ * `amount` entra al total como hasta ahora y con base sin IVA no se suma
+ * (igual que una OC de SAP o Maximo sin subtotal). Lo usan el tablero y el
+ * Resumen de Reportes, para que no se desalineen.
+ */
+export function abentMontoEnBase(
+  amount: number,
+  count: number,
+  base: MontoBase = TABLERO_MONTO_BASE,
+): { total: number; subtotal: number; sin_subtotal: number } {
+  return {
+    total: base === 'sin_iva' ? 0 : amount,
+    subtotal: 0,
+    sin_subtotal: count,
+  };
+}
+
 /** K6: texto de la base para notas y tooltips (reemplaza los "con IVA" fijos). */
 export function montoBaseNota(base: MontoBase): string {
   return base === 'sin_iva'

@@ -1,5 +1,8 @@
 import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
+import { SapDocQueryDto } from './dto/sap-doc-query.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { TABLERO_MONTO_BASE } from '../common/sql/erp-views.sql';
@@ -197,6 +200,53 @@ describe('SapRecordsService — listados', () => {
     expect(or).toContainEqual({
       created_by_name: { contains: '6121', mode: 'insensitive' },
     });
+  });
+
+  it('K7.4/H1: doc_num exacto → solo { doc_num }, sin OR contra doc_entry ni subcadenas (el link "OC en SAP" abría la 5429 con doc_entry 6337)', async () => {
+    const { service, prisma } = makeService();
+    await service.listPurchaseOrders({ doc_num: 6337 });
+    const where = (
+      prisma.sap_purchase_orders.findMany.mock.calls[0] as [
+        { where: Record<string, unknown> },
+      ]
+    )[0].where;
+    expect(where).toEqual({ AND: [{}, { doc_num: 6337 }] });
+    const text = JSON.stringify(where);
+    expect(text).not.toContain('doc_entry');
+    expect(text).not.toContain('contains');
+    // el export usa el mismo filtro
+    prisma.sap_purchase_orders.findMany.mockClear();
+    await service.listAllForExport('purchase_orders', { doc_num: 6337 });
+    expect(
+      (
+        prisma.sap_purchase_orders.findMany.mock.calls[0] as [
+          { where: Record<string, unknown> },
+        ]
+      )[0].where,
+    ).toEqual({ AND: [{}, { doc_num: 6337 }] });
+    // con la búsqueda libre, el número sí compara contra doc_entry (no cambia)
+    prisma.sap_purchase_orders.findMany.mockClear();
+    await service.listPurchaseOrders({ search: '6337' });
+    expect(
+      JSON.stringify(
+        (
+          prisma.sap_purchase_orders.findMany.mock.calls[0] as [
+            { where: Record<string, unknown> },
+          ]
+        )[0].where,
+      ),
+    ).toContain('"doc_entry":6337');
+  });
+
+  it('K7.4/H1: `doc_num` del query se valida (entero positivo de 32 bits; llega como texto)', async () => {
+    const ok = plainToInstance(SapDocQueryDto, { doc_num: '6337' });
+    expect(await validate(ok)).toEqual([]);
+    expect(ok.doc_num).toBe(6337);
+    for (const bad of ['0', '-1', 'abc', '63.5', '9999999999']) {
+      const dto = plainToInstance(SapDocQueryDto, { doc_num: bad });
+      const errors = await validate(dto);
+      expect(errors.map((e) => e.property)).toEqual(['doc_num']);
+    }
   });
 
   it('la búsqueda encuentra OC por el solicitante de su solicitud base', async () => {

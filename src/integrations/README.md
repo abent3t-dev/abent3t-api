@@ -133,11 +133,39 @@ Lo que `MaximoClient` lee se persiste en PostgreSQL (`prisma/sql/0005_maximo_sta
 | `maximo_contracts` | Staging AB_CONTRATOS, una fila por revisión de PURCHVIEW (T3). Clave `(prnum, contractnum, revisionnum)` |
 | `maximo_sync_runs` | Bitácora de corridas (`cron` \| `manual` \| `seed`) con contadores y `filter_warnings` |
 
-Cada fila conserva el registro **crudo original** en `raw` JSONB + `mapper_version`:
-`npm run maximo:remap` re-deriva las columnas mapeadas sin re-descargar (así se
-aplicarán las confirmaciones de Isaac §20.A.2/7). Detección de cambios por
-`rowstamp` (PO) / `contract_rowstamp` (contrato); sin cambio solo se toca
-`last_seen_at`.
+Cada fila conserva el registro **crudo original** en `raw` JSONB + `mapper_version`
+y `raw_hash` (hash de la forma canónica: el mismo registro por legacy u OSLC
+da el mismo hash).
+
+**Detección de cambios (K8, 2026-10-05; `maximo-staging.service.ts`).** Para
+una fila que ya existe hay tres desenlaces:
+
+- **`updated`** — solo con rowstamp distinto (cambio real en Maximo). En OC,
+  `rowstamp`; en contratos, `pr_rowstamp` (la raíz de la PR: STATUS,
+  historial…) o `contract_rowstamp` (el PURCHVIEW). Reescribe columnas, `raw`
+  e historial y mueve `last_changed_at` ("Cambió en Maximo" del detalle).
+- **`remapped`** — mismo rowstamp con otro `mapper_version` (subió el mapper)
+  u otro `raw_hash` (campo nuevo de CIISA, o un cambio solo en hijos que no
+  mueve el rowstamp de la raíz, como RECEIVEDQTY de una POLINE). Reescribe
+  todo igual que `updated` pero **sin** tocar `last_changed_at`; se cuenta en
+  `maximo_sync_runs.records_remapped`.
+- **`unchanged`** — mismo rowstamp, hash y mapper: solo `last_seen_at` /
+  `last_sync_run_id`.
+
+En contratos, el alta, el cambio y el `remapped` reescriben el historial
+PRSTATUS de la PR (`maximo_pr_status_history`) en la misma transacción, y
+`superseded_at` marca las revisiones de la PR que ya no vienen (se limpia si
+la llave reaparece). Por eso, **tras desplegar un mapper nuevo no hay paso
+manual**: el primer full del sync re-mapea lo ya guardado como `remapped`. Si
+hace falta forzarlo, un full manual: `POST /integrations/maximo/sync
+{"target":"all"}` (409 = hay una corrida en curso: esperar y reintentar).
+
+`npm run maximo:remap` (re-deriva las columnas desde el `raw`, sin red) queda
+**para dev y emergencias**, nunca en un deploy y **nunca con una corrida del
+sync en curso**: el delete + createMany del historial choca con el UNIQUE
+`(prnum, seq)` de `maximo_pr_status_history`, y además deja `mapper_version`
+y `raw_hash` nuevos, así que el full siguiente sale casi todo `unchanged` y
+el smoke de `records_remapped` falla sin que haya defecto.
 
 **Ciclo de vida de una corrida** (`MaximoSyncService`): fila `running` →
 full scan paginado legacy (`_maxItems`/`_rsStart`, `MAXIMO_SYNC_PAGE_SIZE`) →
@@ -195,12 +223,14 @@ CONTRACTVALUE=TOTALCOST y CONTRACTREFNUM=CONTRACTNUM ya en el mapper
    AB_CLASFPO / AB_TIPOCOMP) y MAXVOL salen como **"No disponible"** — la
    Object Structure aún no expone esos campos (ajuste de definición pendiente
    con CIISA, validado 13-ago). Cuando CIISA los exponga: el siguiente sync
-   los trae y la UI los pinta sin cambios de código (las filas ya
-   sincronizadas se refrescan por `rowstamp`, o en bloque con
-   `npm run maximo:remap`).
-7. Si el staging de prod ya tuviera filas de una corrida previa al mapper
-   `2026.09.21-1`, correr `npm run maximo:remap` una vez para re-derivar
-   `contract_value`/`contract_ref_num` sin re-descargar.
+   los trae y la UI los pinta sin cambios de código (desde K8 las filas ya
+   sincronizadas salen `remapped` por el `raw_hash`; antes era por
+   `rowstamp` o con `npm run maximo:remap`).
+7. *(Histórico, anterior a K8; no aplica a deploys nuevos.)* Si el staging de
+   prod ya tuviera filas de una corrida previa al mapper `2026.09.21-1`, se
+   corría `npm run maximo:remap` una vez para re-derivar
+   `contract_value`/`contract_ref_num`. Hoy basta el full del sync (ver
+   "Detección de cambios").
 
 ## Consumo desde dominio (Fase INT-5)
 
@@ -317,15 +347,27 @@ Mapper de Maximo `2026.09.23-1`: en filas SIN contrato el estatus se toma de
 la raíz PR si la OS lo expone (`PR.STATUS`/`PRSTATUS`), `pr_total` de
 `PR.TOTALCOST`/`PRCOST`/suma de `PRLINE.LINECOST`, y `consumed_value` de la
 primera llave presente entre `RELEASEDTOTAL`, `RELEASEDCOST`, `TOTALRELEASED`,
-`COMMITTED`, `COMMITTEDTOTAL`, `INVOICEDTOTAL`, `TOTALINVOICED`. **Hoy
-AB_CONTRATOS no expone ninguna** (la PR llega solo con PRNUM/SITEID/REQUESTEDBY,
+`COMMITTED`, `COMMITTEDTOTAL`, `INVOICEDTOTAL`, `TOTALINVOICED`. **Hoy (al
+2026-09-23) AB_CONTRATOS no expone ninguna** (la PR llega solo con PRNUM/SITEID/REQUESTEDBY,
 fixture `ab-contratos.legacy-nested.no-contract.json`): esos campos salen
 "No disponible" y van a la lista de CIISA junto con `AB_*`/`MAXVOL`/`WAPPR`;
 cuando CIISA los exponga, `maximo:remap` (o el siguiente sync, por rowstamp)
-los pinta sin tocar código. Para desplegar: migración `0013` en B → pull +
+los pinta sin tocar código. Para desplegar (en su momento, antes de K8): migración `0013` en B → pull +
 rebuild api/next → `npm run maximo:remap` dentro del contenedor del api
 (target `contracts`; el de OC no cambia) → sin re-sync de SAP (D1 usa
-`maximo_ponum`, ya poblado por el mapper 1.2.0). Regla D1 en
+`maximo_ponum`, ya poblado por el mapper 1.2.0).
+
+> **Superado en parte el 2026-10-05 (K3, mapper `2026.10.05-1`, migración
+> `0019`):** AB_CONTRATOS ya trae en la raíz de la PR `STATUS`,
+> `STATUSDATE`, `ISSUEDATE` y `TOTALCOST`, más el historial `PRSTATUS[]`:
+> llegan `pr_status`, `pr_total`, las fechas de la PR y
+> `maximo_pr_status_history` (K7 solo los muestra en pantalla). Lo único que
+> sigue sin exponerse es el consumido (`consumed_value`:
+> RELEASEDTOTAL/COMMITTED/…), que sale "No disponible" y sigue en la lista
+> de CIISA junto con `AB_*`/`MAXVOL`. Desde K8 no se corre `maximo:remap`
+> en un deploy: el primer full re-mapea (ver "Detección de cambios").
+
+Regla D1 en
 `src/common/sql/erp-views.sql.ts`: una OC de SAP con `maximo_ponum` que
 existe en `maximo_purchase_orders` se cuenta una sola vez (se descuenta del
 lado SAP) en dashboard, reportes y expeditación; `/sap/summary` sigue con el
@@ -345,10 +387,10 @@ coincide con el `PURCHASEAGENT`) y migración `0014_comprador_maximo.sql`
 (`maximo_purchase_orders.purchase_agent` / `purchase_agent_name`, nullables).
 La OC de SAP creada desde Maximo toma el comprador de su OC en Maximo; si
 existe allá sin comprador queda vacía (no se muestra al usuario de la
-integración que la capturó en SAP). Para desplegar: migración `0014` en B →
-pull + rebuild api/next → `npm run maximo:remap -- purchase_orders` dentro del
-contenedor del api (el de contratos no cambia) → sin re-sync de SAP ni env
-nuevas. El filtro "tipo Excel" (`common/column-filters`) no toca el staging:
+integración que la capturó en SAP). Para desplegar (en su momento, antes de
+K8): migración `0014` en B → pull + rebuild api/next → `npm run maximo:remap
+-- purchase_orders` dentro del contenedor del api (el de contratos no cambia)
+→ sin re-sync de SAP ni env nuevas. El filtro "tipo Excel" (`common/column-filters`) no toca el staging:
 se evalúa sobre las vistas de lectura.
 
 **Post-deploy 2026-09-25 (F1/F2, migración `0015`):** en prod solo 11 de
@@ -361,8 +403,15 @@ de la integración de SAP. F2: la limpieza de corridas zombie al arrancar
 (Maximo y SAP) ya no usa el umbral de 30 min: marca `failed` toda corrida
 `running` anterior al arranque del proceso (`common/sync/zombie-runs.ts`), así
 que un `--force-recreate` a media corrida ya no deja filas colgadas. Para
-desplegar: migración `0015` en B → pull + rebuild api/next → `npm run
-maximo:remap -- purchase_orders` → sin sync de SAP ni env nuevas.
+desplegar (en su momento, antes de K8): migración `0015` en B → pull +
+rebuild api/next → `npm run maximo:remap -- purchase_orders` → sin sync de
+SAP ni env nuevas.
+
+**Bloque K (2026-10-05, K8):** los deploys ya no corren `maximo:remap`. Las
+recetas de arriba son históricas: hoy, tras subir el mapper, el primer full
+del sync re-mapea lo guardado como `remapped` (ver "Detección de cambios"),
+y el remedio si no corre es un full manual `POST /integrations/maximo/sync
+{"target":"all"}`, no el remap.
 
 ## Qué NO hacer
 

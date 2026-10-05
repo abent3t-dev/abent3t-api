@@ -251,15 +251,24 @@ export interface MaximoSummary {
   year: number | null;
   purchaseOrders: { total: number; byStatus: MaximoStatusCount[] };
   contracts: {
+    /** Filas PR–contrato de la vista (con y sin contrato). */
     total: number;
+    /** Filas PR–contrato CON contrato (un contrato cuenta una vez por PR). */
     withContract: number;
+    /**
+     * H5 (2026-10-05): contratos distintos (por `contractnum`, la llave de
+     * la pestaña Contratos agrupada), con el mismo año.
+     */
+    distinct: number;
     byStatus: MaximoStatusCount[];
   };
   /**
    * K4.4 (2026-10-05): solicitudes (PR) por el estatus DE LA PR, una por PR
    * (`CURRENT_MAXIMO_PRS`); con año, por su creación (`pr_issue_date`).
+   * H8: `total` null (y `byStatus` vacío) con año cuando ninguna PR trae
+   * estatus todavía (antes del primer full): sin base, no 0.
    */
-  requests: { total: number; byStatus: MaximoStatusCount[] };
+  requests: { total: number | null; byStatus: MaximoStatusCount[] };
   lastSync: {
     purchase_orders: MaximoLastSyncRun | null;
     contracts: MaximoLastSyncRun | null;

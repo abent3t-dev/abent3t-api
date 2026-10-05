@@ -22,7 +22,8 @@ import {
  *    PR sobre `CURRENT_MAXIMO_PRS`. El periodo va por la llegada a Compras
  *    (`maximoPrLlegada`, primer APPR). Antes se ubicaban por folio y
  *    entraban las CAN y CLOSE sin OC. Si ninguna PR tiene `pr_status` (antes
- *    del primer full con el mapper de K3) → null ("No disponible"), nunca 0.
+ *    del primer full con el mapper de K3) → null ("No disponible"), nunca 0;
+ *    H8 (2026-10-05): también los `*_sin_limite` (el tooltip decía 0).
  *
  * Periodo: el año elegido o, sin año, los últimos 12 meses (las PR
  * históricas nunca cerradas inflarían el número). `sin_limite` = el conteo
@@ -39,18 +40,19 @@ import {
 
 export interface PendingRequests {
   sap: { pendientes: number; sin_limite: number };
+  /** Maximo: null = ninguna PR trae estatus todavía (sin base, no 0). */
   maximo: {
     pendientes: number | null;
-    sin_limite: number;
+    sin_limite: number | null;
     /** I8: APPR de contrato sin OC del periodo (fuera de la carga de Compras). */
     de_contrato: number | null;
-    de_contrato_sin_limite: number;
+    de_contrato_sin_limite: number | null;
     /** K4: APPR que ya tienen OC (con o sin contrato), solo como dato. */
     aprobadas_con_oc: number | null;
-    aprobadas_con_oc_sin_limite: number;
+    aprobadas_con_oc_sin_limite: number | null;
     /** K4: WAPPR del periodo por su emisión; aparte, no se suman. */
     en_aprobacion: number | null;
-    en_aprobacion_sin_limite: number;
+    en_aprobacion_sin_limite: number | null;
   };
   /** Periodo aplicado (YYYY-MM-DD); `hasta` null = hasta hoy. */
   desde: string;
@@ -107,7 +109,8 @@ export async function loadPendingRequests(
   const m = maximo[0];
   // sin pr_status en ninguna PR (antes del primer full) no hay base
   const conBase = Number(m?.con_estatus ?? 0) > 0;
-  const enPeriodo = (value: number | undefined) =>
+  // H8: con o sin periodo, sin base el conteo es null (nunca 0)
+  const siHayBase = (value: number | undefined) =>
     conBase ? Number(value ?? 0) : null;
   return {
     sap: {
@@ -115,14 +118,14 @@ export async function loadPendingRequests(
       sin_limite: Number(sap[0]?.sin_limite ?? 0),
     },
     maximo: {
-      pendientes: enPeriodo(m?.pendientes),
-      sin_limite: Number(m?.sin_limite ?? 0),
-      de_contrato: enPeriodo(m?.de_contrato),
-      de_contrato_sin_limite: Number(m?.de_contrato_sin_limite ?? 0),
-      aprobadas_con_oc: enPeriodo(m?.aprobadas_con_oc),
-      aprobadas_con_oc_sin_limite: Number(m?.aprobadas_con_oc_sin_limite ?? 0),
-      en_aprobacion: enPeriodo(m?.en_aprobacion),
-      en_aprobacion_sin_limite: Number(m?.en_aprobacion_sin_limite ?? 0),
+      pendientes: siHayBase(m?.pendientes),
+      sin_limite: siHayBase(m?.sin_limite),
+      de_contrato: siHayBase(m?.de_contrato),
+      de_contrato_sin_limite: siHayBase(m?.de_contrato_sin_limite),
+      aprobadas_con_oc: siHayBase(m?.aprobadas_con_oc),
+      aprobadas_con_oc_sin_limite: siHayBase(m?.aprobadas_con_oc_sin_limite),
+      en_aprobacion: siHayBase(m?.en_aprobacion),
+      en_aprobacion_sin_limite: siHayBase(m?.en_aprobacion_sin_limite),
     },
     desde: isoDay(from),
     hasta: toExcl ? isoDay(new Date(toExcl.getTime() - 1)) : null,

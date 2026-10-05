@@ -1,11 +1,14 @@
 import {
   IsIn,
+  IsInt,
   IsISO8601,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
+  Min,
 } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { IsYearQuery } from '../../common/dto/year-query.util';
 import { ColumnFilterablePaginationDto } from '../../common/column-filters/column-query.dto';
 
@@ -69,6 +72,19 @@ export class SapDocQueryDto extends ColumnFilterablePaginationDto {
   @IsString()
   @MaxLength(50)
   card_code?: string;
+
+  /**
+   * K7.4 (2026-10-05), solo OC: número de OC exacto (DocNum). Lo usa el link
+   * "OC en SAP" del detalle de la PO de Maximo: la búsqueda libre también
+   * compara contra DocEntry (otra secuencia que se traslapa con DocNum) y
+   * contra subcadenas, y abría OC sin relación.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(2_147_483_647)
+  doc_num?: number;
 
   /**
    * G1, solo OC: `true` = sin las migradas de Maximo que existen allá (D1),

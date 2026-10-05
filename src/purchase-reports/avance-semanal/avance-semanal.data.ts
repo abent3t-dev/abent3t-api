@@ -17,7 +17,8 @@ import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
  * miles de filas) para que el acumulado de ~40 semanas no repita consultas.
  * Solo lectura; mismas reglas que el tablero:
  *  - SAP: solicitudes de pedido y su primera OC no cancelada por
- *    `base_request_entries` (G3); OC por moneda con `contada_en_maximo` (D1).
+ *    `base_request_entries` (G3); OC por moneda con `contada_en_maximo` (D1)
+ *    y `copia_migrada` (las copias extra de la misma PO de Maximo).
  *  - Maximo (K5, 2026-10-05): una fila por PR de `CURRENT_MAXIMO_PRS` con
  *    sus fechas reales de AB_CONTRATOS (K3: ISSUEDATE, primer APPR, último
  *    CLOSE y última CAN del historial PRSTATUS) y `de_contrato`; su OC por
@@ -50,6 +51,11 @@ export interface AvanceRows {
     monto: unknown;
     subtotal: unknown;
     contada_en_maximo: boolean;
+    /**
+     * Copia extra de la misma PO de Maximo (mismo `maximo_ponum`, no es la
+     * de menor DocNum entre las no canceladas).
+     */
+    copia_migrada: boolean;
   }>;
   /** Una fila por PR (vista por PR, sin obsoletas). */
   maximoPrs: Array<{
@@ -90,10 +96,16 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
       FROM sap_purchase_orders po, unnest(po.base_request_entries) AS e
       WHERE po.cancelled IS DISTINCT FROM true AND po.doc_date IS NOT NULL
       GROUP BY e`),
+    // D1: la integración crea a veces varias OC no canceladas con el mismo
+    // NumAtCard (PO103374: 9 copias del mismo total y fecha); se queda la de
+    // menor DocNum (regla de Expeditación y de oc_sap) y las demás se marcan
     prisma.$queryRaw<AvanceRows['sapOrders']>(Prisma.sql`
       SELECT s.doc_date AS fecha, s.currency AS moneda, s.doc_total AS monto,
              s.subtotal,
-             ${sapPoDuplicatedInMaximo('s')} AS contada_en_maximo
+             ${sapPoDuplicatedInMaximo('s')} AS contada_en_maximo,
+             (s.maximo_ponum IS NOT NULL AND row_number() OVER (
+                PARTITION BY s.maximo_ponum
+                ORDER BY s.doc_num NULLS LAST, s.doc_entry) > 1) AS copia_migrada
       FROM sap_purchase_orders s
       WHERE s.cancelled IS DISTINCT FROM true
         AND s.doc_date IS NOT NULL AND s.doc_total IS NOT NULL`),
@@ -196,6 +208,8 @@ export function buildAvanceData(
       cierre_sin_oc: primeraOc ? null : r.pr_closed_at,
       cancelada: r.pr_cancelled_at,
       de_contrato: r.de_contrato === true,
+      // H6: para contarla como no recibida en las semanas antes de su APPR
+      emision: r.pr_issue_date,
     });
   }
 
@@ -210,6 +224,7 @@ export function buildAvanceData(
       monto,
       subtotal: toNumber(o.subtotal),
       contada_en_maximo: o.contada_en_maximo === true,
+      copia_migrada: o.copia_migrada === true,
     });
   }
   for (const o of rows.maximoOrders) {

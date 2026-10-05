@@ -90,8 +90,9 @@ export interface MaximoContractDto {
    * Bloque 2026-09-23 (D8): consumido del contrato — primera llave numérica
    * presente en PURCHVIEW entre RELEASEDTOTAL / RELEASEDCOST / TOTALRELEASED /
    * COMMITTED / COMMITTEDTOTAL / INVOICEDTOTAL / TOTALINVOICED. La OS actual
-   * no expone ninguna → null ("No disponible"); cuando CIISA la exponga se
-   * pinta con `maximo:remap`. saldo = contractValue − consumedValue.
+   * no expone ninguna → null ("No disponible"); cuando CIISA la exponga, el
+   * siguiente sync la pinta (K8: otro hash → 'remapped'). saldo =
+   * contractValue − consumedValue.
    */
   consumedValue: number | null;
   /**

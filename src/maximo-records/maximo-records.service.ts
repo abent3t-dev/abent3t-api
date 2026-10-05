@@ -745,6 +745,7 @@ export class MaximoRecordsService {
       requestsByStatus,
       lastPoRun,
       lastContractRun,
+      contractCounts,
     ] = await Promise.all([
       this.prisma.$queryRaw<MaximoStatusCount[]>(Prisma.sql`
           WITH current AS (${CURRENT_MAXIMO_POS})
@@ -768,6 +769,18 @@ export class MaximoRecordsService {
           GROUP BY p.pr_status ORDER BY count DESC`),
       this.findLastRun('purchase_orders'),
       this.findLastRun('contracts'),
+      // H5 (2026-10-05): contratos DISTINTOS (la vista tiene una fila por
+      // PR–contrato: el 1051 contaba 8 veces), con la llave de la pestaña
+      // agrupada (contractnum) y el mismo año. H8: `con_estatus` = alguna PR
+      // ya trae su estatus (sin eso, el año por ISSUEDATE da 0 sin base).
+      this.prisma.$queryRaw<Array<{ contratos: number; con_estatus: number }>>(
+        Prisma.sql`
+          WITH current AS (${CURRENT_MAXIMO_CONTRACTS})
+          SELECT count(DISTINCT btrim(contractnum)) FILTER (
+                   WHERE has_contract AND coalesce(btrim(contractnum), '') <> '' ${inYear})::int AS contratos,
+                 count(*) FILTER (WHERE prnum IS NOT NULL AND pr_status IS NOT NULL)::int AS con_estatus
+          FROM current`,
+      ),
     ]);
 
     const contractByStatus = new Map<string | null, number>();
@@ -782,6 +795,12 @@ export class MaximoRecordsService {
       );
     }
 
+    // H8: con año y sin ninguna PR con estatus (antes del primer full) el
+    // conteo por ISSUEDATE sería 0 sin base → null ("No disponible"); sin
+    // año cuenta todas las PR y sí es dato
+    const sinBase =
+      year !== null && Number(contractCounts[0]?.con_estatus ?? 0) === 0;
+
     return {
       syncEnabled: this.isSyncEnabled(),
       year,
@@ -792,14 +811,17 @@ export class MaximoRecordsService {
       contracts: {
         total: contractTotal,
         withContract,
+        distinct: Number(contractCounts[0]?.contratos ?? 0),
         byStatus: [...contractByStatus.entries()]
           .map(([status, count]) => ({ status, count }))
           .sort((a, b) => b.count - a.count),
       },
-      requests: {
-        total: requestsByStatus.reduce((sum, s) => sum + s.count, 0),
-        byStatus: requestsByStatus,
-      },
+      requests: sinBase
+        ? { total: null, byStatus: [] }
+        : {
+            total: requestsByStatus.reduce((sum, s) => sum + s.count, 0),
+            byStatus: requestsByStatus,
+          },
       lastSync: { purchase_orders: lastPoRun, contracts: lastContractRun },
     };
   }

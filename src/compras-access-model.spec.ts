@@ -121,6 +121,8 @@ const OPEN_READS = [
   // 2026-09-29 (H1): reporte de avance semanal (JSON y PDF)
   '/compras/reportes/avance-semanal',
   '/compras/reportes/avance-semanal/pdf',
+  // 2026-10-05 (H4): base de los montos del avance para la tarjeta de Reportes
+  '/compras/reportes/avance-semanal/reglas',
   '/approvals/requisition/:rqId',
   '/approvals/stats',
   '/requisitions',

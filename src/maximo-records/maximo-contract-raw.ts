@@ -1,5 +1,6 @@
 import { canonicalize } from '../common/maximo/maximo-canonical';
 import type { CanonicalMaximoRecord } from '../common/maximo/maximo-canonical';
+import { compareStatusChange } from '../common/maximo/maximo-status-order';
 import {
   MaximoContractLine,
   MaximoContractStatusEntry,
@@ -99,10 +100,20 @@ export function deriveContractStatusHistory(
 ): MaximoContractStatusEntry[] {
   const record = findContractRecord(raw, contractnum, revisionnum);
   if (!record) return [];
+  // H11 (2026-10-05): mismo orden que el mapper (CHANGEDATE con los nulos al
+  // final y, en el mismo segundo, CONTRACTSTATUSID); antes solo por fecha,
+  // con los nulos al principio y el empate en el orden del raw
   return asRecordArray(record.CONTRACTSTATUS)
     .map((entry) => ({
       status: asString(entry.STATUS),
       changedAt: asString(entry.CHANGEDATE),
+      id: asNumber(entry.CONTRACTSTATUSID),
     }))
-    .sort((a, b) => (a.changedAt ?? '').localeCompare(b.changedAt ?? ''));
+    .sort((a, b) =>
+      compareStatusChange(
+        { changeDate: a.changedAt, id: a.id },
+        { changeDate: b.changedAt, id: b.id },
+      ),
+    )
+    .map(({ status, changedAt }) => ({ status, changedAt }));
 }

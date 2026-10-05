@@ -136,13 +136,33 @@ describe('loadPendingRequests (K4)', () => {
       con_estatus: 0,
     });
     const result = await loadPendingRequests(prisma, FROM, null);
-    expect(result.maximo).toMatchObject({
+    // H8: también los `*_sin_limite` (el tooltip decía "Maximo 0")
+    expect(result.maximo).toEqual({
       pendientes: null,
+      sin_limite: null,
       de_contrato: null,
+      de_contrato_sin_limite: null,
       aprobadas_con_oc: null,
+      aprobadas_con_oc_sin_limite: null,
       en_aprobacion: null,
-      sin_limite: 0,
+      en_aprobacion_sin_limite: null,
     });
     expect(result.hasta).toBeNull();
+  });
+
+  it('H8: con base (alguna PR con estatus) los conteos en 0 son 0, no null', async () => {
+    const { prisma } = makePrisma({
+      pendientes: 0,
+      sin_limite: 0,
+      de_contrato: 0,
+      de_contrato_sin_limite: 0,
+      aprobadas_con_oc: 0,
+      aprobadas_con_oc_sin_limite: 0,
+      en_aprobacion: 0,
+      en_aprobacion_sin_limite: 0,
+      con_estatus: 1,
+    });
+    const result = await loadPendingRequests(prisma, FROM, null);
+    expect(Object.values(result.maximo)).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
   });
 });

@@ -27,9 +27,16 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { TABLERO_MONTO_BASE } from '../common/sql/erp-views.sql';
 import {
+  abentAmounts,
   mergeAmounts,
   PurchaseDashboardService,
 } from './purchase-dashboard.service';
+
+// El objeto real de exports (no el namespace de `import *`, que solo tiene
+// getters): permite cambiar TABLERO_MONTO_BASE en una prueba
+const erpViews = jest.requireActual<{ TABLERO_MONTO_BASE: string }>(
+  '../common/sql/erp-views.sql',
+);
 
 function makeService(sapEnabled: boolean | string = true) {
   const queryRaw = jest.fn();
@@ -396,7 +403,74 @@ describe('PurchaseDashboardService.getSummary', () => {
       llegaron_a_compras: null,
       en_aprobacion: null,
       de_contrato: null,
+      // H8: tampoco los sin límite (el tooltip decía "Maximo 0")
+      pendientes_sin_limite: null,
+      de_contrato_sin_limite: null,
+      aprobadas_con_oc_sin_limite: null,
+      en_aprobacion_sin_limite: null,
+      // sin año cuenta todas las PR: es dato aunque no haya estatus
+      total: 0,
     });
+  });
+
+  it('H8: con año y sin ninguna PR con estatus, "Solicitudes totales" de Maximo = null (no 0); con base, 0 es 0', async () => {
+    const { service, queryRaw } = makeService();
+    queryRaw.mockResolvedValue([]);
+    const sinBase = await service.getSummary(2026);
+    expect(sinBase.solicitudes.por_fuente.maximo.total).toBeNull();
+    expect(sinBase.solicitudes.total).toBe(0);
+
+    // con base (alguna PR con estatus): un año sin PR es 0, no null
+    queryRaw.mockImplementation((q: { sql: string }) =>
+      Promise.resolve(
+        q.sql.includes('AS con_estatus')
+          ? [
+              {
+                pendientes: 0,
+                sin_limite: 0,
+                de_contrato: 0,
+                de_contrato_sin_limite: 0,
+                aprobadas_con_oc: 0,
+                aprobadas_con_oc_sin_limite: 0,
+                en_aprobacion: 0,
+                en_aprobacion_sin_limite: 0,
+                con_estatus: 7,
+              },
+            ]
+          : [],
+      ),
+    );
+    const conBase = await service.getSummary(2026);
+    expect(conBase.solicitudes.por_fuente.maximo).toMatchObject({
+      total: 0,
+      pendientes: 0,
+      pendientes_sin_limite: 0,
+      en_aprobacion_sin_limite: 0,
+    });
+  });
+
+  it("H10: con TABLERO_MONTO_BASE='sin_iva' las OC propias no suman al total (solo en documentos y sin subtotal)", async () => {
+    jest.replaceProperty(erpViews, 'TABLERO_MONTO_BASE', 'sin_iva');
+    try {
+      const { service, queryRaw } = makeService();
+      queryRaw.mockImplementation((q: { sql: string }) =>
+        Promise.resolve(
+          q.sql.includes(
+            'FROM purchase_orders WHERE is_active = true AND status <>',
+          )
+            ? [{ currency: 'MXN', total: '300', count: 2 }]
+            : [],
+        ),
+      );
+      const summary = await service.getSummary(2026);
+      expect(summary.ordenes.monto_base).toBe('sin_iva');
+      expect(summary.ordenes.por_fuente.abent.monto_por_moneda).toEqual([
+        { currency: 'MXN', total: 0, count: 2, subtotal: 0, sin_subtotal: 2 },
+      ]);
+      expect(summary.ordenes.total).toBe(2);
+    } finally {
+      jest.restoreAllMocks();
+    }
   });
 });
 
@@ -425,8 +499,15 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
     expect(kpis.ahorro.por_moneda).toEqual([]);
     expect(kpis.clasificacion.disponible).toBe(true);
     expect(kpis.clasificacion.opex.documentos).toBe(43);
+    // H7: por moneda, cuántas no traen subtotal y si el monto tiene base
     expect(kpis.clasificacion.opex.por_moneda).toEqual([
-      { currency: 'MXN', total: 1334.5, count: 43 },
+      {
+        currency: 'MXN',
+        total: 1334.5,
+        count: 43,
+        sin_subtotal: 1,
+        monto_disponible: true,
+      },
     ]);
     expect(kpis.clasificacion.capex.por_fuente.sap.por_moneda).toEqual([
       { currency: 'USD', total: 99, count: 1 },
@@ -449,7 +530,9 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
       queryRaw.mock.calls as unknown as Array<[{ sql: string }]>
     ).map(([q]) => q.sql.replace(/\s+/g, ' '));
     const maximoClas = texts.find((t) => t.includes('upper(ab_clasfpo)'));
-    expect(maximoClas).toContain('coalesce(sum(current.subtotal), 0) AS total');
+    // H7: sin coalesce: ninguna OC con subtotal = sin monto (no 0)
+    expect(maximoClas).toContain('sum(current.subtotal) AS total');
+    expect(maximoClas).not.toContain('coalesce(sum(current.subtotal), 0)');
     expect(maximoClas).toContain(
       'count(*) FILTER (WHERE subtotal IS NULL)::int AS sin_subtotal',
     );
@@ -464,6 +547,86 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
     expect(kpis.clasificacion.nota).toContain(
       '0 OC clasificadas no tienen subtotal',
     );
+  });
+});
+
+describe('CAPEX/OPEX sin subtotal (H7)', () => {
+  it('una moneda solo de Maximo y todas sin subtotal → monto_disponible=false (no "$0.00"); mezclada con SAP sí hay monto', async () => {
+    const { service, queryRaw } = makeService();
+    queryRaw
+      .mockResolvedValueOnce([]) // sap ahorro
+      .mockResolvedValueOnce([]) // maximo ahorro
+      // SAP: CAPEX en USD
+      .mockResolvedValueOnce([
+        { clas: 'CAPEX', currency: 'USD', docs: 1, total: '100' },
+      ])
+      // Maximo: CAPEX EUR (2, ninguna con subtotal) y USD (1 sin subtotal)
+      .mockResolvedValueOnce([
+        {
+          clas: 'CAPEX',
+          currency: 'EUR',
+          docs: 2,
+          total: null,
+          sin_subtotal: 2,
+        },
+        {
+          clas: 'CAPEX',
+          currency: 'USD',
+          docs: 1,
+          total: null,
+          sin_subtotal: 1,
+        },
+      ]);
+    const kpis = await service.getOrdersKpis(2026);
+    const capex = kpis.clasificacion.capex;
+    expect(capex.por_moneda).toEqual([
+      {
+        currency: 'USD',
+        total: 100,
+        count: 2,
+        sin_subtotal: 1,
+        monto_disponible: true,
+      },
+      {
+        currency: 'EUR',
+        total: 0,
+        count: 2,
+        sin_subtotal: 2,
+        monto_disponible: false,
+      },
+    ]);
+    expect(capex.sin_subtotal).toBe(3);
+    expect(capex.por_fuente.maximo.por_moneda).toContainEqual({
+      currency: 'EUR',
+      total: 0,
+      count: 2,
+      sin_subtotal: 2,
+      monto_disponible: false,
+    });
+    expect(capex.documentos).toBe(4);
+  });
+});
+
+describe('OC propias de ABENT en la base del tablero (H10)', () => {
+  const rows = [{ currency: 'MXN', total: '300', count: 2 }];
+
+  it('con IVA su monto entra al total; sin IVA no (como una OC sin subtotal); nunca al subtotal', () => {
+    expect(abentAmounts(rows, 'con_iva')).toEqual([
+      { currency: 'MXN', total: 300, count: 2, subtotal: 0, sin_subtotal: 2 },
+    ]);
+    expect(abentAmounts(rows, 'sin_iva')).toEqual([
+      { currency: 'MXN', total: 0, count: 2, subtotal: 0, sin_subtotal: 2 },
+    ]);
+  });
+
+  it('sin IVA: el total de la moneda trae solo el subtotal de Maximo, no el amount propio', () => {
+    // Maximo en la base sin IVA: total = suma del subtotal
+    const maximo = [
+      { currency: 'MXN', total: 100, count: 3, subtotal: 100, sin_subtotal: 1 },
+    ];
+    expect(mergeAmounts([maximo, abentAmounts(rows, 'sin_iva')])).toEqual([
+      { currency: 'MXN', total: 100, count: 5, subtotal: 100, sin_subtotal: 3 },
+    ]);
   });
 });
 

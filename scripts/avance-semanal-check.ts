@@ -248,8 +248,9 @@ async function main(): Promise<void> {
             (k) =>
               `${k.kpi} ${k.jorge ?? '—'}→${k.nuestro ?? '—'}${k.valida ? '' : '*'}`,
           );
+        // H15: la página copiada de la anterior no se compara en ningún KPI
         console.log(
-          `  p.${String(s.pagina).padStart(2)} ${s.lunes}  ${partes.join(' · ')} · H1 ${s.cerradas_sin_oc_ni_contrato}`,
+          `  p.${String(s.pagina).padStart(2)} ${s.lunes}  ${partes.join(' · ')} · H1 ${s.cerradas_sin_oc_ni_contrato}${s.validez.copia ? ' · copia de la semana anterior: no se compara' : ''}`,
         );
       }
     }

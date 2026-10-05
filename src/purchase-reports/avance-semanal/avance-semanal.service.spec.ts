@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import PDFDocument from 'pdfkit';
 import { BadRequestException } from '@nestjs/common';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
@@ -6,7 +7,14 @@ import type { PrismaService } from '../../prisma/prisma.service';
 import { PurchaseReportsController } from '../purchase-reports.controller';
 import { buildAvancePage, type AvanceData } from './avance-semanal.engine';
 import { renderAvancePdf } from './avance-semanal.pdf';
-import { AVANCE_REGLAS } from './avance-semanal.reglas';
+import {
+  AVANCE_MONTO_BASE,
+  AVANCE_MONTOS_FUENTE_MAXIMO,
+  AVANCE_OPCIONES,
+  AVANCE_REGLAS,
+  avanceReglasVigentes,
+  montoBaseTexto,
+} from './avance-semanal.reglas';
 import { AvanceSemanalService } from './avance-semanal.service';
 
 /**
@@ -210,6 +218,88 @@ describe('PDF del reporte de avance semanal', () => {
   });
 });
 
+describe('PDF: tarjeta de montos (H9, H18)', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('H18: el pie con tres monedas y OC sin subtotal entra completo (sin "…"); H9: el mes sin subtotal dice "No disponible"', async () => {
+    const oc = (
+      fecha: string,
+      moneda: string,
+      monto: number,
+      subtotal: number | null,
+    ): AvanceData['ordenes'][number] => ({
+      sistema: 'maximo',
+      fecha: new Date(`${fecha}T15:00:00Z`),
+      moneda,
+      monto,
+      subtotal,
+      contada_en_maximo: false,
+    });
+    const data: AvanceData = {
+      gestiones: [],
+      ordenes: [
+        oc('2026-03-10', 'MXN', 1_160_000, 1_000_000),
+        oc('2026-04-10', 'USD', 116_000.55, 100_000.47),
+        oc('2026-05-10', 'EUR', 2_035.8, 1_755),
+        // junio: solo OC sin subtotal (cinco)
+        ...[11, 12, 13, 14, 15].map((d) =>
+          oc(`2026-06-${d}`, 'MXN', 58_000, null),
+        ),
+      ],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+    };
+    const page = buildAvancePage(data, D('2026-09-21'), 'maximo', NOW);
+    expect(page.montos.monedas).toEqual(['MXN', 'USD', 'EUR']);
+    expect(page.montos.sin_subtotal.ordenes).toBe(5);
+
+    // Cada texto del PDF con el alto que se le dio y el que necesita
+    const proto = PDFDocument.prototype as unknown as {
+      text: (...args: unknown[]) => unknown;
+    };
+    const original = proto.text;
+    const textos: Array<{ texto: string; alto?: number; necesita: number }> =
+      [];
+    jest.spyOn(proto, 'text').mockImplementation(function (
+      this: PDFKit.PDFDocument,
+      ...args: unknown[]
+    ) {
+      const [s, , , opts] = args as [
+        unknown,
+        number,
+        number,
+        { width?: number; height?: number } | undefined,
+      ];
+      if (typeof s === 'string') {
+        textos.push({
+          texto: s,
+          alto: opts?.height,
+          necesita: opts?.width
+            ? this.heightOfString(s, { width: opts.width, lineGap: 0 })
+            : 0,
+        });
+      }
+      return original.apply(this, args);
+    });
+    const pdf = await renderAvancePdf([page]);
+    expect(pageCount(pdf)).toBe(1);
+
+    const pie = textos.find((t) =>
+      t.texto.includes('OC sin subtotal (no se estiman)'),
+    );
+    expect(pie).toBeDefined();
+    // el otro valor de las tres monedas, la moneda extra y las OC sin subtotal
+    expect(pie!.texto).toContain('Además: EUR 1,755.00 (sin convertir)');
+    expect(pie!.texto).toMatch(/Con IVA: MXN .* · USD .* · EUR 2,035\.80/);
+    expect(pie!.texto).toContain('5 OC sin subtotal (no se estiman)');
+    // antes: 18 pt (un renglón) y el resto se cortaba con "…"
+    expect(pie!.necesita).toBeGreaterThan(18);
+    expect(pie!.alto).toBeGreaterThanOrEqual(pie!.necesita);
+    // H9: junio trae compras sin subtotal (≠ "—" de un mes sin OC)
+    expect(textos.filter((t) => t.texto === 'No disponible')).toHaveLength(1);
+  });
+});
+
 describe('K5.7: conciliación contra la serie de Jorge', () => {
   it('pide super_admin y no entra a las lecturas abiertas', () => {
     const proto = PurchaseReportsController.prototype as unknown as Record<
@@ -252,5 +342,61 @@ describe('K5.7: conciliación contra la serie de Jorge', () => {
     expect(conc.duracion_ms).toBeGreaterThanOrEqual(0);
     // una sola carga de datos (6 consultas)
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(6);
+  });
+});
+
+describe('H4: reglas vigentes del avance (tarjeta de Reportes)', () => {
+  it('GET avance-semanal/reglas: lectura abierta y con la base de las constantes, sin tocar la BD', () => {
+    const proto = PurchaseReportsController.prototype as unknown as Record<
+      string,
+      object
+    >;
+    const handler = proto.getAvanceReglas;
+    expect(Reflect.getMetadata(PATH_METADATA, handler)).toBe(
+      'avance-semanal/reglas',
+    );
+    expect(Reflect.getMetadata(METHOD_METADATA, handler)).toBe(0); // GET
+    expect(Reflect.getMetadata(ROLES_KEY, handler)).toBeUndefined();
+
+    const prisma = { $queryRaw: jest.fn() };
+    const controller = new PurchaseReportsController(
+      {} as never,
+      {} as never,
+      {} as never,
+      new AvanceSemanalService(prisma as unknown as PrismaService),
+    );
+    const reglas = controller.getAvanceReglas();
+    expect(reglas).toMatchObject({
+      monto_base: AVANCE_MONTO_BASE,
+      monto_base_texto: montoBaseTexto(AVANCE_MONTO_BASE),
+      montos_fuente_maximo: AVANCE_MONTOS_FUENTE_MAXIMO,
+      reglas: AVANCE_REGLAS,
+    });
+    expect(reglas.monto_base_nota).toMatch(
+      new RegExp(`^Montos ${montoBaseTexto(AVANCE_MONTO_BASE)}`),
+    );
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('si la constante pasa a \'con_iva\', la respuesta lo dice (la tarjeta ya no dice "sin IVA" fijo)', () => {
+    const conIva = avanceReglasVigentes({
+      ...AVANCE_OPCIONES,
+      monto_base: 'con_iva',
+    });
+    expect(conIva).toMatchObject({
+      monto_base: 'con_iva',
+      monto_base_texto: 'con IVA',
+      otra_base: 'sin_iva',
+      otra_base_texto: 'sin IVA',
+    });
+    expect(conIva.monto_base_nota).toMatch(/^Montos con IVA; el valor sin IVA/);
+    const sinIva = avanceReglasVigentes({
+      ...AVANCE_OPCIONES,
+      monto_base: 'sin_iva',
+    });
+    // el texto que la tarjeta tenía escrito a mano
+    expect(sinIva.monto_base_nota).toBe(
+      'Montos sin IVA (suma de las líneas de la OC; las OC sin subtotal no se suman ni se estiman); el valor con IVA va en una línea chica.',
+    );
   });
 });

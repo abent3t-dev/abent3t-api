@@ -1260,6 +1260,27 @@ describe('ExpeditingService — cierre en el otro sistema y búsqueda por PO (I1
     expect(headers).toContain('Monto (con IVA en SAP y Maximo)');
   });
 
+  it('H16: las dos consultas piden la recepción y la integración (PO5) de Maximo (los mocks no prueban el SQL)', async () => {
+    const h = receivedSeeded();
+    // sin `source`: las tres consultas, en orden (SAP, Maximo, copias en SAP)
+    await h.service.findAll({});
+    const calls = h.prisma.$queryRaw.mock.calls as unknown[][];
+    const sqlOf = (i: number) =>
+      (calls[i][0] as { sql: string }).sql.replace(/\s+/g, ' ');
+    const sapSql = sqlOf(0);
+    const mxSql = sqlOf(1);
+    expect(sapSql).toContain('FROM sap_purchase_orders s');
+    // SELECT de la OC de SAP y el LATERAL de su PO de Maximo
+    expect(sapSql).toMatch(/mx\.receipt_status, mx\.integration_status/);
+    expect(sapSql).toMatch(
+      /m\.status, m\.receipt_status, m\.integration_status FROM maximo_purchase_orders m/,
+    );
+    expect(sapSql).toContain('mx.status AS maximo_status');
+    // la PO de Maximo (sin copia en SAP)
+    expect(mxSql).toContain("SELECT 'maximo'::text AS source");
+    expect(mxSql).toMatch(/\breceipt_status, integration_status FROM current/);
+  });
+
   it('I2: las dos columnas (PO Maximo / OC SAP) y la búsqueda por PONUM con o sin "PO"', async () => {
     let h = seeded();
     const { data } = await h.service.findAll({ limit: 50 });

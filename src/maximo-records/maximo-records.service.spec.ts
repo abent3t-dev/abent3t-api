@@ -16,6 +16,7 @@ import {
   findContractRecord,
 } from './maximo-contract-raw';
 import { derivePurchaseOrderLines } from './maximo-po-raw';
+import { toContracts } from '../integrations/maximo/maximo.mapper';
 import {
   CONTRACT_COLUMNS,
   PO_COLUMNS,
@@ -665,7 +666,10 @@ describe('MaximoRecordsService', () => {
           { status: 'CLOSE', count: 2 },
           { status: 'APPR', count: 1 },
           { status: 'WAPPR', count: 1 },
-        ]);
+        ])
+        // H5: contratos distintos (los 3 con contrato son 2 contratos);
+        // H8: hay PR con estatus
+        .mockResolvedValueOnce([{ contratos: 2, con_estatus: 4 }]);
       prisma.maximo_sync_runs.findFirst
         .mockResolvedValueOnce({
           status: 'success',
@@ -685,6 +689,7 @@ describe('MaximoRecordsService', () => {
       expect(summary.purchaseOrders.total).toBe(7);
       expect(summary.contracts.total).toBe(5);
       expect(summary.contracts.withContract).toBe(3);
+      expect(summary.contracts.distinct).toBe(2);
       expect(summary.contracts.byStatus).toContainEqual({
         status: 'APPR',
         count: 2,
@@ -705,12 +710,18 @@ describe('MaximoRecordsService', () => {
     it('K4.4: requests sale de la vista por PR (sin obsoletas) y el año va por ISSUEDATE', async () => {
       const { service, prisma } = makeService();
       prisma.$queryRaw.mockResolvedValue([]);
+      // H8: con PR con estatus, un año sin PR es 0 (dato)
+      prisma.$queryRaw
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ contratos: 0, con_estatus: 3 }]);
       const summary = await service.getSummary(2026);
       expect(summary.requests).toEqual({ total: 0, byStatus: [] });
       const calls = prisma.$queryRaw.mock.calls as Array<
         [{ sql: string; values: unknown[] }]
       >;
-      expect(calls).toHaveLength(3);
+      expect(calls).toHaveLength(4);
       const [requests] = calls[2];
       const text = requests.sql.replace(/\s+/g, ' ');
       expect(text).toContain('DISTINCT ON (prnum)');
@@ -727,6 +738,67 @@ describe('MaximoRecordsService', () => {
       // los contratos siguen por la fecha del contrato
       const [contracts] = calls[1];
       expect(contracts.sql).toContain('created_at_source >=');
+    });
+
+    it('H5: "Contratos" cuenta contratos distintos (un contrato con varias PR cuenta una vez), con el mismo año', async () => {
+      const { service, prisma } = makeService();
+      prisma.$queryRaw
+        .mockResolvedValueOnce([])
+        // el 1051 con 2 PR (2 filas) y el 1052 con 1: 3 filas con contrato
+        .mockResolvedValueOnce([
+          { status: 'APPR', has_contract: true, count: 3 },
+        ])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ contratos: 2, con_estatus: 3 }]);
+      const summary = await service.getSummary(2026);
+      expect(summary.contracts).toMatchObject({
+        total: 3,
+        withContract: 3,
+        distinct: 2,
+      });
+      const [counts] = (
+        prisma.$queryRaw.mock.calls as Array<
+          [{ sql: string; values: unknown[] }]
+        >
+      )[3];
+      const text = counts.sql.replace(/\s+/g, ' ');
+      // sobre la vista PR–contrato, por la llave de la pestaña agrupada
+      expect(text).toContain('SELECT DISTINCT ON (coalesce(prnum');
+      expect(text).toContain('count(DISTINCT btrim(contractnum)) FILTER');
+      expect(text).toContain(
+        "has_contract AND coalesce(btrim(contractnum), '') <> ''",
+      );
+      // el año va por la fecha del contrato, como `withContract`
+      expect(text).toContain(
+        'AND created_at_source >= ? AND created_at_source < ?',
+      );
+      expect(counts.values).toEqual([
+        new Date(Date.UTC(2026, 0, 1)),
+        new Date(Date.UTC(2027, 0, 1)),
+      ]);
+    });
+
+    it('H8: con año y sin ninguna PR con estatus (antes del primer full), requests = null, nunca 0; sin año es dato', async () => {
+      const { service, prisma } = makeService();
+      prisma.$queryRaw
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ contratos: 0, con_estatus: 0 }]);
+      const conAnio = await service.getSummary(2026);
+      expect(conAnio.requests).toEqual({ total: null, byStatus: [] });
+
+      // sin año cuenta todas las PR (no depende del estatus)
+      prisma.$queryRaw
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ status: null, count: 5 }])
+        .mockResolvedValueOnce([{ contratos: 0, con_estatus: 0 }]);
+      const sinAnio = await service.getSummary();
+      expect(sinAnio.requests).toEqual({
+        total: 5,
+        byStatus: [{ status: null, count: 5 }],
+      });
     });
 
     it('K8: la última corrida trae records_remapped (el primer full no se ve como ~0 / =0)', async () => {
@@ -851,6 +923,58 @@ describe('derivación pura del raw de contratos', () => {
     );
     expect(deriveContractStatusHistory(compact, '9906', 1)).toEqual(
       deriveContractStatusHistory(RAW_PR_NESTED, '9906', 1),
+    );
+  });
+
+  it('H11: historial en el mismo orden que el mapper (mismo segundo → CONTRACTSTATUSID; sin fecha al final)', () => {
+    // raw anidado de prod: APPR (id 11) llega antes que WAPPR (id 10), en el
+    // mismo segundo, y un cambio sin CHANGEDATE llega primero
+    const raw = {
+      rowstamp: '990100099',
+      Attributes: { PRNUM: c('PR990099'), SITEID: c('A3T') },
+      RelatedMbos: {
+        PURCHVIEW: [
+          {
+            rowstamp: '990160099',
+            Attributes: { CONTRACTNUM: c('9999'), REVISIONNUM: c(0) },
+            RelatedMbos: {
+              CONTRACTSTATUS: [
+                {
+                  Attributes: {
+                    STATUS: c('DRAFT'),
+                    CONTRACTSTATUSID: { content: 9, resourceid: true },
+                  },
+                },
+                {
+                  Attributes: {
+                    STATUS: c('APPR'),
+                    CHANGEDATE: c('2026-08-01T09:00:00+00:00'),
+                    CONTRACTSTATUSID: { content: 11, resourceid: true },
+                  },
+                },
+                {
+                  Attributes: {
+                    STATUS: c('WAPPR'),
+                    CHANGEDATE: c('2026-08-01T09:00:00+00:00'),
+                    CONTRACTSTATUSID: { content: 10, resourceid: true },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    };
+    const detalle = deriveContractStatusHistory(raw, '9999', 0);
+    expect(detalle).toEqual([
+      { status: 'WAPPR', changedAt: '2026-08-01T09:00:00+00:00' },
+      { status: 'APPR', changedAt: '2026-08-01T09:00:00+00:00' },
+      { status: 'DRAFT', changedAt: null },
+    ]);
+    // lo que guarda el mapper, en el mismo orden
+    const [dto] = toContracts(raw);
+    expect(dto.statusHistory.map((s) => s.status)).toEqual(
+      detalle.map((s) => s.status),
     );
   });
 

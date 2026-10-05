@@ -685,6 +685,9 @@ export class SapRecordsService {
     // G1: proveedor exacto y "contadas una vez" (clic en el top de Reportes)
     const g1: Record<string, unknown>[] = [];
     if (query.card_code) g1.push({ card_code: query.card_code });
+    // K7.4: número de OC exacto (link "OC en SAP" del detalle de Maximo); sin
+    // OR contra doc_entry ni subcadenas, que abrían OC sin relación
+    if (query.doc_num !== undefined) g1.push({ doc_num: query.doc_num });
     if (query.counted_once === 'true') {
       const duplicated = await this.prisma.$queryRaw<Array<{ ponum: string }>>(
         Prisma.sql`

@@ -624,8 +624,9 @@ export class WeeklyReportService {
       },
       {
         indicador: '   Maximo',
-        actual: a.solicitudes.por_fuente.maximo.creadas,
-        anterior: b.solicitudes.por_fuente.maximo.creadas,
+        // H8: null = ninguna PR con estatus todavía (antes del primer full)
+        actual: a.solicitudes.por_fuente.maximo.creadas ?? NO_DISPONIBLE,
+        anterior: b.solicitudes.por_fuente.maximo.creadas ?? NO_DISPONIBLE,
       },
       {
         indicador: '   ABENT',
@@ -891,10 +892,18 @@ export class WeeklyReportService {
     for (const moneda of m.monedas) {
       if (m.total[moneda] !== undefined) {
         for (const mes of m.meses) {
+          // H9: sin valor y con OC sin subtotal = No disponible (no $0, que
+          // es un mes sin compras); con valor, las que faltan van en la nota
+          const v = mes.montos[moneda];
+          const faltan = mes.sin_subtotal[moneda] ?? 0;
+          const sinBase = m.base === 'sin_iva' && faltan > 0;
           rows.push({
             indicador: `Monto adjudicado ${mes.etiqueta} ${m.anio} (${moneda})`,
-            valor: mes.montos[moneda] ?? 0,
-            money: true,
+            valor: v ?? (sinBase ? NO_DISPONIBLE : 0),
+            money: v !== undefined || !sinBase,
+            nota: sinBase
+              ? `${faltan} ${faltan === 1 ? 'OC sin subtotal no suma' : 'OC sin subtotal no suman'} (no se estiman)`
+              : undefined,
           });
         }
       }
