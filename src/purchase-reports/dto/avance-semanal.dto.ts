@@ -6,10 +6,12 @@ import {
 import {
   AVANCE_CORTES,
   AVANCE_DIAS_TIPOS,
+  AVANCE_GRUPOS,
   AVANCE_INICIOS,
   AVANCE_MONTOS_FUENTES,
   type AvanceCorte,
   type AvanceDiasTipo,
+  type AvanceGrupos,
   type AvanceInicio,
   type AvanceMontosFuente,
 } from '../avance-semanal/avance-semanal.reglas';
@@ -19,7 +21,8 @@ import {
  * toma su lunes; default: la última semana completa). `desde`/`hasta` = una
  * página por semana (el "acumulado"). I3: `fuente` default `ambos` (una
  * página de Maximo y una de SAP por semana); `maximo`, `sap` o `todas` (las
- * dos sumadas, solo API) dan una página por semana.
+ * dos sumadas, solo API) dan una página por semana. L2: `grupos` (vista
+ * previa) arma la página de Maximo por grupo.
  */
 export class AvanceSemanalDto {
   @IsISO8601()
@@ -37,6 +40,18 @@ export class AvanceSemanalDto {
   @IsIn(AVANCE_REPORTES)
   @IsOptional()
   fuente?: AvanceReporte;
+
+  /**
+   * L2 (vista previa, 2026-10-08): 'contrato' = la página de Maximo con "De
+   * contrato (OC automática)" y "Canceladas en Maximo" aparte en la dona, los
+   * medidores y las barras; 'estandar' = cerradas · canceladas · abiertas.
+   * Sin el parámetro, AVANCE_GRUPOS_MAXIMO. La página de SAP no cambia.
+   * Declarado aquí porque el ValidationPipe (whitelist) descarta en silencio
+   * lo no declarado.
+   */
+  @IsIn(AVANCE_GRUPOS)
+  @IsOptional()
+  grupos?: AvanceGrupos;
 }
 
 /**

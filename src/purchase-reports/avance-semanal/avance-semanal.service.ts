@@ -24,7 +24,13 @@ import {
   weeksBetween,
 } from './avance-semanal.engine';
 import { renderAvancePdf } from './avance-semanal.pdf';
-import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
+import {
+  AVANCE_GRUPOS_MAXIMO,
+  AVANCE_OPCIONES,
+  AVANCE_REGLAS,
+  type AvanceGrupos,
+  type AvanceReglas,
+} from './avance-semanal.reglas';
 
 /**
  * H1 (reunión con Ingrid 2026-09-29) — "Reporte de avance semanal" en un
@@ -40,6 +46,10 @@ import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
  * K5 (2026-10-05): el reporte usa las reglas de avance-semanal.reglas.ts
  * (defaults); la conciliación contra la serie de Jorge prueba variantes con
  * los mismos datos y el mismo motor.
+ *
+ * L2 (2026-10-08, vista previa): `grupos` (default AVANCE_GRUPOS_MAXIMO) en
+ * el JSON y en el PDF, de una semana o del acumulado: con 'contrato', las
+ * páginas de Maximo traen sus grupos; sin el parámetro, todo sale igual.
  */
 
 /** Tope del acumulado: poco más de un año de semanas. */
@@ -61,9 +71,10 @@ export class AvanceSemanalService {
     const [lunes] = this.resolveWeeks({ semana: dto.semana });
     const data = await this.loadData();
     const now = new Date();
+    const grupos = this.grupos(dto);
     const paginas = fuentesDelReporte(this.reporte(dto)).map((fuente) => ({
-      ...buildAvancePage(data, lunes, fuente, now),
-      definiciones: avanceDefiniciones(fuente),
+      ...buildAvancePage(data, lunes, fuente, now, AVANCE_OPCIONES, grupos),
+      definiciones: avanceDefiniciones(fuente, AVANCE_OPCIONES, grupos),
     }));
     return paginas.length === 1 ? paginas[0] : { paginas };
   }
@@ -76,8 +87,11 @@ export class AvanceSemanalService {
     const weeks = this.resolveWeeks(dto);
     const data = await this.loadData();
     const now = new Date();
+    const grupos = this.grupos(dto);
     return fuentesDelReporte(this.reporte(dto)).flatMap((fuente) =>
-      weeks.map((lunes) => buildAvancePage(data, lunes, fuente, now)),
+      weeks.map((lunes) =>
+        buildAvancePage(data, lunes, fuente, now, AVANCE_OPCIONES, grupos),
+      ),
     );
   }
 
@@ -87,12 +101,19 @@ export class AvanceSemanalService {
     const pages = await this.getPaginas(dto);
     const buffer = await renderAvancePdf(pages);
     const reporte = this.reporte(dto);
+    // L2: solo si el parámetro pide otros grupos que el default y el reporte
+    // trae la página de Maximo (las dos versiones se descargan lado a lado
+    // sin pisarse; SAP y la combinada no cambian con los grupos)
+    const grupos = this.grupos(dto);
+    const conGrupos =
+      grupos !== AVANCE_GRUPOS_MAXIMO &&
+      fuentesDelReporte(reporte).includes('maximo');
     const suffix =
-      reporte === 'ambos'
+      (reporte === 'ambos'
         ? ''
         : reporte === 'todas'
           ? '_combinado'
-          : `_${reporte}`;
+          : `_${reporte}`) + (conGrupos ? `_grupos_${grupos}` : '');
     const lunes = pages.map((p) => p.semana.lunes).sort();
     const oldest = lunes[0];
     const newest = lunes[lunes.length - 1];
@@ -122,6 +143,11 @@ export class AvanceSemanalService {
 
   private reporte(dto: AvanceSemanalDto): AvanceReporte {
     return dto.fuente ?? 'ambos';
+  }
+
+  /** L2: grupos de la página de Maximo; el parámetro sobreescribe la constante. */
+  private grupos(dto: AvanceSemanalDto): AvanceGrupos {
+    return dto.grupos ?? AVANCE_GRUPOS_MAXIMO;
   }
 
   /**

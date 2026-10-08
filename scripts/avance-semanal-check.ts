@@ -15,9 +15,12 @@
  *   npm run avance:check -- --json=conciliacion.json  (la respuesta completa, como el endpoint)
  *   npm run avance:check -- --pdf=avance.pdf      (guarda el PDF de la semana)
  *   npm run avance:check -- --acumulado=acum.pdf  (PDF del año y cuánto tarda)
+ *   npm run avance:check -- --semana=2026-09-21 --pdf=avance_grupos.pdf --grupos=contrato
  *
  * I3 (2026-09-30): los PDF salen como en Reportes — `--fuente=ambos` (default:
  * Maximo y luego SAP), `maximo`, `sap` o `todas`.
+ * L2 (2026-10-08, vista previa): `--grupos=contrato|estandar` para los PDF
+ * (default AVANCE_GRUPOS_MAXIMO), como el parámetro `grupos` del endpoint.
  */
 import { writeFileSync } from 'fs';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -37,6 +40,7 @@ import {
   buildAvancePage,
   firstMondayOfYear,
   fuentesDelReporte,
+  gruposContrato,
   isoDay,
   lastCompleteWeek,
   mondayOf,
@@ -47,10 +51,13 @@ import { renderAvancePdf } from '../src/purchase-reports/avance-semanal/avance-s
 import {
   AVANCE_CORTES,
   AVANCE_DIAS_TIPOS,
+  AVANCE_GRUPOS,
+  AVANCE_GRUPOS_MAXIMO,
   AVANCE_INICIOS,
   AVANCE_MONTOS_FUENTES,
   type AvanceCorte,
   type AvanceDiasTipo,
+  type AvanceGrupos,
   type AvanceInicio,
   type AvanceMontosFuente,
   type AvanceOpciones,
@@ -152,6 +159,16 @@ function weekTable(data: AvanceData, lunes: Date, opciones: AvanceOpciones) {
       `${label.padEnd(34)}${cell(jorge)}${pages.map((p) => cell(pick(p))).join('')}`,
     );
   }
+  // L2: los grupos de la vista previa (página de Maximo) contra el medidor
+  // de Jorge (cerradas · canceladas · abiertas)
+  const grupos = gruposContrato(pages[1].estado_anio).grupos;
+  console.log(
+    `\nGrupos L2, página de Maximo: ${grupos.map((g) => `${g.etiqueta} ${g.valor}`).join(' · ')}${
+      j
+        ? `  (Jorge: cerradas ${j.medidor_cerradas ?? '—'} · canceladas ${j.medidor_canceladas ?? '—'} · abiertas ${j.medidor_abiertas ?? '—'})`
+        : ''
+    }`,
+  );
   console.log('\nPor año (recibidas / atendidas / %), fuente todas:');
   for (const c of pages[0].anual) {
     console.log(
@@ -187,6 +204,9 @@ async function main(): Promise<void> {
       choice<AvanceDiasTipo>('dias-tipo', AVANCE_DIAS_TIPOS) ??
       choice<AvanceDiasTipo>('dias_tipo', AVANCE_DIAS_TIPOS),
   });
+  // L2: grupos de la página de Maximo en los PDF (default: la constante)
+  const grupos =
+    choice<AvanceGrupos>('grupos', AVANCE_GRUPOS) ?? AVANCE_GRUPOS_MAXIMO;
   const prisma = new PrismaService();
   await prisma.$connect();
   try {
@@ -285,11 +305,13 @@ async function main(): Promise<void> {
     if (pdf) {
       const now = new Date();
       const buffer = await renderAvancePdf(
-        fuentes.map((f) => buildAvancePage(data, lunes, f, now, opciones)),
+        fuentes.map((f) =>
+          buildAvancePage(data, lunes, f, now, opciones, grupos),
+        ),
       );
       writeFileSync(pdf, buffer);
       console.log(
-        `\nPDF de la semana: ${pdf} · ${fuentes.length} páginas (${reporte}) · ${buffer.length} bytes`,
+        `\nPDF de la semana: ${pdf} · ${fuentes.length} páginas (${reporte}, grupos ${grupos}) · ${buffer.length} bytes`,
       );
     }
     const acumulado = arg('acumulado');
@@ -305,7 +327,7 @@ async function main(): Promise<void> {
       );
       const now = new Date();
       const pages = fuentes.flatMap((f) =>
-        weeks.map((w) => buildAvancePage(again, w, f, now, opciones)),
+        weeks.map((w) => buildAvancePage(again, w, f, now, opciones, grupos)),
       );
       const buffer = await renderAvancePdf(pages);
       writeFileSync(acumulado, buffer);

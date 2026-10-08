@@ -3,10 +3,12 @@ import {
   gestionDays,
 } from '../../purchase-dashboard/sap-gestion-days';
 import {
+  AVANCE_GRUPOS_MAXIMO,
   AVANCE_OPCIONES,
   AVANCE_REGLAS,
   type AvanceCorte,
   type AvanceDiasTipo,
+  type AvanceGrupos,
   type AvanceMontoBase,
   type AvanceMontosFuente,
   type AvanceOpciones,
@@ -59,6 +61,12 @@ import {
  *    es fecha sin hora y va por día calendario. La etiqueta va de lunes a
  *    viernes, como la de Jorge, y el año de la semana es el de su lunes (la
  *    del 29-dic-2025 es de 2025, como en su archivo).
+ *
+ * L2 (2026-10-08, vista previa): con `grupos='contrato'` la página de Maximo
+ * trae además `grupos`: las recibidas en cuatro grupos (cerradas sin
+ * contrato, de contrato, canceladas en Maximo y abiertas) para la dona, los
+ * medidores y las barras. Los KPIs no cambian; sin el parámetro (default
+ * AVANCE_GRUPOS_MAXIMO = 'estandar') la página es la de siempre.
  */
 
 /** Fuente de UNA página. */
@@ -217,6 +225,49 @@ export interface CohorteAnio extends ConteoEstados {
   dias_cancelacion: DiasStats;
 }
 
+/**
+ * L2: grupos de las recibidas con `grupos='contrato'` (clave estable). Las
+ * cerradas del KPI = cerradas_sin_contrato + de_contrato.
+ */
+export type GrupoClave =
+  | 'cerradas_sin_contrato'
+  | 'de_contrato'
+  | 'canceladas'
+  | 'abiertas';
+
+export interface GrupoEstado {
+  clave: GrupoClave;
+  /**
+   * "Cerradas sin contrato", "De contrato (OC automática)", "Canceladas en
+   * Maximo" o "Abiertas".
+   */
+  etiqueta: string;
+  valor: number;
+  /** % de las recibidas, con un decimal; null sin recibidas. */
+  pct: number | null;
+}
+
+export interface GruposConteo {
+  recibidas: number;
+  /**
+   * En este orden: cerradas_sin_contrato, de_contrato, canceladas,
+   * abiertas; suman las recibidas.
+   */
+  grupos: GrupoEstado[];
+}
+
+/**
+ * L2 (vista previa): la página de Maximo con `grupos='contrato'`. Sin esa
+ * opción la página no trae este bloque (y el JSON queda como antes).
+ */
+export interface AvanceGruposPagina {
+  modo: 'contrato';
+  /** Dona: las recibidas del año de la semana. */
+  estado_anio: GruposConteo;
+  /** Los años de `anual`, en el mismo orden (medidores y barras). */
+  anual: Array<GruposConteo & { anio: number }>;
+}
+
 export interface SemanaStats {
   lunes: string;
   /** "al 25 de septiembre" (viernes), como Jorge. */
@@ -335,6 +386,11 @@ export interface AvancePage {
   estado_anio: ConteoEstados;
   /** Cinco años (barras); los medidores usan los últimos cuatro. */
   anual: CohorteAnio[];
+  /**
+   * L2 (vista previa): solo en la página de Maximo con `grupos='contrato'`;
+   * ausente = cerradas · canceladas · abiertas, como siempre.
+   */
+  grupos?: AvanceGruposPagina;
   montos: MontosAnio;
   /** Desglose con `todas` (la página suma los dos). */
   por_sistema: Partial<Record<AvanceSistema, ResumenSistema>>;
@@ -351,13 +407,34 @@ const INICIO_TEXTO = {
 } as const;
 
 /**
+ * L2: nombre de cada grupo con `grupos='contrato'` (JSON, PDF, Excel,
+ * notas y definiciones). Las PR de contrato NO se llaman "canceladas", y las
+ * cerradas del grupo dicen "sin contrato" para no confundirse con el KPI de
+ * cerradas (que incluye las de contrato).
+ */
+export const GRUPOS_ETIQUETA: Record<GrupoClave, string> = {
+  cerradas_sin_contrato: 'Cerradas sin contrato',
+  de_contrato: 'De contrato (OC automática)',
+  canceladas: 'Canceladas en Maximo',
+  abiertas: 'Abiertas',
+};
+
+/** L2: el nombre del grupo dentro de una frase ("cerradas sin contrato"). */
+export function grupoEnFrase(clave: GrupoClave): string {
+  const etiqueta = GRUPOS_ETIQUETA[clave];
+  return etiqueta.charAt(0).toLowerCase() + etiqueta.slice(1);
+}
+
+/**
  * Definiciones de la página (JSON y Excel). I3: cada página habla solo de su
  * sistema; `todas` conserva el texto de las dos. K5: `homologacion` explica
  * en cada página en qué difiere de la otra (SAP se queda con `doc_date`).
+ * L2: con `grupos='contrato'`, la de Maximo explica sus grupos (`grupos`).
  */
 export function avanceDefiniciones(
   fuente: AvanceFuente,
   opciones: AvanceOpciones = AVANCE_OPCIONES,
+  grupos: AvanceGrupos = AVANCE_GRUPOS_MAXIMO,
 ): Record<string, string> {
   const { reglas } = opciones;
   const por = (textos: Record<AvanceFuente, string>) => textos[fuente];
@@ -387,7 +464,7 @@ export function avanceDefiniciones(
     `Los días de cierre y de cancelación se cuentan igual en ${en}: ${
       habiles ? 'hábiles (de lunes a viernes, sin festivos)' : 'naturales'
     }.`;
-  return {
+  const definiciones: Record<string, string> = {
     gestion: por({
       maximo: 'Gestión = PR de Maximo (solicitud de compra).',
       sap: 'Gestión = solicitud de pedido de SAP.',
@@ -447,6 +524,11 @@ export function avanceDefiniciones(
       todas: `Cada fuente se suma con su propia definición: SAP por la fecha de la solicitud (día calendario) y Maximo por la de la PR (hora de México). ${diasIguales('las dos fuentes')}`,
     }),
   };
+  // L2: solo la página de Maximo; sin 'contrato' las definiciones no cambian
+  if (fuente === 'maximo' && grupos === 'contrato') {
+    definiciones.grupos = `Grupos de la dona, los medidores y las barras: ${GRUPOS_ETIQUETA.cerradas_sin_contrato} = PR sin contrato cerradas al corte (con OC o por CLOSE); ${GRUPOS_ETIQUETA.de_contrato} = PR con contrato cerradas al corte (con OC o por CLOSE); ${GRUPOS_ETIQUETA.canceladas} = PR canceladas en Maximo (última CAN de su historial), con o sin contrato; ${GRUPOS_ETIQUETA.abiertas} = sin cerrar ni cancelar al corte. Los cuatro suman las recibidas. Los indicadores no cambian: las cerradas de la tarjeta de avance son ${grupoEnFrase('cerradas_sin_contrato')} + ${grupoEnFrase('de_contrato')}, y las atendidas son cerradas + canceladas.`;
+  }
+  return definiciones;
 }
 
 // ── Fechas ──────────────────────────────────────────────────────────────
@@ -735,6 +817,39 @@ function cerrarConteo(c: ConteoEstados): ConteoEstados {
 }
 
 /**
+ * L2 (vista previa, `grupos='contrato'`): las recibidas de un conteo en
+ * cuatro grupos que las suman. Las PR de contrato cerradas al corte
+ * (`cerradas_de_contrato`, con OC o por CLOSE) salen de las cerradas, y las
+ * que quedan son las cerradas sin contrato; las canceladas son las CAN de
+ * Maximo (la PR de contrato cancelada va ahí, no con las de contrato). Los
+ * conteos y los KPIs no se tocan.
+ */
+export function gruposContrato(c: ConteoEstados): GruposConteo {
+  const valores: Record<GrupoClave, number> = {
+    cerradas_sin_contrato: c.cerradas - c.cerradas_de_contrato,
+    de_contrato: c.cerradas_de_contrato,
+    canceladas: c.canceladas,
+    abiertas: c.abiertas,
+  };
+  const claves: GrupoClave[] = [
+    'cerradas_sin_contrato',
+    'de_contrato',
+    'canceladas',
+    'abiertas',
+  ];
+  return {
+    recibidas: c.recibidas,
+    grupos: claves.map((clave) => ({
+      clave,
+      etiqueta: GRUPOS_ETIQUETA[clave],
+      valor: valores[clave],
+      pct:
+        c.recibidas === 0 ? null : round1((valores[clave] / c.recibidas) * 100),
+    })),
+  };
+}
+
+/**
  * Cohortes de varios años al corte de la semana del `lunes`, en una sola
  * pasada. `dias` (H3): naturales (default) o hábiles con sus festivos.
  */
@@ -987,12 +1102,38 @@ function notasDias(
   };
 }
 
+/**
+ * L2: la nota de las PR cerradas en Maximo sin OC con grupos: en vez de
+ * "cuentan como cerradas", el grupo donde va cada una ("54 PR cerradas en
+ * Maximo sin OC (sin días): 19 van en Cerradas sin contrato y 35 en De
+ * contrato (OC automática)").
+ */
+function notaCerradasSinOcPorGrupo(total: number, sinContrato: number): string {
+  const destinos = [
+    { n: sinContrato, grupo: GRUPOS_ETIQUETA.cerradas_sin_contrato },
+    { n: total - sinContrato, grupo: GRUPOS_ETIQUETA.de_contrato },
+  ].filter((d) => d.n > 0);
+  const inicio = `${plural(total, 'PR cerrada', 'PR cerradas')} en Maximo sin OC (sin días)`;
+  if (destinos.length === 1) {
+    return `${inicio} ${total === 1 ? 'va' : 'van'} en ${destinos[0].grupo}.`;
+  }
+  const [a, b] = destinos;
+  return `${inicio}: ${fmtCount(a.n)} ${a.n === 1 ? 'va' : 'van'} en ${a.grupo} y ${fmtCount(b.n)} en ${b.grupo}.`;
+}
+
+/**
+ * Página de una semana. L2: `grupos` (default AVANCE_GRUPOS_MAXIMO) solo
+ * cambia la página de Maximo: con 'contrato' le agrega el bloque `grupos` y
+ * dice en qué grupo van las PR cerradas sin OC; con 'estandar' sale igual
+ * que antes de L2.
+ */
 export function buildAvancePage(
   data: AvanceData,
   lunes: Date,
   fuente: AvanceFuente,
   generado: Date,
   opciones: AvanceOpciones = AVANCE_OPCIONES,
+  grupos: AvanceGrupos = AVANCE_GRUPOS_MAXIMO,
 ): AvancePage {
   const { corte } = opciones.reglas;
   // H3: días naturales o hábiles (con los festivos cargados), las dos fuentes
@@ -1019,6 +1160,8 @@ export function buildAvancePage(
 
   const conSap = fuente !== 'maximo';
   const conMaximo = fuente !== 'sap';
+  // L2: los grupos son solo de la página de Maximo
+  const conGrupos = fuente === 'maximo' && grupos === 'contrato';
   const dias = notasDias(fuente, opciones);
 
   const porSistema: AvancePage['por_sistema'] = {};
@@ -1125,23 +1268,29 @@ export function buildAvancePage(
       if (e.estado === 'cerrada' && !e.con_oc) sinOc[g.sistema] += 1;
     }
     const sinContrato = actual.cerradas_sin_oc_ni_contrato;
-    const partes = [
-      sinOc.sap > 0
-        ? `${plural(sinOc.sap, 'solicitud de SAP cerrada', 'solicitudes de SAP cerradas')} a mano sin OC`
-        : null,
-      sinOc.maximo > 0
-        ? `${plural(sinOc.maximo, 'PR cerrada', 'PR cerradas')} en Maximo sin OC${
-            sinContrato > 0 ? ` (${fmtCount(sinContrato)} sin contrato)` : ''
-          }`
-        : null,
-    ].filter(Boolean);
-    notas.push(
-      `${partes.join(' y ')}: ${
-        sinOc.sap + sinOc.maximo === 1
-          ? 'cuenta como cerrada'
-          : 'cuentan como cerradas'
-      }, sin días.`,
-    );
+    if (conGrupos) {
+      // L2: con grupos (solo Maximo), en qué grupo va cada una: las de
+      // contrato no están en "Cerradas sin contrato"
+      notas.push(notaCerradasSinOcPorGrupo(sinOc.maximo, sinContrato));
+    } else {
+      const partes = [
+        sinOc.sap > 0
+          ? `${plural(sinOc.sap, 'solicitud de SAP cerrada', 'solicitudes de SAP cerradas')} a mano sin OC`
+          : null,
+        sinOc.maximo > 0
+          ? `${plural(sinOc.maximo, 'PR cerrada', 'PR cerradas')} en Maximo sin OC${
+              sinContrato > 0 ? ` (${fmtCount(sinContrato)} sin contrato)` : ''
+            }`
+          : null,
+      ].filter(Boolean);
+      notas.push(
+        `${partes.join(' y ')}: ${
+          sinOc.sap + sinOc.maximo === 1
+            ? 'cuenta como cerrada'
+            : 'cuentan como cerradas'
+        }, sin días.`,
+      );
+    }
   }
   if (conSap && data.sap_desde && data.sap_desde.getUTCFullYear() > anios[0]) {
     notas.push(
@@ -1217,6 +1366,16 @@ export function buildAvancePage(
       atendidas_pct: actual.atendidas_pct,
     },
     anual,
+    // L2: sin 'contrato' (o fuera de Maximo) no se agrega la llave
+    ...(conGrupos
+      ? {
+          grupos: {
+            modo: 'contrato' as const,
+            estado_anio: gruposContrato(actual),
+            anual: anual.map((c) => ({ anio: c.anio, ...gruposContrato(c) })),
+          },
+        }
+      : {}),
     montos,
     por_sistema: porSistema,
     no_disponible: [],

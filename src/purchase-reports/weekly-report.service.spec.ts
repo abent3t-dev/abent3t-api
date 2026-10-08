@@ -397,9 +397,8 @@ describe('WeeklyReportService', () => {
     expect(po[header.indexOf('Proveedor en Maximo')]).toBe(
       'ASOCIACION MEXICANA DE ENERGIA',
     );
-    expect(po[header.indexOf('Estatus')]).toBe(
-      'En aprobación · nivel 1 aprobado (APPR1)',
-    );
+    // L3: con las palabras del cliente ("Autorización n")
+    expect(po[header.indexOf('Estatus')]).toBe('Autorización 1 (APPR1)');
     // K6.7: "Monto" (TOTALCOST, con IVA) y junto el subtotal sin IVA
     expect(header.indexOf('Subtotal (sin IVA)')).toBe(
       header.indexOf('Monto') + 1,
@@ -622,5 +621,80 @@ describe('WeeklyReportService', () => {
     const naturales = filas(buildAvancePage(data, lunes, 'maximo', now));
     expect(naturales).toContain('Días de cierre 2026 (promedio)');
     expect(naturales).toContain('Días de cancelación 2026 (promedio)');
+  });
+
+  it('L2: con el default el Excel no cambia; si la página trae grupos (la constante pasa a contrato), "Atendidas de {año}" los usa con sus nombres', () => {
+    const { service } = makeService();
+    type Fila = { indicador: string; valor: unknown; nota?: string };
+    const filas = (page: AvancePage) =>
+      (
+        service as unknown as {
+          avanceRows: (p: AvancePage) => Fila[];
+        }
+      ).avanceRows(page);
+    const recibida = new Date('2026-09-01T15:00:00Z');
+    const pr = (
+      folio: string,
+      o: Partial<AvanceData['gestiones'][number]>,
+    ): AvanceData['gestiones'][number] => ({
+      sistema: 'maximo',
+      folio,
+      recibida,
+      fecha_origen: 'aprobacion',
+      inicio_dias: recibida,
+      primera_oc: null,
+      cierre_sin_oc: null,
+      cancelada: null,
+      de_contrato: false,
+      ...o,
+    });
+    const data: AvanceData = {
+      gestiones: [
+        pr('PR1', {
+          primera_oc: new Date('2026-09-02T15:00:00Z'),
+          de_contrato: true,
+        }),
+        pr('PR2', { cancelada: new Date('2026-09-03T15:00:00Z') }),
+        pr('PR3', { primera_oc: new Date('2026-09-08T15:00:00Z') }),
+        pr('PR4', {}),
+      ],
+      ordenes: [],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+    };
+    const lunes = new Date('2026-09-21T00:00:00Z');
+    const now = new Date('2026-09-30T18:00:00Z');
+    // default (AVANCE_GRUPOS_MAXIMO = 'estandar'): el renglón de siempre
+    const estandar = filas(buildAvancePage(data, lunes, 'maximo', now));
+    const atendidas = (lista: Fila[]) =>
+      lista.find((f) => f.indicador === 'Atendidas de 2026');
+    expect(atendidas(estandar)).toEqual({
+      indicador: 'Atendidas de 2026',
+      valor: 3,
+      nota: '75% · 2 cerradas · 1 canceladas · 1 abiertas',
+    });
+    // con grupos: los cuatro, con los nombres del PDF y del JSON
+    const conGrupos = buildAvancePage(
+      data,
+      lunes,
+      'maximo',
+      now,
+      AVANCE_OPCIONES,
+      'contrato',
+    );
+    expect(conGrupos.grupos?.modo).toBe('contrato');
+    const grupos = filas(conGrupos);
+    expect(atendidas(grupos)).toEqual({
+      indicador: 'Atendidas de 2026',
+      valor: 3,
+      nota: '75% · 1 cerradas sin contrato · 1 de contrato (OC automática) · 1 canceladas en Maximo · 1 abiertas',
+    });
+    // los demás renglones (indicadores, valores y notas) no cambian
+    const resto = (lista: Fila[]) =>
+      lista.filter((f) => !f.indicador.startsWith('Atendidas de '));
+    expect(resto(grupos)).toEqual(resto(estandar));
+    expect(grupos.map((f) => [f.indicador, f.valor])).toEqual(
+      estandar.map((f) => [f.indicador, f.valor]),
+    );
   });
 });

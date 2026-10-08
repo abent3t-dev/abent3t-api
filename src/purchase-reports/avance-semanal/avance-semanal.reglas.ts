@@ -5,6 +5,10 @@
  * como parámetro (default = estas constantes) para que la conciliación
  * (`GET /compras/reportes/avance-semanal/conciliacion`) pruebe variantes.
  *
+ * L2 (2026-10-08): `AVANCE_GRUPOS_MAXIMO` (grupos de la página de Maximo)
+ * va aparte de `AvanceOpciones` para que, sin el parámetro, el JSON de la
+ * página (que trae `opciones`) no cambie.
+ *
  * Solo el avance lee estas constantes: los pendientes del tablero, Reportes
  * y los listados ubican la PR por su llegada a Compras FIJA
  * (`maximoPrLlegada` en erp-views), y no se mueven si aquí cambia el default.
@@ -68,6 +72,26 @@ export type AvanceMontosFuente = 'maximo' | 'sap_migradas';
 
 export const AVANCE_MONTO_BASE: AvanceMontoBase = 'sin_iva'; // a confirmar con Ingrid
 export const AVANCE_MONTOS_FUENTE_MAXIMO: AvanceMontosFuente = 'maximo';
+
+/**
+ * L2 (2026-10-08) — Grupos de las recibidas en la página de Maximo (dona,
+ * medidores por año y barras). Las "canceladas" de Jorge se parecen a
+ * nuestras PR de contrato cerradas (OC automática), no a las CAN de Maximo
+ * (diagnóstico del 5-oct, H2):
+ *  - 'estandar': cerradas · canceladas · abiertas (como hasta hoy);
+ *  - 'contrato': las PR de contrato cerradas van aparte ("De contrato (OC
+ *    automática)"), las canceladas se llaman "Canceladas en Maximo" (CAN del
+ *    historial) y las cerradas que quedan son las sin contrato.
+ * Solo presentación: los KPIs, sus nombres y la página de SAP no cambian.
+ */
+export type AvanceGrupos = 'estandar' | 'contrato';
+
+// Vista previa para la reunión con Ingrid (8-oct); el default espera a
+// Jorge/Ingrid. Si aprueban 'contrato', se cambia esta constante y nada más;
+// el parámetro `grupos` del JSON y del PDF del avance la sobreescribe.
+export const AVANCE_GRUPOS_MAXIMO: AvanceGrupos = 'estandar';
+
+export const AVANCE_GRUPOS: AvanceGrupos[] = ['estandar', 'contrato'];
 
 /** Lo que reciben el motor y la conciliación (default = las constantes). */
 export interface AvanceOpciones {
