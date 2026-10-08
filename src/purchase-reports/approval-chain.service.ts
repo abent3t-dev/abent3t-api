@@ -9,7 +9,10 @@ import {
   maximoInApproval,
   maximoStatusSince,
 } from '../common/sql/erp-views.sql';
-import { maximoStatusLabel } from '../common/utils/maximo-status.util';
+import {
+  MAXIMO_LAST_APPROVAL_LEVEL,
+  maximoStatusLabel,
+} from '../common/utils/maximo-status.util';
 import {
   buildWorkbook,
   excelSheet,
@@ -43,8 +46,10 @@ import { ReportPeriodDto } from './dto/report-period.dto';
  *    por nivel de la cadena de Maximo; export con el mismo periodo.
  *  - Cadena de Maximo (hoy): OC en aprobación (WAPPR / APPRn / APPRnREV)
  *    por nivel que esperan, con los aprobadores habituales de ese paso
- *    (quién suele hacer la siguiente aprobación desde ese estatus). Maximo
- *    no dice a qué persona exacta le toca: eso sería el workflow.
+ *    (quién suele hacer la siguiente aprobación desde ese estatus). L3
+ *    (2026-10-07): el nivel dice a quién le toca, su TITULAR según la tabla
+ *    del cliente ("Nivel 2 · Miguel Ángel Ortiz García"); los habituales
+ *    dicen quién lo aprueba de verdad (código de usuario y alias).
  */
 
 export interface ApproverRow extends ApproverSummary {
@@ -58,6 +63,7 @@ export interface MaximoPendingOrder {
   estatus: string | null;
   estatus_etiqueta: string;
   nivel: number | null;
+  /** L3: con el titular ("Nivel 2 · Miguel Ángel Ortiz García") o "Aprobación final". */
   nivel_etiqueta: string;
   proveedor: string | null;
   proveedor_codigo: string | null;
@@ -90,8 +96,8 @@ const HABITUAL_LIMIT = 3;
 
 const DEFINICIONES = {
   sap: 'SAP: días desde que la solicitud de autorización le llegó (la aprobación de la etapa anterior; en la primera etapa, la creación) hasta su decisión. Pendientes: las de su etapa actual, con los días que llevan con él.',
-  maximo:
-    'Maximo: cada aprobación del historial de la OC (nivel 1, 2, 3, 4, final o revisión) cuenta desde el cambio de estatus anterior, que es cuando le llegó. Maximo no registra rechazos ni a quién le toca lo pendiente: lo pendiente se ve por nivel en la cadena.',
+  // L3: los niveles salen de la tabla del cliente (hoy, del 1 al 5)
+  maximo: `Maximo: cada aprobación del historial de la OC (niveles 1 a ${MAXIMO_LAST_APPROVAL_LEVEL}, final o revisión) cuenta desde el cambio de estatus anterior, que es cuando le llegó. Maximo no registra rechazos: lo pendiente se ve por nivel en la cadena, con el titular de cada nivel.`,
 };
 
 @Injectable()
@@ -220,7 +226,7 @@ export class ApprovalChainService {
       };
     });
 
-    // Resumen por nivel pendiente (la etiqueta junta APPRn y APPRnREV)
+    // Resumen por nivel pendiente, por etiqueta (las revisiones van aparte)
     const byLevel = new Map<string, MaximoPendingOrder[]>();
     for (const o of ordenes) {
       byLevel.set(o.nivel_etiqueta, [
@@ -264,7 +270,7 @@ export class ApprovalChainService {
       truncado: pending.length > PENDING_LIMIT,
       por_nivel: porNivel,
       ordenes,
-      nota: 'Nivel que espera cada OC: WAPPR → nivel 1; APPRn → nivel n+1 o la aprobación final (según el monto). Aprobadores habituales = quién suele hacer la siguiente aprobación desde ese estatus; Maximo no dice a quién le toca exactamente.',
+      nota: `Nivel que espera cada OC: WAPPR → nivel 1; APPRn → nivel n+1 o la aprobación final (según el monto); después del nivel ${MAXIMO_LAST_APPROVAL_LEVEL}, la aprobación final. El nombre es el titular del nivel; aprobadores habituales = quién suele hacer la siguiente aprobación desde ese estatus (a veces no es el titular).`,
       generated_at: new Date().toISOString(),
     };
   }

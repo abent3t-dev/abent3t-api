@@ -2,7 +2,7 @@
  * Fase INT-3: re-mapea el staging de Maximo desde el `raw` JSONB con el mapper
  * ACTUAL (MAXIMO_MAPPER_VERSION), sin ninguna llamada a Maximo. Úsalo después
  * de cambiar reglas de mapeo (p. ej. cuando Isaac confirme
- * CONTRACTREFNUM/CONTRACTVALUE o la semántica de APPR1..APPR4).
+ * CONTRACTREFNUM/CONTRACTVALUE).
  *
  * USO:  npm run maximo:remap            (ambos targets)
  *       npm run maximo:remap -- purchase_orders | contracts

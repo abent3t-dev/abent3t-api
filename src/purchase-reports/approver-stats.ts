@@ -1,4 +1,10 @@
 import { averageAndMedian } from '../purchase-dashboard/sap-gestion-days';
+import {
+  isMaximoInApproval,
+  MAXIMO_LAST_APPROVAL_LEVEL,
+  maximoApprovedLevel,
+  maximoLevelHolder,
+} from '../common/utils/maximo-status.util';
 
 /**
  * G5/G6 (reunión con Ingrid 2026-09-28) — Tiempos por aprobador con UNA
@@ -15,8 +21,9 @@ import { averageAndMedian } from '../purchase-dashboard/sap-gestion-days';
  *  - Maximo (`maximo_po_status_history`, 0016): cada cambio a APPRn / APPR /
  *    APPRnREV / REVISD es una aprobación; le llegó con el cambio de estatus
  *    inmediato anterior. Pendiente hoy: la OC en WAPPR / APPRn / APPRnREV
- *    espera al siguiente nivel desde su último cambio (Maximo no dice a qué
- *    persona exacta le toca: eso sería el workflow, que no viene).
+ *    espera al siguiente nivel desde su último cambio. L3 (2026-10-07): ese
+ *    nivel lleva su TITULAR (`MAXIMO_APPROVAL_LEVELS`, tabla del cliente);
+ *    quién aprueba de verdad sale del usuario del historial y su alias.
  *
  * Funciones puras: las usan el histórico por aprobador, la cadena de
  * Maximo, el Excel y la cola de SAP filtrada por aprobador.
@@ -265,25 +272,28 @@ export function maximoApprovalLevel(
   return null;
 }
 
-/** Nivel que espera una OC en aprobación (WAPPR / APPRn / APPRnREV). */
+/**
+ * Nivel que espera una OC en aprobación (WAPPR / APPRn / APPRnREV). L3
+ * (2026-10-07): con el TITULAR del nivel ("Nivel 2 · Miguel Ángel Ortiz
+ * García"), que es a quien le toca aunque en el historial a veces apruebe
+ * otro usuario (eso lo dicen los aprobadores habituales). Después del último
+ * nivel de la tabla del cliente sigue la aprobación final (APPR).
+ */
 export function maximoPendingLevel(
   status: string | null,
 ): { nivel: number; etiqueta: string } | null {
-  if (status === 'WAPPR') return { nivel: 1, etiqueta: 'Nivel 1' };
-  const level = status ? LEVEL.exec(status) : null;
-  if (level) {
-    const next = Number(level[1]) + 1;
-    return { nivel: next, etiqueta: `Nivel ${next} o aprobación final` };
+  if (!status || !isMaximoInApproval(status)) return null;
+  // WAPPR → nivel 1; APPRn / APPRnREV → nivel n+1
+  const nivel = (maximoApprovedLevel(status) ?? 0) + 1;
+  const suffix = LEVEL_REVISION.test(status) ? ' (revisión)' : '';
+  if (nivel > MAXIMO_LAST_APPROVAL_LEVEL) {
+    return { nivel, etiqueta: `Aprobación final${suffix}` };
   }
-  const revision = status ? LEVEL_REVISION.exec(status) : null;
-  if (revision) {
-    const next = Number(revision[1]) + 1;
-    return {
-      nivel: next,
-      etiqueta: `Nivel ${next} o aprobación final (revisión)`,
-    };
-  }
-  return null;
+  const titular = maximoLevelHolder(nivel);
+  return {
+    nivel,
+    etiqueta: `Nivel ${nivel}${suffix}${titular ? ` · ${titular}` : ''}`,
+  };
 }
 
 export interface MaximoHistoryApproval {

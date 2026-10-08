@@ -81,8 +81,9 @@ export interface MaximoPurchaseOrderDto {
   /**
    * Primera POSTATUS con STATUS=APPR LITERAL (primera aprobación de ESTA
    * revisión; con re-aprobaciones REVISD→APPR se conserva la primera). null si
-   * el PO nunca fue aprobado. Sinónimos por nivel (APPR1..APPR4, evidencia v1
-   * de contratos) NO se infieren — pendiente confirmar con Isaac (Int-3).
+   * el PO nunca fue aprobado. APPRn / APPRnREV no cuentan: son la
+   * autorización del nivel n y la OC sigue en aprobación hasta APPR (L3,
+   * tabla del cliente, 2026-10-07).
    */
   approvedDate: string | null;
   /** CHANGEBY del primer POSTATUS=APPR (usuario Maximo que aprobó); null si nunca. */

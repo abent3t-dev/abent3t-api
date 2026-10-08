@@ -96,12 +96,13 @@ describe('ApprovalChainService.getCadenaMaximo (G6)', () => {
     ]);
     const cadena = await service.getCadenaMaximo();
     expect(cadena.total).toBe(4);
+    // L3: el nivel que espera dice a quién le toca (su titular)
     expect(
       cadena.por_nivel.map((n) => [n.etiqueta, n.pendientes, n.dias_max]),
     ).toEqual([
-      ['Nivel 1', 1, 5],
-      ['Nivel 2 o aprobación final', 2, 3],
-      ['Nivel 2 o aprobación final (revisión)', 1, 2],
+      ['Nivel 1 · David Alejandro Rodríguez Ojeda', 1, 5],
+      ['Nivel 2 · Miguel Ángel Ortiz García', 2, 3],
+      ['Nivel 2 (revisión) · Miguel Ángel Ortiz García', 1, 2],
     ]);
     // los habituales del paso: top 3 de quién aprueba después de ese estatus
     expect(
@@ -116,11 +117,44 @@ describe('ApprovalChainService.getCadenaMaximo (G6)', () => {
     ]);
     const po2 = cadena.ordenes.find((o) => o.ponum === 'PO2')!;
     expect(po2).toMatchObject({
-      estatus_etiqueta: 'En aprobación · nivel 1 aprobado',
+      estatus_etiqueta: 'Autorización 1',
       nivel: 2,
+      nivel_etiqueta: 'Nivel 2 · Miguel Ángel Ortiz García',
       dias: 3,
       proveedor: 'PROVEEDOR SA DE CV',
     });
+  });
+
+  it('L3: el titular del siguiente nivel llega al 5 (Alejandro Escandón); después del 5, la aprobación final', async () => {
+    const { service } = makeService([
+      [
+        pendingRow('PO5', 'APPR4', 4),
+        pendingRow('PO6', 'APPR5', 1),
+        pendingRow('PO7', 'APPR5REV', 2),
+      ],
+      [{ desde: 'APPR4', usuario: 'ALESCA', veces: 7 }],
+    ]);
+    const cadena = await service.getCadenaMaximo();
+    expect(
+      cadena.por_nivel.map((n) => [n.nivel, n.etiqueta, n.pendientes]),
+    ).toEqual([
+      [5, 'Nivel 5 · Alejandro Escandón', 1],
+      [6, 'Aprobación final', 1],
+      [6, 'Aprobación final (revisión)', 1],
+    ]);
+    const po5 = cadena.ordenes.find((o) => o.ponum === 'PO5')!;
+    expect(po5).toMatchObject({
+      estatus_etiqueta: 'Autorización 4',
+      nivel_etiqueta: 'Nivel 5 · Alejandro Escandón',
+    });
+    // el titular no le pone nombre al usuario: sin alias, sale su código
+    expect(po5.aprobadores_habituales).toEqual([
+      { usuario: 'ALESCA', nombre: 'ALESCA', veces: 7 },
+    ]);
+    expect(
+      cadena.ordenes.find((o) => o.ponum === 'PO7')?.estatus_etiqueta,
+    ).toBe('Autorización 5');
+    expect(cadena.nota).toContain('titular del nivel');
   });
 });
 
@@ -179,6 +213,8 @@ describe('ApprovalChainService.getAprobadores (G5)', () => {
       'Nivel 2',
       'Aprobación final',
     ]);
+    // L3: la definición ya cuenta el nivel 5
+    expect(data.definiciones.maximo).toContain('niveles 1 a 5');
   });
 
   it('export: hojas SAP, Maximo y Maximo por nivel con el periodo', async () => {

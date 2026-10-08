@@ -176,23 +176,48 @@ describe('Maximo: cadena de aprobación (G6)', () => {
   it('niveles del historial POSTATUS', () => {
     expect(maximoApprovalLevel('APPR1')?.label).toBe('Nivel 1');
     expect(maximoApprovalLevel('APPR3REV')?.label).toBe('Nivel 3 (revisión)');
+    expect(maximoApprovalLevel('APPR5')?.label).toBe('Nivel 5');
+    expect(maximoApprovalLevel('APPR5REV')?.label).toBe('Nivel 5 (revisión)');
     expect(maximoApprovalLevel('APPR')?.label).toBe('Aprobación final');
     expect(maximoApprovalLevel('REVISD')?.label).toBe('Revisión aprobada');
     expect(maximoApprovalLevel('WAPPR')).toBeNull();
     expect(maximoApprovalLevel('INPRG')).toBeNull();
   });
 
-  it('nivel que espera una OC en aprobación', () => {
+  it('nivel que espera una OC en aprobación, con el titular del nivel (L3)', () => {
     expect(maximoPendingLevel('WAPPR')).toEqual({
       nivel: 1,
-      etiqueta: 'Nivel 1',
+      etiqueta: 'Nivel 1 · David Alejandro Rodríguez Ojeda',
     });
     expect(maximoPendingLevel('APPR1')).toEqual({
       nivel: 2,
-      etiqueta: 'Nivel 2 o aprobación final',
+      etiqueta: 'Nivel 2 · Miguel Ángel Ortiz García',
     });
-    expect(maximoPendingLevel('APPR1REV')?.nivel).toBe(2);
+    expect(maximoPendingLevel('APPR1REV')).toEqual({
+      nivel: 2,
+      etiqueta: 'Nivel 2 (revisión) · Miguel Ángel Ortiz García',
+    });
+    expect(maximoPendingLevel('APPR2')?.etiqueta).toBe(
+      'Nivel 3 · Gilberto Maltos Vázquez',
+    );
+    expect(maximoPendingLevel('APPR3')?.etiqueta).toBe(
+      'Nivel 4 · Uriel Lases García',
+    );
+    // nivel 5 (nuevo en la tabla del cliente); después sigue la aprobación final
+    expect(maximoPendingLevel('APPR4')).toEqual({
+      nivel: 5,
+      etiqueta: 'Nivel 5 · Alejandro Escandón',
+    });
+    expect(maximoPendingLevel('APPR5')).toEqual({
+      nivel: 6,
+      etiqueta: 'Aprobación final',
+    });
+    expect(maximoPendingLevel('APPR5REV')?.etiqueta).toBe(
+      'Aprobación final (revisión)',
+    );
     expect(maximoPendingLevel('APPR')).toBeNull();
+    expect(maximoPendingLevel('HOLD')).toBeNull();
+    expect(maximoPendingLevel(null)).toBeNull();
   });
 
   const history = [

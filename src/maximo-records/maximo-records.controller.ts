@@ -25,7 +25,10 @@ import { MaximoSummaryQueryDto } from './dto/maximo-summary-query.dto';
 import { MaximoRecordsService } from './maximo-records.service';
 import type { MaximoContractGroupView } from './maximo-contract-groups';
 import { buyerLabel } from '../common/utils/buyer.util';
-import { maximoPrStatusWithCode } from '../common/utils/maximo-status.util';
+import {
+  maximoPrStatusWithCode,
+  maximoStatusWithCode,
+} from '../common/utils/maximo-status.util';
 import {
   integrationStatusLabel,
   receiptStatusLabel,
@@ -132,11 +135,17 @@ const VENDOR_MISMATCH_COLUMNS: ExcelColumn<VendorMismatchExportRow>[] = [
  * Expeditación, la OC de SAP y los dos montos rotulados: subtotal sin IVA
  * (Σ LINECOST; "No disponible" si no se puede calcular, no se estima) y
  * total con IVA (TOTALCOST).
+ * L3 (2026-10-07): el estatus con las palabras del cliente y el código
+ * entre paréntesis ("En progreso (INPRG)", "Autorización 2 (APPR2)").
  */
 export const PO_COLUMNS: ExcelColumn<MaximoPurchaseOrderView>[] = [
   { header: 'PONUM', value: (r) => r.ponum, width: 14 },
   { header: 'Descripción', value: (r) => r.description, width: 44 },
-  { header: 'Estatus', value: (r) => r.status, width: 10 },
+  {
+    header: 'Estatus',
+    value: (r) => maximoStatusWithCode(r.status),
+    width: 30,
+  },
   {
     header: 'Recepción',
     value: (r) => receiptStatusLabel(r.receipt_status),

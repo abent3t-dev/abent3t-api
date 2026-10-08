@@ -23,9 +23,10 @@ import {
  *
  * Semántica de las fechas derivadas: el match de estatus es LITERAL ('APPR',
  * 'WAPPR') y de PRIMERA ocurrencia, sobre el historial de LA REVISIÓN mapeada.
- * La evidencia v1 muestra sinónimos por nivel (APPR1..APPR4, WSTART, SUSPND)
- * que NO se infieren (misma regla que §20.2): confirmar con Isaac si APPRn
- * cuenta como aprobación — pendiente Int-3. Clave natural sugerida:
+ * La evidencia v1 muestra estatus por nivel (APPR1..APPR4, WSTART, SUSPND)
+ * que NO se infieren (misma regla que §20.2). L3 (2026-10-07): según la
+ * tabla del cliente, APPRn es la autorización del nivel n y la aprobación es
+ * APPR, así que APPRn no cuenta como aprobación. Clave natural sugerida:
  * (prnum, contractNum, revisionNum).
  *
  * ⚠ `PERSON.STATUS` es el estatus de la PERSONA: jamás se mapea a nada del contrato.
@@ -142,7 +143,7 @@ export interface MaximoContractDto {
   createdDate: string | null;
   /** 'WAPPR' cuando `createdDate` se derivó con esa regla; null si no aplicó. */
   createdDateRule: 'WAPPR' | null;
-  /** Primera CONTRACTSTATUS con STATUS=APPR literal (APPR1..4 no cuentan, ver arriba). */
+  /** Primera CONTRACTSTATUS con STATUS=APPR literal (APPRn no cuentan, ver arriba). */
   approvedDate: string | null;
   /** CHANGEBY del primer CONTRACTSTATUS=APPR (quién aprobó); null si nunca. */
   approvedBy: string | null;

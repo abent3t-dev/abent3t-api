@@ -2082,6 +2082,42 @@ describe('Exports de Maximo y estatus de la PR (K7)', () => {
     expect(cell(3, 'Subtotal (sin IVA)')).toBe('No disponible');
   });
 
+  it('L3: el estatus de Órdenes Maximo con las palabras del cliente y el código entre paréntesis', async () => {
+    const statuses = [
+      'INPRG',
+      'HOLD',
+      'PNDREV',
+      'REVISD',
+      'APPR5',
+      'APPR2REV',
+      'WAPPR',
+      'CAN',
+      'WSTART',
+      null,
+    ];
+    const buffer = await buildExcel(
+      'Ordenes Maximo',
+      PO_COLUMNS,
+      statuses.map((status, i) => poView({ ponum: `PO${i}`, status })),
+    );
+    const { header, row } = await readSheet(buffer, 'Ordenes Maximo');
+    expect(
+      statuses.map((_, i) => row(i + 2)[header.indexOf('Estatus')]),
+    ).toEqual([
+      'En progreso (INPRG)',
+      'En suspenso (HOLD)',
+      'Revisión pendiente (PNDREV)',
+      'Revisada (REVISD)',
+      'Autorización 5 (APPR5)',
+      'Autorización 2 (APPR2REV)',
+      'En espera de aprobación (WAPPR)',
+      'Cancelada (CAN)',
+      // desconocido: el código tal cual; sin estatus: celda vacía
+      'WSTART',
+      undefined,
+    ]);
+  });
+
   it('K6.9: "Monto de la PR (Maximo)" en Contratos y Solicitudes; "Estatus PR" con el mapa de las PR', () => {
     for (const columns of [CONTRACT_COLUMNS, REQUEST_COLUMNS]) {
       const headers = columns.map((col) => col.header);
