@@ -1371,6 +1371,8 @@ model sap_sync_runs {
   records_updated      Int              @default(0)
   records_unchanged    Int              @default(0)
   records_failed       Int              @default(0)
+  /// L1 (0020): mismo raw_hash re-mapeado por un SAP_MAPPER_VERSION nuevo; no toca last_changed_at.
+  records_remapped     Int              @default(0)
   error_summary        String?
   mapper_version       String
 

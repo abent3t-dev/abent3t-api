@@ -33,6 +33,7 @@ import {
   SapSyncRunSummary,
   SapSyncTarget,
   SapSyncTrigger,
+  SapUpsertOutcome,
 } from './sap-sync.types';
 
 /**
@@ -52,6 +53,11 @@ import {
  * - Tolerancia a fallo por página + mutex in-memory por target + zombie
  *   cleanup al arrancar: mismo contrato que el sync de Maximo.
  * - `SAP_SYNC_ENABLED=false` → `SapSyncDisabledError` sin tocar la red.
+ * - L1 (2026-10-08): 'remapped' (mismo raw, mapper nuevo) se cuenta aparte en
+ *   `records_remapped`; no es cambio real en SAP. SAP no mueve `UpdateDate`
+ *   cuando otro documento cierra la OC o la solicitud: esos cierres los trae
+ *   el full diario del scheduler (`SAP_SYNC_FULL_DAILY_AT`), no el
+ *   incremental.
  */
 
 const MAX_PAGES_GUARD = 1_000;
@@ -114,6 +120,19 @@ export class SapSyncService implements OnModuleInit {
 
   isRunning(target: SapSyncTarget): boolean {
     return this.running.has(target);
+  }
+
+  /**
+   * L1: inicio del último full EXITOSO del target (manual o del cron); null
+   * = nunca. Lo usa la recuperación del full diario al arrancar.
+   */
+  async lastFullSuccessAt(target: SapSyncTarget): Promise<Date | null> {
+    const run = await this.prisma.sap_sync_runs.findFirst({
+      where: { target, mode: 'full', status: 'success' },
+      orderBy: { started_at: 'desc' },
+      select: { started_at: true },
+    });
+    return run?.started_at ?? null;
   }
 
   /** Corrida completa de PurchaseOrders (espera a que termine). */
@@ -251,6 +270,7 @@ export class SapSyncService implements OnModuleInit {
         recordsFetched: 0,
         recordsInserted: 0,
         recordsUpdated: 0,
+        recordsRemapped: 0,
         recordsUnchanged: 0,
         recordsFailed: 0,
         errors: [],
@@ -354,7 +374,9 @@ export class SapSyncService implements OnModuleInit {
       }
       if (state.target === 'purchase_orders') {
         // Nombres de quién capturó cada OC: best-effort (sin catálogo la OC
-        // se guarda igual, con el nombre en null — nunca se inventa).
+        // se guarda igual y el nombre nunca se inventa). L1: sin catálogo,
+        // una fila existente conserva su nombre; antes se escribía null y se
+        // perdía, porque el siguiente full sale 'unchanged'.
         try {
           state.userNames = await this.loadUserNames(pageSize);
         } catch (err: unknown) {
@@ -425,10 +447,14 @@ export class SapSyncService implements OnModuleInit {
       const page = await this.client.fetchPurchaseOrders(params);
       for (let i = 0; i < page.records.length; i++) {
         const dto = page.records[i];
+        // L1: undefined = sin catálogo (staging no toca la columna); con
+        // catálogo, null = el usuario no está en él
         const createdByName =
-          dto.userSign === null
-            ? null
-            : (state.userNames?.get(dto.userSign) ?? null);
+          state.userNames === undefined
+            ? undefined
+            : dto.userSign === null
+              ? null
+              : (state.userNames.get(dto.userSign) ?? null);
         await this.upsertOne(state, () =>
           this.staging.upsertPurchaseOrder(
             { ...dto, createdByName },
@@ -537,12 +563,13 @@ export class SapSyncService implements OnModuleInit {
 
   private async upsertOne(
     state: RunState,
-    upsert: () => Promise<'inserted' | 'updated' | 'unchanged'>,
+    upsert: () => Promise<SapUpsertOutcome>,
   ): Promise<void> {
     try {
       const outcome = await upsert();
       if (outcome === 'inserted') state.recordsInserted += 1;
       else if (outcome === 'updated') state.recordsUpdated += 1;
+      else if (outcome === 'remapped') state.recordsRemapped += 1;
       else state.recordsUnchanged += 1;
     } catch (err: unknown) {
       state.recordsFailed += 1;
@@ -581,6 +608,7 @@ export class SapSyncService implements OnModuleInit {
         records_fetched: state.recordsFetched,
         records_inserted: state.recordsInserted,
         records_updated: state.recordsUpdated,
+        records_remapped: state.recordsRemapped,
         records_unchanged: state.recordsUnchanged,
         records_failed: state.recordsFailed,
         error_summary: errorSummary,
@@ -590,7 +618,7 @@ export class SapSyncService implements OnModuleInit {
     this.logger.log(
       `Corrida ${state.runId} (${state.target}, ${state.triggeredBy}, ${state.mode}) → ${status}: ` +
         `fetched=${state.recordsFetched} inserted=${state.recordsInserted} updated=${state.recordsUpdated} ` +
-        `unchanged=${state.recordsUnchanged} failed=${state.recordsFailed} pagesOk=${state.pagesOk}/${state.pagesTotal ?? '-'} pagesFailed=${state.pagesFailed}`,
+        `remapped=${state.recordsRemapped} unchanged=${state.recordsUnchanged} failed=${state.recordsFailed} pagesOk=${state.pagesOk}/${state.pagesTotal ?? '-'} pagesFailed=${state.pagesFailed}`,
     );
 
     return {
@@ -606,6 +634,7 @@ export class SapSyncService implements OnModuleInit {
       recordsFetched: state.recordsFetched,
       recordsInserted: state.recordsInserted,
       recordsUpdated: state.recordsUpdated,
+      recordsRemapped: state.recordsRemapped,
       recordsUnchanged: state.recordsUnchanged,
       recordsFailed: state.recordsFailed,
       errorSummary,

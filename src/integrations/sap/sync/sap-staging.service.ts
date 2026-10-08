@@ -20,6 +20,16 @@ import { SapUpsertOutcome } from './sap-sync.types';
  * create/update + P2002 del staging de Maximo para poder comparar el
  * `raw_hash` ANTES de escribir: sin cambio → solo `last_seen_at` (no se
  * reescribe el jsonb de ~32 KB en cada corrida).
+ *
+ * L1 (2026-10-08), como K8 en Maximo: tres desenlaces para una fila que ya
+ * existe, iguales en las cuatro entidades (comparten `SAP_MAPPER_VERSION`):
+ *   - otro `raw_hash` → 'updated' (cambio real en SAP): columnas, `raw`,
+ *     hash y `last_changed_at`;
+ *   - mismo hash con otro mapper → 'remapped': columnas mapeadas,
+ *     `mapper_version`, `last_seen_at` y `last_sync_run_id`, SIN
+ *     `last_changed_at` y sin reescribir el `raw` (es el mismo JSON);
+ *   - mismo hash y mismo mapper → 'unchanged': solo `last_seen_at` /
+ *     `last_sync_run_id`.
  */
 @Injectable()
 export class SapStagingService {
@@ -53,7 +63,11 @@ export class SapStagingService {
       ahorro_total: dto.ahorroTotal,
       open_total: dto.openTotal,
       user_sign: dto.userSign,
-      created_by_name: dto.createdByName,
+      // L1: undefined = el catálogo de usuarios no cargó: no se toca la
+      // columna (en un alta queda null); antes se escribía null y se perdía
+      ...(dto.createdByName === undefined
+        ? {}
+        : { created_by_name: dto.createdByName }),
       maximo_ponum: dto.maximoPonum,
       base_request_entries: dto.baseRequestEntries,
     };
@@ -76,24 +90,12 @@ export class SapStagingService {
         });
         return 'inserted';
       }
-      const unchanged =
-        existing.raw_hash === rawHash &&
-        existing.mapper_version === SAP_MAPPER_VERSION;
+      const outcome = existingOutcome(existing, rawHash);
       await this.prisma.sap_purchase_orders.update({
         where: { id: existing.id },
-        data: unchanged
-          ? { last_seen_at: new Date(), last_sync_run_id: runId }
-          : {
-              ...mapped,
-              raw_hash: rawHash,
-              raw: raw as Prisma.InputJsonValue,
-              mapper_version: SAP_MAPPER_VERSION,
-              last_seen_at: new Date(),
-              last_changed_at: new Date(),
-              last_sync_run_id: runId,
-            },
+        data: existingRowData(outcome, mapped, raw, rawHash, runId),
       });
-      return unchanged ? 'unchanged' : 'updated';
+      return outcome;
     };
 
     return this.withUniqueRaceRetry(attempt);
@@ -145,24 +147,12 @@ export class SapStagingService {
         });
         return 'inserted';
       }
-      const unchanged =
-        existing.raw_hash === rawHash &&
-        existing.mapper_version === SAP_MAPPER_VERSION;
+      const outcome = existingOutcome(existing, rawHash);
       await this.prisma.sap_purchase_requests.update({
         where: { id: existing.id },
-        data: unchanged
-          ? { last_seen_at: new Date(), last_sync_run_id: runId }
-          : {
-              ...mapped,
-              raw_hash: rawHash,
-              raw: raw as Prisma.InputJsonValue,
-              mapper_version: SAP_MAPPER_VERSION,
-              last_seen_at: new Date(),
-              last_changed_at: new Date(),
-              last_sync_run_id: runId,
-            },
+        data: existingRowData(outcome, mapped, raw, rawHash, runId),
       });
-      return unchanged ? 'unchanged' : 'updated';
+      return outcome;
     };
 
     return this.withUniqueRaceRetry(attempt);
@@ -207,24 +197,12 @@ export class SapStagingService {
         });
         return 'inserted';
       }
-      const unchanged =
-        existing.raw_hash === rawHash &&
-        existing.mapper_version === SAP_MAPPER_VERSION;
+      const outcome = existingOutcome(existing, rawHash);
       await this.prisma.sap_business_partners.update({
         where: { id: existing.id },
-        data: unchanged
-          ? { last_seen_at: new Date(), last_sync_run_id: runId }
-          : {
-              ...mapped,
-              raw_hash: rawHash,
-              raw: raw as Prisma.InputJsonValue,
-              mapper_version: SAP_MAPPER_VERSION,
-              last_seen_at: new Date(),
-              last_changed_at: new Date(),
-              last_sync_run_id: runId,
-            },
+        data: existingRowData(outcome, mapped, raw, rawHash, runId),
       });
-      return unchanged ? 'unchanged' : 'updated';
+      return outcome;
     };
 
     return this.withUniqueRaceRetry(attempt);
@@ -287,24 +265,12 @@ export class SapStagingService {
         });
         return 'inserted';
       }
-      const unchanged =
-        existing.raw_hash === rawHash &&
-        existing.mapper_version === SAP_MAPPER_VERSION;
+      const outcome = existingOutcome(existing, rawHash);
       await this.prisma.sap_approval_requests.update({
         where: { id: existing.id },
-        data: unchanged
-          ? { last_seen_at: new Date(), last_sync_run_id: runId }
-          : {
-              ...mapped,
-              raw_hash: rawHash,
-              raw: raw as Prisma.InputJsonValue,
-              mapper_version: SAP_MAPPER_VERSION,
-              last_seen_at: new Date(),
-              last_changed_at: new Date(),
-              last_sync_run_id: runId,
-            },
+        data: existingRowData(outcome, mapped, raw, rawHash, runId),
       });
-      return unchanged ? 'unchanged' : 'updated';
+      return outcome;
     };
 
     return this.withUniqueRaceRetry(attempt);
@@ -324,6 +290,44 @@ export class SapStagingService {
       throw err;
     }
   }
+}
+
+/**
+ * L1: rama de una fila que ya existe. Sin rowstamp en SAP, el cambio real es
+ * otro `raw_hash` y manda sobre el mapper: si cambian los dos (el primer full
+ * tras un deploy que además trae datos nuevos), es 'updated'.
+ */
+function existingOutcome(
+  existing: { raw_hash: string; mapper_version: string },
+  rawHash: string,
+): Exclude<SapUpsertOutcome, 'inserted'> {
+  if (existing.raw_hash !== rawHash) return 'updated';
+  if (existing.mapper_version !== SAP_MAPPER_VERSION) return 'remapped';
+  return 'unchanged';
+}
+
+/** L1: `data` del update según el desenlace (ver el comentario de la clase). */
+function existingRowData<M extends object>(
+  outcome: Exclude<SapUpsertOutcome, 'inserted'>,
+  mapped: M,
+  raw: unknown,
+  rawHash: string,
+  runId: string,
+) {
+  const now = new Date();
+  const seen = { last_seen_at: now, last_sync_run_id: runId };
+  if (outcome === 'unchanged') return seen;
+  if (outcome === 'remapped') {
+    return { ...mapped, mapper_version: SAP_MAPPER_VERSION, ...seen };
+  }
+  return {
+    ...mapped,
+    raw_hash: rawHash,
+    raw: raw as Prisma.InputJsonValue,
+    mapper_version: SAP_MAPPER_VERSION,
+    last_changed_at: now,
+    ...seen,
+  };
 }
 
 function toDate(value: string | null): Date | null {

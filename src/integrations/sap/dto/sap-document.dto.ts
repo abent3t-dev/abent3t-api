@@ -80,8 +80,12 @@ export interface SapPurchaseOrderDto extends SapDocumentBaseDto {
    * (U_POID presente; NumAtCard = PONUM). Ahí vive su solicitante.
    */
   maximoPonum: string | null;
-  /** Nombre de ese usuario (catálogo Users); lo pone el sync, no el mapper. */
-  createdByName: string | null;
+  /**
+   * Nombre de ese usuario (catálogo Users); lo pone el sync, no el mapper.
+   * L1: undefined = el catálogo no cargó y el nombre se desconoce; staging no
+   * toca la columna (en un alta queda null).
+   */
+  createdByName: string | null | undefined;
   /** DocEntry de las solicitudes de pedido de las que se copiaron líneas. */
   baseRequestEntries: number[];
 }

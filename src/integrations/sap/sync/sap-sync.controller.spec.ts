@@ -22,7 +22,12 @@ function makeController(opts: { enabled?: boolean } = {}) {
   const controller = new SapSyncController(
     syncService as unknown as SapSyncService,
     statusService as unknown as SapSyncStatusService,
-    { enabled: opts.enabled ?? true, intervalMinutes: 60, pageSize: 20 },
+    {
+      enabled: opts.enabled ?? true,
+      intervalMinutes: 60,
+      pageSize: 20,
+      fullDailyAt: '03:00',
+    },
   );
   return { controller, syncService, statusService };
 }

@@ -153,6 +153,40 @@ describe('envValidationSchema', () => {
     ).toBeUndefined();
   });
 
+  describe('SAP_SYNC_FULL_DAILY_AT (L1)', () => {
+    const value = (env: Record<string, string>) =>
+      (validate(env).value as Record<string, unknown>).SAP_SYNC_FULL_DAILY_AT;
+
+    it('sin la variable: full diario a las 03:00', () => {
+      expect(validate(baseEnv).error).toBeUndefined();
+      expect(value(baseEnv)).toBe('03:00');
+    });
+
+    it.each([
+      ['02:30', '02:30'],
+      ['3:05', '3:05'],
+      ['23:59', '23:59'],
+      ['00:00', '00:00'],
+      [' OFF ', 'off'],
+    ])('acepta %p (queda %p)', (raw, expected) => {
+      const env = { ...baseEnv, SAP_SYNC_FULL_DAILY_AT: raw };
+      expect(validate(env).error).toBeUndefined();
+      expect(value(env)).toBe(expected);
+    });
+
+    it.each(['24:00', '03:60', '3', '0300', '03:00:00', 'nunca', ''])(
+      'rechaza %p y el error nombra la variable',
+      (bad) => {
+        const { error } = validate({
+          ...baseEnv,
+          SAP_SYNC_FULL_DAILY_AT: bad,
+        });
+        expect(error).toBeDefined();
+        expect(error!.message).toContain('SAP_SYNC_FULL_DAILY_AT');
+      },
+    );
+  });
+
   it('NODE_ENV=production + SL_REJECT_UNAUTHORIZED=false falla al inicio', () => {
     const { error } = validate({
       ...baseEnv,

@@ -122,15 +122,29 @@ function makeHarness(
     upsertPurchaseRequest: jest.fn(() => Promise.resolve('inserted' as const)),
   };
 
+  const logger = {
+    log: jest.fn<void, [string]>(),
+    warn: jest.fn<void, [string]>(),
+    error: jest.fn<void, [string]>(),
+  };
   const service = new SapSyncService(
     prisma as unknown as PrismaService,
     client as unknown as SapClient,
     staging as unknown as SapStagingService,
-    { enabled, intervalMinutes: 60, pageSize: PAGE_SIZE },
-    { log: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    { enabled, intervalMinutes: 60, pageSize: PAGE_SIZE, fullDailyAt: '03:00' },
+    logger,
   );
 
-  return { service, prisma, client, staging, runs, upserts, fetchCalls };
+  return {
+    service,
+    prisma,
+    client,
+    staging,
+    runs,
+    upserts,
+    fetchCalls,
+    logger,
+  };
 }
 
 describe('SapSyncService — gates', () => {
@@ -287,6 +301,38 @@ describe('SapSyncService — paginación y resultado', () => {
     const summary = await h.service.syncPurchaseOrders('manual');
     expect(summary.status).toBe('failed');
     expect(summary.pagesOk).toBe(0);
+  });
+
+  it("L1: 'remapped' se cuenta aparte: resumen, records_remapped de la corrida y log", async () => {
+    const h = makeHarness({ poDocs: 5 });
+    const outcomes = [
+      'remapped',
+      'updated',
+      'remapped',
+      'unchanged',
+      'inserted',
+    ] as const;
+    let call = 0;
+    h.staging.upsertPurchaseOrder.mockImplementation(() =>
+      Promise.resolve(outcomes[call++] as 'inserted'),
+    );
+    const summary = await h.service.syncPurchaseOrders('manual', null, 'full');
+    expect(summary).toMatchObject({
+      status: 'success',
+      recordsFetched: 5,
+      recordsInserted: 1,
+      recordsUpdated: 1,
+      recordsRemapped: 2,
+      recordsUnchanged: 1,
+      recordsFailed: 0,
+    });
+    expect(h.runs[0]).toMatchObject({
+      records_updated: 1,
+      records_remapped: 2,
+      records_unchanged: 1,
+    });
+    const logged = h.logger.log.mock.calls.map(([m]) => m).join('\n');
+    expect(logged).toContain('updated=1 remapped=2 unchanged=1 failed=0');
   });
 
   it('startTarget: devuelve run_id de inmediato y procesa en background', async () => {

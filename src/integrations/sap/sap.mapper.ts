@@ -32,8 +32,10 @@ import { SapMappingError } from './sap.errors';
 // sin IVA de la OC = suma estricta de sus líneas (K6). Un cambio de versión
 // fuerza el re-mapeo aunque el raw no cambie (ver SapStagingService), así que
 // basta un sync full tras desplegar. La versión es una sola para todas las
-// entidades: solicitudes, socios y autorizaciones también salen 'updated' una
-// vez, cuando se vuelven a leer.
+// entidades y desde L1 (2026-10-08) nadie tiene que lanzarlo: el full diario
+// (o su recuperación al arrancar) re-mapea OC, solicitudes y proveedores, y la
+// cola de autorización ya es full en cada tick horario. Ese re-mapeo sale
+// 'remapped', sin tocar last_changed_at; 'updated' es solo un raw distinto.
 export const SAP_MAPPER_VERSION = '1.3.0';
 
 /**

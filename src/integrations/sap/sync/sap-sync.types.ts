@@ -22,8 +22,34 @@ export const SAP_SYNC_TARGETS: readonly SapSyncTarget[] = [
   'approval_requests',
 ];
 
-/** Resultado de un upsert individual de staging. */
-export type SapUpsertOutcome = 'inserted' | 'updated' | 'unchanged';
+/**
+ * Resultado de un upsert individual de staging.
+ *
+ * L1 (2026-10-08), como K8 en Maximo: 'remapped' = mismo `raw_hash` con otro
+ * `SAP_MAPPER_VERSION`. Se re-mapean las columnas sin tocar
+ * `last_changed_at`: el documento no cambió en SAP. 'updated' queda solo
+ * para un `raw_hash` distinto (SAP no tiene rowstamp: el cambio real es otro
+ * raw).
+ */
+export type SapUpsertOutcome =
+  | 'inserted'
+  | 'updated'
+  | 'remapped'
+  | 'unchanged';
+
+/**
+ * L1: targets del full diario (`SAP_SYNC_FULL_DAILY_AT`), en este orden. SAP
+ * no mueve el `UpdateDate` de una OC o una solicitud cuando otro documento la
+ * cierra, así que el incremental no ve esos cierres. Proveedores entran para
+ * que el full también re-mapee sus filas tras subir el mapper (tardan
+ * segundos). La cola de autorización no hace falta: ya corre full en cada
+ * tick horario.
+ */
+export const SAP_FULL_DAILY_TARGETS: readonly SapSyncTarget[] = [
+  'purchase_orders',
+  'purchase_requests',
+  'business_partners',
+];
 
 export interface SapSyncCounters {
   pagesTotal: number | null;
@@ -32,6 +58,8 @@ export interface SapSyncCounters {
   recordsFetched: number;
   recordsInserted: number;
   recordsUpdated: number;
+  /** L1: mismo raw_hash re-mapeado por un mapper nuevo; no es cambio real. */
+  recordsRemapped: number;
   recordsUnchanged: number;
   recordsFailed: number;
 }

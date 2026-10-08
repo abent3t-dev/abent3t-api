@@ -280,9 +280,67 @@ full/incremental y `since_filter`). Sin seed: no hay fixtures de SAP.
 POST /integrations/sap/sync    body { target?: purchase_orders|purchase_requests|all,
                                       mode?: full|incremental }   (default: incremental si hay datos)
                                → 202 {runs:[{target,run_id}]} · 409 corrida en curso · 503 flag apagado
-GET  /integrations/sap/status  → { enabled, intervalMinutes, pageSize, running[], lastRuns{}, counts{} }
+GET  /integrations/sap/status  → { enabled, intervalMinutes, pageSize, fullDaily{at,timeZone,targets},
+                                   running[], lastRuns{}, lastFullSuccess{}, counts{} }
 GET  /integrations/sap/runs    ?target=&page=&limit= → historial paginado
 ```
+
+**Full diario y `remapped` (L1, 2026-10-08).** SAP B1 **no cambia
+`UpdateDate`** del documento base cuando otro documento lo cierra (la OC que
+cierra una solicitud, la entrada de mercancía que cierra una OC) y el Service
+Layer no manda `ClosingDate`: el incremental (`UpdateDate ge día`) nunca
+relee esos cierres y la OC o la solicitud seguía "abierta" en staging hasta
+el siguiente full (de 287 solicitudes cerradas por su OC en `PRD_ABENT`, 191
+tenían `UpdateDate` anterior a la OC). Por eso:
+
+- **Full diario de OC, solicitudes y proveedores** (`SapSyncScheduler`,
+  `SAP_FULL_DAILY_TARGETS`), además del incremental horario, que no cambia:
+  `SAP_SYNC_FULL_DAILY_AT` = hora local de México (`HH:MM`, 24 h,
+  `America/Mexico_City`; default `03:00`) y `off` lo apaga. Es un `CronJob`
+  con timeZone registrado en el `SchedulerRegistry`; con
+  `SAP_SYNC_ENABLED=false` no se registra. Corre en `mode='full'` con
+  `triggered_by='cron'` (~150 s las OC; solicitudes y proveedores, segundos).
+  Los proveedores no se cierran así, pero entran para que el full re-mapee
+  también sus filas; la cola de autorización no hace falta porque ya corre
+  full en cada tick horario.
+  - **Ocupado:** respeta el mutex por target; si la corrida del target está
+    ocupada (el incremental o un disparo manual) espera 1 min y reintenta,
+    hasta 30 veces.
+  - **Falla:** si la corrida sale `failed`, con páginas fallidas (el SL se
+    cayó a media corrida) o con un error que no es de ocupado (p. ej. el
+    login), reintenta cada 15 min, hasta 8 veces (~2 h). Un `partial` solo
+    por documentos que no se pudieron guardar no se reintenta (fallaría
+    igual). Agotados los reintentos, se omite hasta el día siguiente (warning
+    o error en el log).
+  - **Recuperación al arrancar:** después del jitter y del primer tick, si el
+    último full EXITOSO de un target del full diario tiene más de 24 h (o no
+    existe), corre una vez el full de ese target. Cubre un deploy a la hora
+    del full y hace el primer full después de un deploy sin paso manual. Nada
+    con `SAP_SYNC_ENABLED=false` ni con `off`.
+  - Una sola pasada a la vez: si el cron llega con la recuperación en curso
+    (o al revés), la segunda se omite. Cada target cierra en ~3 h como
+    máximo, así que una pasada nunca alcanza a la del día siguiente.
+  - Se eligió el full y no releer solo lo que en staging sigue abierto (~420
+    OC y ~30 solicitudes): el modo full ya existe y está probado en prod
+    (~150 s), no hace falta un `$filter` nuevo por `DocEntry` en el cliente,
+    re-mapea todo tras subir `SAP_MAPPER_VERSION` (sin paso manual en el
+    deploy) y corrige cualquier otro desfase del staging, no solo el de los
+    abiertos.
+  - Si el catálogo Users no carga en una corrida de OC, una fila existente
+    conserva su `created_by_name` (antes se escribía null y se perdía; el
+    siguiente full sale `unchanged`); en un alta queda null.
+- **`remapped`** en el staging de SAP, como K8 en Maximo, en las cuatro
+  entidades (comparten `SAP_MAPPER_VERSION`). Sin rowstamp en SAP, el cambio
+  real es otro `raw_hash`: `updated` (columnas, `raw` y `last_changed_at`).
+  Mismo `raw_hash` con otro mapper → `remapped`: columnas mapeadas,
+  `mapper_version`, `last_seen_at` y `last_sync_run_id`, sin `last_changed_at`
+  y sin reescribir el `raw`; se cuenta en `sap_sync_runs.records_remapped`
+  (migración `0020`). Mismo hash y mapper → `unchanged`. Ojo: un campo nuevo
+  en el `$select` cambia el raw de todas las filas y sale `updated`.
+- **Integraciones** muestra el último full EXITOSO por target
+  (`lastFullSuccess`) y la hora del full diario (`fullDaily`); si el de un
+  target del full diario tiene más de 26 h (un día más el margen de
+  reintentos) con el full diario encendido, sale en ámbar como "atrasada".
 
 **Proveedores (BusinessPartners)** — tercer target del mismo sync
 (`business_partners`, migración `0010`): staging `sap_business_partners`
@@ -309,11 +367,14 @@ esta carpeta.
    Si el cert del Service Layer no valida contra CAs públicas: exportar la cadena y
    arrancar la API con `NODE_EXTRA_CA_CERTS=/ruta/sap-ca.pem` (no relajar TLS).
 4. `SAP_SYNC_ENABLED=true` (+ opcionales `SAP_SYNC_INTERVAL_MINUTES=60`,
-   `SAP_SYNC_PAGE_SIZE=20`). Rebuild/redeploy de la imagen API.
+   `SAP_SYNC_PAGE_SIZE=20`, `SAP_SYNC_FULL_DAILY_AT=03:00`). Rebuild/redeploy
+   de la imagen API.
 5. Primera corrida manual: `POST /integrations/sap/sync {"mode":"full"}` (~2 min).
 6. Verificar `GET /integrations/sap/status` (corridas `success`, counts ≈ 3.4k/0.3k)
    y el dashboard de Compras (tarjeta SAP y pestañas Ordenes/Solicitudes SAP).
-7. Dejar el cron (incremental cada hora). Nada de esto escribe hacia SAP.
+7. Dejar el cron (incremental cada hora y, desde L1, full diario de OC,
+   solicitudes y proveedores a las 03:00 de México). Nada de esto escribe
+   hacia SAP.
 
 **Cola de autorización (ApprovalRequests)** — cuarto target del sync
 (`approval_requests`, migración `0011`, sprint 2026-09-22 B5): staging

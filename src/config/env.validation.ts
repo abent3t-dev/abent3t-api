@@ -300,6 +300,20 @@ export const envValidationSchema = Joi.object({
     .max(10_080)
     .default(60),
   SAP_SYNC_PAGE_SIZE: Joi.number().integer().min(1).max(100).default(20),
+  // L1 (2026-10-08): full diario de OC, solicitudes y proveedores a esta hora
+  // local de México (HH:MM, 24 h, America/Mexico_City), además del
+  // incremental: SAP no mueve UpdateDate cuando otro documento cierra la OC o
+  // la solicitud, así que solo un full ve esos cierres. `off` lo apaga (y
+  // también su recuperación al arrancar). Sin efecto con SAP_SYNC_ENABLED=false.
+  SAP_SYNC_FULL_DAILY_AT: Joi.string()
+    .trim()
+    .lowercase()
+    .pattern(/^(?:off|(?:[01]?\d|2[0-3]):[0-5]\d)$/)
+    .default('03:00')
+    .messages({
+      'string.pattern.base':
+        'SAP_SYNC_FULL_DAILY_AT debe ser una hora HH:MM (24 h, hora de México) u off',
+    }),
   // Deshabilitar la verificación TLS solo se permite FUERA de producción.
   SL_REJECT_UNAUTHORIZED: Joi.boolean()
     .default(true)

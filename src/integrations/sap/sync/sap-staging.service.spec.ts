@@ -3,6 +3,8 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import {
   SAP_MAPPER_VERSION,
   sapRawHash,
+  toSapApprovalRequest,
+  toSapBusinessPartner,
   toSapPurchaseOrder,
   toSapPurchaseRequest,
 } from '../sap.mapper';
@@ -11,6 +13,8 @@ import {
  * Fase INT-4. Staging con Prisma EN MEMORIA — sin BD. Cubre: insert /
  * update / unchanged por `raw_hash` (el jsonb de ~32 KB NO se reescribe si
  * el documento no cambió) y la carrera P2002 → reintento como update.
+ * L1 (2026-10-08): 'remapped' = mismo raw con otro mapper, sin tocar
+ * `last_changed_at`, en las cuatro entidades.
  */
 
 type Row = Record<string, unknown> & { id: string };
@@ -20,10 +24,14 @@ function makeHarness() {
   let idSeq = 0;
   let failNextCreateWithP2002 = false;
 
+  // una sola tabla para todas las entidades (cada prueba usa una); el
+  // `where` es la llave natural: doc_entry, card_code o code
   const table = {
-    findFirst: jest.fn(({ where }: { where: { doc_entry: number } }) =>
+    findFirst: jest.fn(({ where }: { where: Record<string, unknown> }) =>
       Promise.resolve(
-        rows.find((r) => r.doc_entry === where.doc_entry) ?? null,
+        rows.find((r) =>
+          Object.entries(where).every(([key, value]) => r[key] === value),
+        ) ?? null,
       ),
     ),
     create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
@@ -57,6 +65,8 @@ function makeHarness() {
   const prisma = {
     sap_purchase_orders: table,
     sap_purchase_requests: table,
+    sap_business_partners: table,
+    sap_approval_requests: table,
   };
   const service = new SapStagingService(prisma as unknown as PrismaService);
   return {
@@ -137,19 +147,54 @@ describe('SapStagingService — upsert por doc_entry + raw_hash', () => {
     expect(outcome).toBe('unchanged'); // la fila de la carrera ya trae el mismo hash
   });
 
-  it('mapper_version viejo → updated aunque el raw no cambió (re-mapeo tras bump)', async () => {
+  it("L1: mapper_version viejo con el mismo raw → 'remapped' (antes 'updated'): re-mapea sin mover last_changed_at ni reescribir el raw", async () => {
     const h = makeHarness();
     const raw = rawDoc();
     await h.service.upsertPurchaseOrder(toSapPurchaseOrder(raw), raw, 'run-1');
+    const changedAt = new Date('2026-09-23T17:00:00Z');
     h.rows[0].mapper_version = '1.0.0';
+    h.rows[0].last_changed_at = changedAt;
+    h.rows[0].document_status = null; // columna que el mapper viejo no llenaba
     const outcome = await h.service.upsertPurchaseOrder(
       toSapPurchaseOrder(raw),
       raw,
       'run-2',
     );
-    expect(outcome).toBe('updated');
-    expect(h.rows[0].mapper_version).not.toBe('1.0.0');
+    expect(outcome).toBe('remapped');
+    expect(h.rows[0].mapper_version).toBe(SAP_MAPPER_VERSION);
     expect(h.rows[0].raw_hash).toBe(sapRawHash(raw));
+    expect(h.rows[0].document_status).toBe('bost_Open');
+    expect(h.rows[0].last_changed_at).toBe(changedAt);
+    expect(h.rows[0].last_sync_run_id).toBe('run-2');
+    const lastUpdate = h.table.update.mock.calls.at(-1)![0] as {
+      data: Record<string, unknown>;
+    };
+    expect(lastUpdate.data.last_seen_at).toBeInstanceOf(Date);
+    expect(lastUpdate.data).not.toHaveProperty('last_changed_at');
+    expect(lastUpdate.data).not.toHaveProperty('raw');
+    expect(lastUpdate.data).not.toHaveProperty('raw_hash');
+
+    // ya en la versión nueva, el mismo raw vuelve a ser 'unchanged'
+    await expect(
+      h.service.upsertPurchaseOrder(toSapPurchaseOrder(raw), raw, 'run-3'),
+    ).resolves.toBe('unchanged');
+  });
+
+  it("L1: raw distinto con mapper viejo → 'updated' (el cambio real en SAP manda sobre el mapper)", async () => {
+    const h = makeHarness();
+    const raw = rawDoc();
+    await h.service.upsertPurchaseOrder(toSapPurchaseOrder(raw), raw, 'run-1');
+    h.rows[0].mapper_version = '1.2.0';
+    const changed = rawDoc({ DocumentStatus: 'bost_Close' });
+    const outcome = await h.service.upsertPurchaseOrder(
+      toSapPurchaseOrder(changed),
+      changed,
+      'run-2',
+    );
+    expect(outcome).toBe('updated');
+    expect(h.rows[0].mapper_version).toBe(SAP_MAPPER_VERSION);
+    expect(h.rows[0].raw_hash).toBe(sapRawHash(changed));
+    expect(h.rows[0].last_changed_at).toBeInstanceOf(Date);
   });
 
   it('K6: escribe el subtotal sin IVA; null si no hay líneas', async () => {
@@ -191,7 +236,8 @@ describe('SapStagingService — upsert por doc_entry + raw_hash', () => {
       raw,
       'run-2',
     );
-    expect(outcome).toBe('updated');
+    // L1: mismo raw → 'remapped' (antes 'updated'); el subtotal se llena igual
+    expect(outcome).toBe('remapped');
     expect(h.rows[0].subtotal).toBe(19500);
     expect(h.rows[0].mapper_version).toBe(SAP_MAPPER_VERSION);
   });
@@ -211,5 +257,69 @@ describe('SapStagingService — upsert por doc_entry + raw_hash', () => {
     expect(outcome).toBe('inserted');
     expect(h.rows[0].doc_total).toBe(100);
     expect(h.rows[0].requester).toBe('abnuser27');
+  });
+
+  describe("L1: 'remapped' en las cuatro entidades (comparten SAP_MAPPER_VERSION)", () => {
+    const changedAt = new Date('2026-09-23T17:00:00Z');
+    const request = {
+      DocEntry: 300,
+      UpdateDate: '2026-09-02T00:00:00Z',
+      DocumentLines: [{ LineNum: 0, LineTotal: 100, Currency: 'MXN' }],
+    };
+    const partner = {
+      CardCode: 'P00042',
+      CardName: 'Proveedor SA',
+      CardType: 'cSupplier',
+    };
+    const approvalRaw = {
+      request: { Code: 77, Status: 'arsPending', ApprovalRequestLines: [] },
+      draft: null,
+    };
+    const emptyCatalogs = {
+      drafts: new Map(),
+      users: new Map(),
+      stages: new Map(),
+      templates: new Map(),
+    };
+    const cases: Array<
+      [string, (s: SapStagingService, run: string) => Promise<string>]
+    > = [
+      [
+        'solicitudes',
+        (s, run) =>
+          s.upsertPurchaseRequest(toSapPurchaseRequest(request), request, run),
+      ],
+      [
+        'proveedores',
+        (s, run) =>
+          s.upsertBusinessPartner(toSapBusinessPartner(partner), partner, run),
+      ],
+      [
+        'autorizaciones',
+        (s, run) =>
+          s.upsertApprovalRequest(
+            toSapApprovalRequest(approvalRaw.request, emptyCatalogs),
+            approvalRaw,
+            run,
+          ),
+      ],
+    ];
+
+    it.each(cases)(
+      '%s: mismo raw con mapper viejo → remapped sin last_changed_at; luego unchanged',
+      async (_name, upsert) => {
+        const h = makeHarness();
+        await expect(upsert(h.service, 'run-1')).resolves.toBe('inserted');
+        h.rows[0].mapper_version = '1.2.0';
+        h.rows[0].last_changed_at = changedAt;
+
+        await expect(upsert(h.service, 'run-2')).resolves.toBe('remapped');
+        expect(h.rows[0].mapper_version).toBe(SAP_MAPPER_VERSION);
+        expect(h.rows[0].last_changed_at).toBe(changedAt);
+        expect(h.rows[0].last_sync_run_id).toBe('run-2');
+
+        await expect(upsert(h.service, 'run-3')).resolves.toBe('unchanged');
+      },
+    );
   });
 });
