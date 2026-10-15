@@ -42,6 +42,10 @@ import { COMMITTEE_SIGNER_ROLES } from './committee-roles';
  * el número de su nivel); la cadena conserva al menos un nivel activo; y
  * quien ocupa un nivel por persona necesita un rol de aprobador de compras,
  * o el guard de aprobar no lo deja firmar.
+ *
+ * M3 (2026-10-14, Ingrid y Omar): el detalle del comité trae la persona de
+ * cada nivel (`levels[].profile`) para la sección "Aprobadores" del modal;
+ * el correo sigue en simulación hasta que llegue el relay.
  */
 
 const MAX_FILE_SIZE = 30 * 1024 * 1024; // 30 MB (§16)
@@ -378,7 +382,14 @@ export class PurchaseCommitteesService {
         include: APPROVAL_INCLUDE,
         orderBy: [{ version: 'asc' }, { approver_level: 'asc' }],
       }),
-      this.getActiveLevels(),
+      // M3 (2026-10-14): los niveles activos con la persona que firma, para
+      // la sección "Aprobadores" del modal (la ve quien abra el comité; el
+      // editor sigue siendo de PURCHASE_ADMINS)
+      this.prisma.committee_approval_levels.findMany({
+        where: { is_active: true },
+        orderBy: { orden: 'asc' },
+        include: LEVEL_INCLUDE,
+      }),
     ]);
 
     return {
@@ -400,6 +411,8 @@ export class PurchaseCommitteesService {
         role: l.role,
         has_specific_user: l.profile_id !== null,
         confirmed: l.confirmed,
+        // M3: null = firma cualquiera con el rol del nivel
+        profile: l.profiles ?? null,
       })),
     };
   }

@@ -253,12 +253,32 @@ function makeHarness(levels: Row[] = defaultLevels()) {
     committee_versions: versionTable,
     committee_approvals: approvalTable,
     committee_approval_levels: {
-      findMany: jest.fn(({ where }: { where?: { is_active?: boolean } } = {}) =>
-        Promise.resolve(
-          levels
-            .filter((l) => where?.is_active === undefined || l.is_active)
-            .sort((a, b) => (a.orden as number) - (b.orden as number)),
-        ),
+      findMany: jest.fn(
+        ({
+          where,
+          include,
+        }: {
+          where?: { is_active?: boolean };
+          include?: { profiles?: unknown };
+        } = {}) =>
+          Promise.resolve(
+            levels
+              .filter((l) => where?.is_active === undefined || l.is_active)
+              .sort((a, b) => (a.orden as number) - (b.orden as number))
+              // M3: con `include` viaja la persona del nivel (o null)
+              .map((l) => {
+                if (!include?.profiles) return l;
+                const u = [AUTHOR, ...CHAIN_USERS].find(
+                  (x) => x.id === l.profile_id,
+                );
+                return {
+                  ...l,
+                  profiles: u
+                    ? { id: u.id, full_name: u.full_name, email: u.email }
+                    : null,
+                };
+              }),
+          ),
       ),
       findUnique: jest.fn(({ where }: { where: { id: string } }) =>
         Promise.resolve(levels.find((l) => l.id === where.id) ?? null),
@@ -732,6 +752,84 @@ describe('PurchaseCommitteesService — editor de la cadena (H3)', () => {
       INGRID,
     );
     expect(updated).toMatchObject({ profile_id: GILBERTO.id, confirmed: true });
+  });
+});
+
+describe('PurchaseCommitteesService — alta en un paso y aprobadores (M3)', () => {
+  it('el comité recién creado acepta el PDF y se envía a aprobación (los pasos del alta en un paso del modal)', async () => {
+    const h = makeHarness();
+    const created = await h.service.create(
+      { committee_date: '2026-10-15', title: 'Comité semanal' },
+      AUTHOR,
+    );
+    await h.service.uploadVersion(
+      created.id,
+      AUTHOR,
+      pptx({ originalname: 'comite.pdf', mimetype: 'application/pdf' }),
+    );
+    await h.service.submit(created.id, AUTHOR);
+
+    expect(h.versions[0]).toMatchObject({
+      version: 1,
+      file_name: 'comite.pdf',
+      mime_type: 'application/pdf',
+    });
+    expect(h.committees[0]).toMatchObject({
+      status: 'en_aprobacion',
+      current_approver_level: 1,
+    });
+  });
+
+  it('el detalle trae la cadena vigente: nivel, persona (o null si firma el rol) y si está confirmada', async () => {
+    const h = makeHarness();
+    const [first, , , , last] = h.levels;
+    await h.service.updateLevel(
+      first.id,
+      { profile_id: INGRID.id, confirmed: true },
+      INGRID,
+    );
+    await h.service.updateLevel(last.id, { is_active: false }, INGRID);
+    const created = await h.service.create(
+      { committee_date: '2026-10-15', title: 'Comité semanal' },
+      AUTHOR,
+    );
+
+    // la ve cualquiera que abra el comité (aquí un aprobador sin rol admin)
+    const detail = await h.service.findOne(created.id, GILBERTO);
+    expect(detail.levels).toEqual([
+      {
+        orden: 1,
+        role: 'lider_procura',
+        has_specific_user: true,
+        confirmed: true,
+        profile: {
+          id: INGRID.id,
+          full_name: INGRID.full_name,
+          email: INGRID.email,
+        },
+      },
+      {
+        orden: 2,
+        role: 'aprobador_nivel_1',
+        has_specific_user: false,
+        confirmed: false,
+        profile: null,
+      },
+      {
+        orden: 3,
+        role: 'aprobador_nivel_2',
+        has_specific_user: false,
+        confirmed: false,
+        profile: null,
+      },
+      {
+        orden: 4,
+        role: 'aprobador_nivel_3',
+        has_specific_user: false,
+        confirmed: false,
+        profile: null,
+      },
+    ]);
   });
 });
 
