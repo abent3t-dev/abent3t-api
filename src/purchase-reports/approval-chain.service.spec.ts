@@ -162,19 +162,21 @@ describe('ApprovalChainService.getAprobadores (G5)', () => {
   it('SAP y Maximo por aprobador con su nombre, y tiempos por nivel', async () => {
     const { service } = makeService(
       [
-        // aprobaciones de Maximo del periodo
+        // aprobaciones de Maximo del periodo. Fechas fijas dentro del periodo
+        // por default del doble (hasta el 2026-09-30): con ago(n) la prueba
+        // empezó a fallar sola en octubre (las fechas salían del periodo)
         [
           {
             status: 'APPR2',
             changed_by: 'MAOG1',
-            change_date: ago(10),
-            prev_date: ago(12),
+            change_date: new Date('2026-09-20T16:00:00Z'),
+            prev_date: new Date('2026-09-18T16:00:00Z'),
           },
           {
             status: 'APPR',
             changed_by: 'GMV1',
-            change_date: ago(8),
-            prev_date: ago(10),
+            change_date: new Date('2026-09-22T16:00:00Z'),
+            prev_date: new Date('2026-09-20T16:00:00Z'),
           },
         ],
       ],
