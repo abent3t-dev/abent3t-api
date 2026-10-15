@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import {
   abentMontoEnBase,
   andSapPoCountedOnce,
@@ -14,11 +15,15 @@ import {
   montoBaseNota,
   pendingWindowStart,
   poSubtotalColumns,
+  sapGestionSql,
   sapPoDuplicatedInMaximo,
   sapPoMonto,
   TABLERO_MONTO_BASE,
 } from '../common/sql/erp-views.sql';
-import type { MaximoGestionRow } from '../common/sql/erp-views.sql';
+import type {
+  MaximoGestionRow,
+  SapGestionRow,
+} from '../common/sql/erp-views.sql';
 import {
   MAXIMO_GESTION_APROBACION_DEFINICION,
   MAXIMO_GESTION_DEFINICION,
@@ -27,6 +32,13 @@ import {
   sapGestionDays,
 } from './sap-gestion-days';
 import { loadPendingRequests } from './pending-requests';
+import {
+  type AhorroEntry,
+  buildAhorro,
+  buildGestionPorComprador,
+  maximoKpiBuyer,
+  sapBuyer,
+} from './buyer-kpis';
 
 /**
  * Sprint 2026-09-22 (A1) — Resumen agregado del dashboard de Compras.
@@ -80,6 +92,11 @@ import { loadPendingRequests } from './pending-requests';
  * `TABLERO_MONTO_BASE` (con IVA hasta que conteste Ingrid) con el subtotal
  * sin IVA y las OC sin él como dato secundario, por moneda. "Por recibir"
  * se queda con IVA. CAPEX/OPEX suma sin IVA en las dos fuentes.
+ *
+ * Bloque M (2026-10-14, Ingrid): Órdenes trae el ahorro (M1) y los días de
+ * gestión de G2 (M2) POR COMPRADOR (regla E4/F1; ver buyer-kpis.ts). Las OC
+ * de G2 de SAP salen de `sapGestionSql`, la misma consulta para el tablero y
+ * Órdenes.
  */
 
 export interface CurrencyAmount {
@@ -139,12 +156,28 @@ type RangeRow = {
   maximo_sync: Date | null;
 };
 type YearRow = { year: number };
-type GestionPoRow = {
-  doc_entry: number;
-  doc_date: Date | null;
-  base_request_entries: number[];
-};
 type GestionPrRow = { doc_entry: number; doc_date: Date | null };
+/** M1: ahorro de SAP por quien capturó la OC y moneda. */
+type SapAhorroRow = {
+  currency: string | null;
+  created_by_name: string | null;
+  total: unknown;
+  count: number;
+};
+/** E4/F1: lo que necesita `maximoBuyer` de una OC de Maximo. */
+type MaximoBuyerFields = {
+  purchase_agent?: string | null;
+  purchase_agent_name?: string | null;
+  created_by?: string | null;
+};
+/** M1: ahorro de Maximo por PURCHASEAGENT/creador y moneda. */
+type MaximoAhorroRow = MaximoBuyerFields & {
+  currency: string | null;
+  total: unknown;
+  count: number;
+};
+/** M2: comprador de Maximo de una OC de SAP que nació allá (por PONUM). */
+type MaximoPonumBuyerRow = MaximoBuyerFields & { ponum: string };
 type ClasRow = {
   clas: string | null;
   currency: string | null;
@@ -228,11 +261,29 @@ function avgOrNull(rows: AvgRow[]): number | null {
 const iso = (value: Date | null | undefined) =>
   value ? value.toISOString() : null;
 
+/**
+ * D4: [1-ene, 1-ene del siguiente) del año elegido; sin año, sin límites.
+ * M2: el mismo periodo de G2 en el tablero y en Órdenes.
+ */
+function yearBounds(year: number | null): {
+  from: Date | null;
+  toExcl: Date | null;
+} {
+  return year
+    ? {
+        from: new Date(Date.UTC(year, 0, 1)),
+        toExcl: new Date(Date.UTC(year + 1, 0, 1)),
+      }
+    : { from: null, toExcl: null };
+}
+
 @Injectable()
 export class PurchaseDashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    // M1/M2: PURCHASEAGENT y creador de Maximo son códigos → alias de Compras
+    private readonly aliases: ErpAliasesService,
   ) {}
 
   async getSummary(year: number | null = null) {
@@ -243,8 +294,7 @@ export class PurchaseDashboardService {
     const countedOnce = andSapPoCountedOnce('sap_purchase_orders');
     // G3: periodo de los pendientes: el año elegido o, sin año, los últimos
     // 12 meses
-    const yearFrom = year ? new Date(Date.UTC(year, 0, 1)) : null;
-    const yearTo = year ? new Date(Date.UTC(year + 1, 0, 1)) : null;
+    const { from: yearFrom, toExcl: yearTo } = yearBounds(year);
 
     const [
       pending,
@@ -339,12 +389,9 @@ export class PurchaseDashboardService {
                count(*) FILTER (WHERE ${sapPoDuplicatedInMaximo('sap_purchase_orders')})::int AS en_maximo
         FROM sap_purchase_orders
         WHERE cancelled IS DISTINCT FROM true ${sapPoYear}`),
-      // D3 — OC con solicitud base (se calcula en memoria con función pura)
-      this.prisma.$queryRaw<GestionPoRow[]>(Prisma.sql`
-        SELECT doc_entry, doc_date, base_request_entries
-        FROM sap_purchase_orders
-        WHERE cancelled IS DISTINCT FROM true
-          AND cardinality(base_request_entries) > 0 ${sapPoYear}`),
+      // D3 — OC con solicitud base (se calcula en memoria con función pura);
+      // M2: la misma consulta que la gráfica por comprador de Órdenes
+      this.prisma.$queryRaw<SapGestionRow[]>(sapGestionSql(yearFrom, yearTo)),
       // D4 — desde cuándo hay datos y última sincronización exitosa
       this.prisma.$queryRaw<RangeRow[]>(Prisma.sql`
         SELECT (SELECT min(doc_date) FROM sap_purchase_orders) AS sap_desde,
@@ -364,15 +411,7 @@ export class PurchaseDashboardService {
     ]);
 
     // D3: fechas de las solicitudes base referidas por esas OC
-    const requestEntries = [
-      ...new Set(gestionPos.flatMap((po) => po.base_request_entries)),
-    ];
-    const gestionPrs =
-      requestEntries.length === 0
-        ? []
-        : await this.prisma.$queryRaw<GestionPrRow[]>(Prisma.sql`
-            SELECT doc_entry, doc_date FROM sap_purchase_requests
-            WHERE doc_entry IN (${Prisma.join(requestEntries)})`);
+    const gestionPrs = await this.sapGestionRequests(gestionPos);
     const sapOcGestion = sapGestionDays(gestionPos, gestionPrs);
     const maximoOcGestion = maximoGestion(maximoGestionRows);
 
@@ -525,25 +564,49 @@ export class PurchaseDashboardService {
    * tarjeta mezclaba bases: ahora suma el `subtotal` (Σ LINECOST). Las OC
    * clasificadas sin subtotal cuentan en documentos, no en el monto, y la
    * nota dice cuántas son. No depende de TABLERO_MONTO_BASE.
+   *
+   * Bloque M (2026-10-14, Ingrid: "para que los compradores compitan"):
+   *  - M1: `ahorro.por_comprador`. Las consultas de ahorro se agrupan por
+   *    comprador Y moneda, y de esas filas salen la tarjeta (por moneda y
+   *    por fuente) y las barras: la suma de las barras = la tarjeta.
+   *  - M2: `gestion_por_comprador`: los días de G2 del tablero (mismas OC,
+   *    mismo periodo, mismas funciones) agrupados por comprador, por sistema.
    */
   async getOrdersKpis(year: number | null = null) {
     const sapYear = andYear('po.doc_date', year);
     const maximoYear = andYear('created_at_source', year);
     const countedOnce = andSapPoCountedOnce('po');
+    // M2: el periodo de G2 del tablero (getSummary)
+    const { from: yearFrom, toExcl: yearTo } = yearBounds(year);
 
-    const [sapAhorro, maximoAhorro, sapClas, maximoClas] = await Promise.all([
-      this.prisma.$queryRaw<AmountRow[]>(Prisma.sql`
-        SELECT po.currency, coalesce(sum(po.ahorro_total), 0) AS total, count(*)::int AS count
+    const [
+      sapAhorro,
+      maximoAhorro,
+      sapClas,
+      maximoClas,
+      gestionPos,
+      maximoGestionRows,
+    ] = await Promise.all([
+      // M1: ahorro de SAP por quien capturó la OC y moneda. D1: la OC migrada
+      // que existe en Maximo NO llega aquí; se cuenta una vez, del lado de
+      // Maximo, con el comprador de Maximo. Las que llegan son de SAP (o
+      // migradas cuyo PONUM no está en Maximo): su comprador es quien las
+      // capturó en SAP (E4).
+      this.prisma.$queryRaw<SapAhorroRow[]>(Prisma.sql`
+        SELECT po.currency, po.created_by_name,
+               coalesce(sum(po.ahorro_total), 0) AS total, count(*)::int AS count
         FROM sap_purchase_orders po
         WHERE po.cancelled IS DISTINCT FROM true AND po.ahorro_total IS NOT NULL
           ${countedOnce} ${sapYear}
-        GROUP BY po.currency`),
-      this.prisma.$queryRaw<AmountRow[]>(Prisma.sql`
+        GROUP BY po.currency, po.created_by_name`),
+      // M1: ahorro de Maximo por PURCHASEAGENT / creador (E4/F1) y moneda
+      this.prisma.$queryRaw<MaximoAhorroRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
-        SELECT currency, coalesce(sum(ab_ahorro), 0) AS total, count(*)::int AS count
+        SELECT currency, purchase_agent, purchase_agent_name, created_by,
+               coalesce(sum(ab_ahorro), 0) AS total, count(*)::int AS count
         FROM current
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL') AND ab_ahorro IS NOT NULL ${maximoYear}
-        GROUP BY currency`),
+        GROUP BY currency, purchase_agent, purchase_agent_name, created_by`),
       // SAP: la clasificación vive en la línea (U_Clas_gts); el importe de
       // la línea (sin IVA) va en la moneda del documento (LineTotal en MXN,
       // RowTotalFC en documentos extranjeros — misma regla que el mapper).
@@ -570,10 +633,76 @@ export class PurchaseDashboardService {
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
           AND upper(ab_clasfpo) IN ('CAPEX', 'OPEX') ${maximoYear}
         GROUP BY 1, 2`),
+      // M2: las MISMAS OC de G2 que el tablero (misma consulta y periodo)
+      this.prisma.$queryRaw<SapGestionRow[]>(sapGestionSql(yearFrom, yearTo)),
+      this.prisma.$queryRaw<MaximoGestionRow[]>(
+        maximoGestionSql(yearFrom, yearTo),
+      ),
     ]);
 
-    const ahorroSap = toAmounts(sapAhorro);
-    const ahorroMaximo = toAmounts(maximoAhorro);
+    // M2: fechas de las solicitudes base (D3) y comprador de Maximo de las OC
+    // de SAP que nacieron allá
+    const ponums = [
+      ...new Set(
+        gestionPos.map((po) => po.maximo_ponum).filter((p): p is string => !!p),
+      ),
+    ];
+    const [gestionPrs, ponumBuyers] = await Promise.all([
+      this.sapGestionRequests(gestionPos),
+      this.maximoBuyersByPonum(ponums),
+    ]);
+    // E4/F1: PURCHASEAGENT y creador son códigos → alias de Compras
+    const names = await this.aliases.resolveMany(
+      'maximo',
+      [...maximoAhorro, ...maximoGestionRows, ...ponumBuyers].flatMap((r) => [
+        r.purchase_agent,
+        r.created_by,
+      ]),
+    );
+    // E4/F1 con el alias de Compras (el del alias nombra la barra)
+    const buyerOfMaximo = (r: MaximoBuyerFields) => maximoKpiBuyer(r, names);
+    const maximoByPonum = new Map(
+      ponumBuyers.map((m) => [m.ponum, buyerOfMaximo(m)]),
+    );
+
+    // M1: una sola lista de renglones para la tarjeta y las barras
+    const ahorro = buildAhorro([
+      ...sapAhorro.map(
+        (r): AhorroEntry => ({
+          fuente: 'sap',
+          currency: r.currency,
+          buyer: sapBuyer(r.created_by_name),
+          total: toNumber(r.total) ?? 0,
+          count: Number(r.count),
+        }),
+      ),
+      ...maximoAhorro.map(
+        (r): AhorroEntry => ({
+          fuente: 'maximo',
+          currency: r.currency,
+          buyer: buyerOfMaximo(r),
+          total: toNumber(r.total) ?? 0,
+          count: Number(r.count),
+        }),
+      ),
+    ]);
+    // M2: G2 es por sistema (sin D1). La OC de SAP que nació en Maximo y
+    // existe allá toma el comprador de Maximo, nunca el usuario de la
+    // integración; si no, quien la capturó en SAP (E4/F1).
+    const gestionPorComprador = buildGestionPorComprador(
+      {
+        pos: gestionPos.map((po) => ({
+          ...po,
+          buyer:
+            (po.maximo_ponum
+              ? maximoByPonum.get(po.maximo_ponum)
+              : undefined) ?? sapBuyer(po.created_by_name),
+        })),
+        requests: gestionPrs,
+      },
+      maximoGestionRows.map((r) => ({ ...r, buyer: buyerOfMaximo(r) })),
+    );
+
     const docs = (list: CurrencyAmount[]) =>
       list.reduce((s, r) => s + r.count, 0);
     const clasOf = (rows: ClasRow[], clas: 'CAPEX' | 'OPEX') =>
@@ -633,13 +762,9 @@ export class PurchaseDashboardService {
     return {
       anio: year,
       ahorro: {
-        disponible: docs(ahorroSap) + docs(ahorroMaximo) > 0,
-        documentos: docs(ahorroSap) + docs(ahorroMaximo),
-        por_moneda: mergeAmounts([ahorroSap, ahorroMaximo]),
-        por_fuente: {
-          sap: { documentos: docs(ahorroSap), por_moneda: ahorroSap },
-          maximo: { documentos: docs(ahorroMaximo), por_moneda: ahorroMaximo },
-        },
+        // M1: disponible, documentos, por_moneda, por_fuente y por_comprador
+        // salen de los mismos renglones
+        ...ahorro,
         // K6: AB_AHORRO ya llega; sin dato = no se capturó en Maximo
         nota: 'SAP: U_Imp_ahorro por línea (captura de Compras desde 2026-09-15, incremental). Maximo: AB_AHORRO de la OC (solo las que lo tienen capturado).',
       },
@@ -653,8 +778,40 @@ export class PurchaseDashboardService {
             : `${sinSubtotal} OC clasificadas no tienen subtotal (sin líneas o con alguna sin LINECOST): cuentan en documentos, no en el monto`
         }.`,
       },
+      // M2: días de G2 por comprador, por sistema; `total` = el del tablero
+      gestion_por_comprador: gestionPorComprador,
       generated_at: new Date().toISOString(),
     };
+  }
+
+  /**
+   * D3: fechas de las solicitudes base de las OC de G2 de SAP (segunda
+   * vuelta); la misma para el tablero y Órdenes (M2).
+   */
+  private async sapGestionRequests(
+    pos: SapGestionRow[],
+  ): Promise<GestionPrRow[]> {
+    const entries = [...new Set(pos.flatMap((po) => po.base_request_entries))];
+    if (entries.length === 0) return [];
+    return this.prisma.$queryRaw<GestionPrRow[]>(Prisma.sql`
+      SELECT doc_entry, doc_date FROM sap_purchase_requests
+      WHERE doc_entry IN (${Prisma.join(entries)})`);
+  }
+
+  /**
+   * M2/E4: datos del comprador en Maximo de las OC de SAP que nacieron allá
+   * (PONUM = `maximo_ponum`), de su última revisión, como en sap-records. La
+   * que no existe en Maximo no sale (se queda con quien la capturó en SAP).
+   */
+  private async maximoBuyersByPonum(
+    ponums: string[],
+  ): Promise<MaximoPonumBuyerRow[]> {
+    if (ponums.length === 0) return [];
+    return this.prisma.$queryRaw<MaximoPonumBuyerRow[]>(Prisma.sql`
+      SELECT DISTINCT ON (ponum) ponum, purchase_agent, purchase_agent_name, created_by
+      FROM maximo_purchase_orders
+      WHERE ponum IN (${Prisma.join(ponums)})
+      ORDER BY ponum, coalesce(revisionnum, 0) DESC`);
   }
 
   /** Joi ya lo convirtió a boolean; se tolera el string por robustez. */

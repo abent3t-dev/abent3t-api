@@ -22,9 +22,14 @@
  * subtotal sin IVA y las OC sin él por moneda (mergeAmounts los suma; las
  * propias de ABENT van a sin_subtotal); "por recibir" sin cambio;
  * CAPEX/OPEX suma el subtotal de Maximo (antes TOTALCOST, con IVA).
+ *
+ * Bloque M (2026-10-14): M1 ahorro y M2 días de gestión por comprador en
+ * Órdenes, con OC sintéticas de SAP y Maximo (un "Postgres de juguete" que
+ * agrupa como las consultas y aplica D1 y el año solo si el SQL los trae).
  */
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { ErpAliasesService } from '../erp-aliases/erp-aliases.service';
 import { TABLERO_MONTO_BASE } from '../common/sql/erp-views.sql';
 import {
   abentAmounts,
@@ -49,7 +54,14 @@ function makeService(sapEnabled: boolean | string = true) {
           ? false
           : undefined,
   } as unknown as ConfigService;
-  return { service: new PurchaseDashboardService(prisma, config), queryRaw };
+  // M1/M2: alias de Compras de los códigos de Maximo (sin alias por defecto)
+  const resolveMany = jest.fn().mockResolvedValue(new Map<string, string>());
+  const aliases = { resolveMany } as unknown as ErpAliasesService;
+  return {
+    service: new PurchaseDashboardService(prisma, config, aliases),
+    queryRaw,
+    resolveMany,
+  };
 }
 
 const d = (s: string) => new Date(`${s}T00:00:00Z`);
@@ -478,6 +490,8 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
   it('sin captura de ahorro → disponible=false y sin montos inventados', async () => {
     const { service, queryRaw } = makeService();
     queryRaw
+      // M2: las OC de G2 (SAP y Maximo) van al final; aquí sin OC
+      .mockResolvedValue([])
       .mockResolvedValueOnce([]) // sap ahorro
       .mockResolvedValueOnce([]) // maximo ahorro
       .mockResolvedValueOnce([
@@ -497,6 +511,9 @@ describe('PurchaseDashboardService.getOrdersKpis (D5)', () => {
     const kpis = await service.getOrdersKpis(null);
     expect(kpis.ahorro.disponible).toBe(false);
     expect(kpis.ahorro.por_moneda).toEqual([]);
+    // M1: sin captura tampoco hay barras (el front pinta "No disponible")
+    expect(kpis.ahorro.por_comprador).toEqual([]);
+    expect(kpis.ahorro.documentos).toBe(0);
     expect(kpis.clasificacion.disponible).toBe(true);
     expect(kpis.clasificacion.opex.documentos).toBe(43);
     // H7: por moneda, cuántas no traen subtotal y si el monto tiene base
@@ -554,6 +571,8 @@ describe('CAPEX/OPEX sin subtotal (H7)', () => {
   it('una moneda solo de Maximo y todas sin subtotal → monto_disponible=false (no "$0.00"); mezclada con SAP sí hay monto', async () => {
     const { service, queryRaw } = makeService();
     queryRaw
+      // M2: las OC de G2 (SAP y Maximo) van al final; aquí sin OC
+      .mockResolvedValue([])
       .mockResolvedValueOnce([]) // sap ahorro
       .mockResolvedValueOnce([]) // maximo ahorro
       // SAP: CAPEX en USD
@@ -656,5 +675,693 @@ describe('mergeAmounts (K6)', () => {
         [{ currency: 'MXN', total: 2, count: 1 }],
       ]),
     ).toEqual([{ currency: 'MXN', total: 3, count: 2 }]);
+  });
+});
+
+// ── Bloque M (2026-10-14): ahorro y tiempo de gestión por comprador ──────
+
+type FakeQuery = { sql: string; values: unknown[] };
+
+/** Alias de Compras (Roles → "Usuarios de SAP y Maximo"). */
+const ALIASES = new Map([
+  ['VMM3', 'Víctor Martínez'],
+  ['AMONDRAG', 'Ana Aurora Mondragón'],
+  ['JSANDOVAL', 'Jorge Sandoval'],
+]);
+const resolveAliases = (
+  _system: string,
+  codes: Array<string | null | undefined>,
+) =>
+  Promise.resolve(
+    new Map(
+      codes
+        .filter((c): c is string => !!c && ALIASES.has(c))
+        .map((c) => [c, ALIASES.get(c) ?? c]),
+    ),
+  );
+
+/**
+ * OC sintéticas de SAP: ahorro (M1) y G2 (M2) con las solicitudes de abajo.
+ * La 5 nació en Maximo (PO500 existe allá) y la capturó el usuario de la
+ * integración; la 9 es de 2025.
+ */
+const SAP_OC = [
+  // Jorge: 10, 20 y 30 días; dos variantes del nombre; MXN y USD
+  {
+    doc_entry: 1,
+    doc_date: d('2026-03-11'),
+    currency: 'MXN',
+    created_by_name: 'Jorge Sandoval',
+    maximo_ponum: null,
+    ahorro_total: '1000.10',
+    base_request_entries: [100],
+  },
+  {
+    doc_entry: 2,
+    doc_date: d('2026-03-21'),
+    currency: 'MXN',
+    created_by_name: 'JORGE  SANDOVAL',
+    maximo_ponum: null,
+    ahorro_total: '0.20',
+    base_request_entries: [100],
+  },
+  {
+    doc_entry: 3,
+    doc_date: d('2026-03-31'),
+    currency: 'USD',
+    created_by_name: 'Jorge Sandoval',
+    maximo_ponum: null,
+    ahorro_total: '50.25',
+    base_request_entries: [100, 101],
+  },
+  // sin quien la capturó → "Sin comprador identificado"; 1 día
+  {
+    doc_entry: 4,
+    doc_date: d('2026-03-02'),
+    currency: 'MXN',
+    created_by_name: null,
+    maximo_ponum: null,
+    ahorro_total: '300',
+    base_request_entries: [102],
+  },
+  // migrada: su copia de SAP no cuenta en el ahorro (D1); G2 sí (por
+  // sistema), con el comprador de Maximo; 7 días
+  {
+    doc_entry: 5,
+    doc_date: d('2026-03-08'),
+    currency: 'MXN',
+    created_by_name: 'FAVOR DE NO TOCAR USUARIO PP XAMAI',
+    maximo_ponum: 'PO500',
+    ahorro_total: '700',
+    base_request_entries: [101],
+  },
+  // Ana Pérez: 4 días; una negativa y una con la solicitud sin sincronizar
+  {
+    doc_entry: 6,
+    doc_date: d('2026-03-05'),
+    currency: 'MXN',
+    created_by_name: 'Ana Pérez',
+    maximo_ponum: null,
+    ahorro_total: null,
+    base_request_entries: [101],
+  },
+  {
+    doc_entry: 7,
+    doc_date: d('2026-02-01'),
+    currency: 'MXN',
+    created_by_name: 'Ana Pérez',
+    maximo_ponum: null,
+    ahorro_total: null,
+    base_request_entries: [101],
+  },
+  {
+    doc_entry: 8,
+    doc_date: d('2026-03-10'),
+    currency: 'MXN',
+    created_by_name: 'Ana Pérez',
+    maximo_ponum: null,
+    ahorro_total: null,
+    base_request_entries: [999],
+  },
+  // 2025: solo cuenta sin año (10 días)
+  {
+    doc_entry: 9,
+    doc_date: d('2025-11-30'),
+    currency: 'MXN',
+    created_by_name: 'Jorge Sandoval',
+    maximo_ponum: null,
+    ahorro_total: '99',
+    base_request_entries: [103],
+  },
+];
+const SAP_PR = [
+  { doc_entry: 100, doc_date: d('2026-03-01') },
+  { doc_entry: 101, doc_date: d('2026-03-01') },
+  { doc_entry: 102, doc_date: d('2026-03-01') },
+  { doc_entry: 103, doc_date: d('2025-11-20') },
+];
+/** OC sintéticas de Maximo (vista vigente): ahorro y días de G2 por OC. */
+const MAXIMO_OC = [
+  // la migrada: sin PURCHASEAGENT → quien la creó (alias)
+  {
+    ponum: 'PO500',
+    created_at_source: d('2026-03-08'),
+    currency: 'MXN',
+    purchase_agent: null,
+    purchase_agent_name: null,
+    created_by: 'VMM3',
+    ab_ahorro: '700',
+    dias: '7',
+    dias_desde_aprobacion: '3',
+  },
+  // con PURCHASEAGENT: manda aunque haya creador
+  {
+    ponum: 'PO600',
+    created_at_source: d('2026-06-01'),
+    currency: 'MXN',
+    purchase_agent: 'AMONDRAG',
+    purchase_agent_name: 'Ana Aurora Mondragón',
+    created_by: 'VMM3',
+    ab_ahorro: '2000',
+    dias: '12',
+    dias_desde_aprobacion: '5',
+  },
+  // sin PURCHASEAGENT, resueltas por alias: la misma persona (tipo mixto)
+  {
+    ponum: 'PO601',
+    created_at_source: d('2026-06-02'),
+    currency: 'MXN',
+    purchase_agent: null,
+    purchase_agent_name: null,
+    created_by: 'AMONDRAG',
+    ab_ahorro: '500.5',
+    dias: '20',
+    dias_desde_aprobacion: '10',
+  },
+  {
+    ponum: 'PO602',
+    created_at_source: d('2026-06-03'),
+    currency: 'MXN',
+    purchase_agent: null,
+    purchase_agent_name: null,
+    created_by: 'AMONDRAG',
+    ab_ahorro: '0.1',
+    dias: '16',
+    dias_desde_aprobacion: null,
+  },
+  // Jorge en Maximo (alias): se junta con el de SAP; sin solicitud (N = 0)
+  {
+    ponum: 'PO603',
+    created_at_source: d('2026-07-01'),
+    currency: 'USD',
+    purchase_agent: null,
+    purchase_agent_name: null,
+    created_by: 'JSANDOVAL',
+    ab_ahorro: '10',
+    dias: null,
+    dias_desde_aprobacion: null,
+  },
+  // negativa (descartada) y sin ahorro
+  {
+    ponum: 'PO604',
+    created_at_source: d('2026-07-02'),
+    currency: 'MXN',
+    purchase_agent: null,
+    purchase_agent_name: null,
+    created_by: 'VMM3',
+    ab_ahorro: null,
+    dias: '-2',
+    dias_desde_aprobacion: '-1',
+  },
+  // sin PURCHASEAGENT ni creador → sin comprador
+  {
+    ponum: 'PO605',
+    created_at_source: d('2026-07-03'),
+    currency: 'MXN',
+    purchase_agent: null,
+    purchase_agent_name: null,
+    created_by: null,
+    ab_ahorro: null,
+    dias: '3',
+    dias_desde_aprobacion: '2',
+  },
+  // 2025: solo cuenta sin año
+  {
+    ponum: 'PO606',
+    created_at_source: d('2025-07-01'),
+    currency: 'MXN',
+    purchase_agent: null,
+    purchase_agent_name: null,
+    created_by: 'AMONDRAG',
+    ab_ahorro: '42',
+    dias: '30',
+    dias_desde_aprobacion: '20',
+  },
+];
+
+/** D1 tal como lo arma `andSapPoCountedOnce('po')` (texto normalizado). */
+const D1_SAP_PO =
+  'AND NOT (po.maximo_ponum IS NOT NULL AND EXISTS ( SELECT 1 FROM maximo_purchase_orders m WHERE m.ponum = po.maximo_ponum))';
+
+const norm = (sql: string) => sql.replace(/\s+/g, ' ');
+
+/** GROUP BY de juguete: suma como numeric de Postgres (texto a centavos). */
+function groupBy<T>(
+  rows: T[],
+  keyOf: (row: T) => Record<string, unknown>,
+  amountOf: (row: T) => number,
+) {
+  const groups = new Map<
+    string,
+    { key: Record<string, unknown>; total: number; count: number }
+  >();
+  for (const row of rows) {
+    const key = keyOf(row);
+    const id = JSON.stringify(key);
+    const group = groups.get(id) ?? { key, total: 0, count: 0 };
+    group.total += amountOf(row);
+    group.count += 1;
+    groups.set(id, group);
+  }
+  return [...groups.values()].map((g) => ({
+    ...g.key,
+    total: g.total.toFixed(2),
+    count: g.count,
+  }));
+}
+
+/**
+ * "Postgres de juguete" para las consultas de M1/M2: agrupa como el SQL y
+ * aplica el año (los Date de `values`) y D1 SOLO si el SQL los trae. Lo
+ * demás (resto del tablero) sale vacío.
+ */
+function fakeDb(q: FakeQuery): unknown[] {
+  const sql = norm(q.sql);
+  const [from, to] = q.values.filter((v): v is Date => v instanceof Date);
+  const inPeriod = (date: Date) => !from || (date >= from && date < to);
+  if (sql.includes('po.ahorro_total IS NOT NULL')) {
+    const enMaximo = new Set(MAXIMO_OC.map((m) => m.ponum));
+    const d1 = sql.includes(D1_SAP_PO);
+    return groupBy(
+      SAP_OC.filter(
+        (o) =>
+          o.ahorro_total !== null &&
+          inPeriod(o.doc_date) &&
+          !(d1 && o.maximo_ponum !== null && enMaximo.has(o.maximo_ponum)),
+      ),
+      (o) => ({ currency: o.currency, created_by_name: o.created_by_name }),
+      (o) => Number(o.ahorro_total),
+    );
+  }
+  if (sql.includes('ab_ahorro IS NOT NULL')) {
+    return groupBy(
+      MAXIMO_OC.filter(
+        (o) => o.ab_ahorro !== null && inPeriod(o.created_at_source),
+      ),
+      (o) => ({
+        currency: o.currency,
+        purchase_agent: o.purchase_agent,
+        purchase_agent_name: o.purchase_agent_name,
+        created_by: o.created_by,
+      }),
+      (o) => Number(o.ab_ahorro),
+    );
+  }
+  if (sql.includes('cardinality(base_request_entries) > 0')) {
+    return SAP_OC.filter(
+      (o) => o.base_request_entries.length > 0 && inPeriod(o.doc_date),
+    ).map((o) => ({
+      doc_entry: o.doc_entry,
+      doc_date: o.doc_date,
+      base_request_entries: o.base_request_entries,
+      created_by_name: o.created_by_name,
+      maximo_ponum: o.maximo_ponum,
+    }));
+  }
+  if (sql.includes('FROM sap_purchase_requests WHERE doc_entry IN')) {
+    return SAP_PR.filter((p) => q.values.includes(p.doc_entry));
+  }
+  if (sql.includes('SELECT DISTINCT ON (ponum) ponum, purchase_agent')) {
+    return MAXIMO_OC.filter((m) => q.values.includes(m.ponum)).map((m) => ({
+      ponum: m.ponum,
+      purchase_agent: m.purchase_agent,
+      purchase_agent_name: m.purchase_agent_name,
+      created_by: m.created_by,
+    }));
+  }
+  if (sql.includes('AS dias_desde_aprobacion')) {
+    return MAXIMO_OC.filter((m) => inPeriod(m.created_at_source)).map((m) => ({
+      dias: m.dias,
+      dias_desde_aprobacion: m.dias_desde_aprobacion,
+      ponum: m.ponum,
+      purchase_agent: m.purchase_agent,
+      purchase_agent_name: m.purchase_agent_name,
+      created_by: m.created_by,
+    }));
+  }
+  return [];
+}
+
+function makeFakeService() {
+  const harness = makeService();
+  harness.queryRaw.mockImplementation((q: FakeQuery) =>
+    Promise.resolve(fakeDb(q)),
+  );
+  harness.resolveMany.mockImplementation(resolveAliases);
+  return harness;
+}
+
+const queriesOf = (queryRaw: jest.Mock) =>
+  (queryRaw.mock.calls as unknown as Array<[FakeQuery]>).map(([q]) => q);
+
+/** Σ de las barras por moneda: monto (a centavos) y OC. */
+function sumOfBars(
+  bars: Array<{
+    por_moneda: Array<{
+      currency: string | null;
+      total: number;
+      count: number;
+    }>;
+  }>,
+) {
+  const byCurrency = new Map<string | null, { total: number; count: number }>();
+  for (const bar of bars) {
+    for (const m of bar.por_moneda) {
+      const acc = byCurrency.get(m.currency) ?? { total: 0, count: 0 };
+      acc.total += m.total;
+      acc.count += m.count;
+      byCurrency.set(m.currency, acc);
+    }
+  }
+  return [...byCurrency.entries()]
+    .map(([currency, a]) => ({
+      currency,
+      total: Math.round(a.total * 100) / 100,
+      count: a.count,
+    }))
+    .sort((a, b) => (a.currency ?? '').localeCompare(b.currency ?? ''));
+}
+const byCurrencyCode = <T extends { currency: string | null }>(list: T[]) =>
+  [...list].sort((a, b) => (a.currency ?? '').localeCompare(b.currency ?? ''));
+
+/** Promedio ponderado por N de las barras y Σ N. */
+function weighted(
+  list: Array<{ promedio_dias: number | null; total: number }>,
+) {
+  const n = list.reduce((s, g) => s + g.total, 0);
+  const dias = list.reduce((s, g) => s + (g.promedio_dias ?? 0) * g.total, 0);
+  return { n, promedio: n === 0 ? null : dias / n };
+}
+
+describe('Bloque M: ahorro por comprador (M1)', () => {
+  it.each([
+    {
+      year: 2026,
+      mxn: { currency: 'MXN', total: 4500.9, count: 7 },
+      ana: { currency: 'MXN', total: 2500.6, count: 3 },
+      jorgeMxn: { currency: 'MXN', total: 1000.3, count: 2 },
+    },
+    {
+      year: null,
+      mxn: { currency: 'MXN', total: 4641.9, count: 9 },
+      ana: { currency: 'MXN', total: 2542.6, count: 4 },
+      jorgeMxn: { currency: 'MXN', total: 1099.3, count: 3 },
+    },
+  ])(
+    'año $year: por moneda, la suma de las barras = la tarjeta; la migrada una vez y con el comprador de Maximo',
+    async ({ year, mxn, ana, jorgeMxn }) => {
+      const { service, queryRaw, resolveMany } = makeFakeService();
+      const kpis = await service.getOrdersKpis(year);
+      const { ahorro } = kpis;
+
+      expect(ahorro.disponible).toBe(true);
+      expect(ahorro.por_moneda).toEqual([
+        mxn,
+        { currency: 'USD', total: 60.25, count: 2 },
+      ]);
+      // la suma de las barras = la tarjeta, por moneda (monto y OC)
+      expect(sumOfBars(ahorro.por_comprador)).toEqual(
+        byCurrencyCode(ahorro.por_moneda),
+      );
+      expect(ahorro.por_comprador.reduce((s, b) => s + b.documentos, 0)).toBe(
+        ahorro.documentos,
+      );
+      expect(
+        ahorro.por_fuente.sap.documentos + ahorro.por_fuente.maximo.documentos,
+      ).toBe(ahorro.documentos);
+
+      // la migrada (PO500) cuenta UNA vez, del lado de Maximo y con quien la
+      // creó allá; nunca el usuario de la integración de SAP
+      expect(
+        ahorro.por_comprador.filter((b) => b.comprador === 'Víctor Martínez'),
+      ).toEqual([
+        {
+          comprador: 'Víctor Martínez',
+          tipo: 'capturo',
+          documentos: 1,
+          documentos_capturo: 1,
+          por_moneda: [{ currency: 'MXN', total: 700, count: 1 }],
+        },
+      ]);
+      expect(
+        ahorro.por_comprador.some((b) => /XAMAI/.test(b.comprador ?? '')),
+      ).toBe(false);
+
+      // Ana: PURCHASEAGENT en una y creadora en las demás (alias) → mixta
+      expect(ahorro.por_comprador[0]).toMatchObject({
+        comprador: 'Ana Aurora Mondragón',
+        tipo: 'capturo',
+        documentos: ana.count,
+        documentos_capturo: ana.count - 1,
+        por_moneda: [ana],
+      });
+      // Jorge: SAP (dos variantes) + Maximo (alias) en una sola barra
+      expect(ahorro.por_comprador[1]).toMatchObject({
+        comprador: 'Jorge Sandoval',
+        tipo: 'capturo',
+        por_moneda: [jorgeMxn, { currency: 'USD', total: 60.25, count: 2 }],
+      });
+      // sin quien la capturó → "Sin comprador identificado", al final
+      expect(ahorro.por_comprador.at(-1)).toEqual({
+        comprador: null,
+        tipo: null,
+        documentos: 1,
+        documentos_capturo: 0,
+        por_moneda: [{ currency: 'MXN', total: 300, count: 1 }],
+      });
+      expect(resolveMany).toHaveBeenCalledWith(
+        'maximo',
+        expect.arrayContaining(['AMONDRAG', 'VMM3', 'JSANDOVAL']),
+      );
+
+      // SQL: SAP con D1 y agrupado por quien capturó; Maximo sin D1 (ahí
+      // cuenta la migrada) y agrupado por PURCHASEAGENT/creador; el año va
+      // en los parámetros (rango [1-ene, 1-ene siguiente))
+      const queries = queriesOf(queryRaw);
+      const sapAhorro = queries.filter((q) =>
+        q.sql.includes('po.ahorro_total IS NOT NULL'),
+      );
+      const maximoAhorro = queries.filter((q) =>
+        q.sql.includes('ab_ahorro IS NOT NULL'),
+      );
+      expect(sapAhorro).toHaveLength(1);
+      expect(maximoAhorro).toHaveLength(1);
+      expect(norm(sapAhorro[0].sql)).toContain(D1_SAP_PO);
+      expect(norm(sapAhorro[0].sql)).toContain(
+        'GROUP BY po.currency, po.created_by_name',
+      );
+      expect(maximoAhorro[0].sql).not.toContain('maximo_ponum');
+      expect(norm(maximoAhorro[0].sql)).toContain(
+        'GROUP BY currency, purchase_agent, purchase_agent_name, created_by',
+      );
+      const bounds =
+        year === null
+          ? []
+          : [
+              new Date(Date.UTC(year, 0, 1)),
+              new Date(Date.UTC(year + 1, 0, 1)),
+            ];
+      expect(sapAhorro[0].values).toEqual(bounds);
+      expect(maximoAhorro[0].values).toEqual(bounds);
+    },
+  );
+
+  it('sin el filtro D1 la migrada contaría dos veces (el juguete solo descuenta si el SQL lo trae)', () => {
+    const sql = (withD1: boolean) => ({
+      sql: `SELECT ... WHERE po.ahorro_total IS NOT NULL ${withD1 ? D1_SAP_PO : ''}`,
+      values: [],
+    });
+    const xamai = (rows: unknown[]) =>
+      (rows as Array<{ created_by_name: string | null }>).some(
+        (r) => r.created_by_name === 'FAVOR DE NO TOCAR USUARIO PP XAMAI',
+      );
+    expect(xamai(fakeDb(sql(true)))).toBe(false);
+    expect(xamai(fakeDb(sql(false)))).toBe(true);
+  });
+});
+
+describe('Bloque M: tiempo de gestión por comprador (M2)', () => {
+  it.each([2026, null])(
+    'año %p: Σ N por comprador = N de G2 del tablero y el promedio ponderado por N = el del tablero (SAP, Maximo y desde la aprobación)',
+    async (year) => {
+      const { service, queryRaw } = makeFakeService();
+      const summary = await service.getSummary(year);
+      const summaryQueries = queriesOf(queryRaw).length;
+      const kpis = await service.getOrdersKpis(year);
+      const g = kpis.gestion_por_comprador;
+      const queries = queriesOf(queryRaw);
+
+      const checks = [
+        [g.sap.compradores, summary.dias_gestion.sap],
+        [g.maximo.compradores, summary.dias_gestion.maximo],
+        [
+          g.maximo.compradores.map((c) => ({
+            promedio_dias: c.desde_aprobacion?.promedio_dias ?? null,
+            total: c.desde_aprobacion?.total ?? 0,
+          })),
+          summary.dias_gestion.maximo_desde_aprobacion,
+        ],
+      ] as const;
+      for (const [compradores, tablero] of checks) {
+        const { n, promedio } = weighted([...compradores]);
+        expect(tablero.total).toBeGreaterThan(0);
+        expect(n).toBe(tablero.total);
+        expect(
+          Math.abs((promedio ?? Number.NaN) - (tablero.promedio_dias ?? 0)),
+        ).toBeLessThanOrEqual(0.05);
+      }
+
+      // el total de cada sistema es el mismo resultado de G2 del tablero
+      expect({
+        ...g.sap.total,
+        definicion: summary.dias_gestion.sap.definicion,
+      }).toEqual(summary.dias_gestion.sap);
+      expect({
+        ...g.maximo.total,
+        definicion: summary.dias_gestion.maximo.definicion,
+      }).toEqual(summary.dias_gestion.maximo);
+      expect({
+        ...g.maximo.total_desde_aprobacion,
+        definicion: g.maximo.definicion_secundaria,
+      }).toEqual(summary.dias_gestion.maximo_desde_aprobacion);
+      expect(g.min_oc).toBe(3);
+
+      // mismo periodo y mismas OC: las consultas de G2 son idénticas
+      const g2 = (list: FakeQuery[]) =>
+        list
+          .filter(
+            (q) =>
+              q.sql.includes('cardinality(base_request_entries) > 0') ||
+              q.sql.includes('AS dias_desde_aprobacion') ||
+              norm(q.sql).includes(
+                'FROM sap_purchase_requests WHERE doc_entry IN',
+              ),
+          )
+          .map((q) => ({ sql: q.sql, values: q.values }))
+          .sort((a, b) => a.sql.localeCompare(b.sql));
+      expect(g2(queries.slice(summaryQueries))).toHaveLength(3);
+      expect(g2(queries.slice(summaryQueries))).toEqual(
+        g2(queries.slice(0, summaryQueries)),
+      );
+      // la migrada de SAP busca su comprador en Maximo por PONUM
+      const porPonum = queries.filter((q) =>
+        q.sql.includes('SELECT DISTINCT ON (ponum) ponum, purchase_agent'),
+      );
+      expect(porPonum.map((q) => q.values)).toEqual([['PO500']]);
+    },
+  );
+
+  it('2026: barras de SAP y Maximo con su N, en orden; la migrada con el comprador de Maximo; sin comprador al final', async () => {
+    const { service } = makeFakeService();
+    const { gestion_por_comprador: g } = await service.getOrdersKpis(2026);
+    // SAP: 6 OC (10, 20, 30, 1, 7 y 4 días) → 12 días; 2 descartadas
+    expect(g.sap.total).toEqual({
+      promedio_dias: 12,
+      mediana_dias: 8.5,
+      total: 6,
+      descartadas: 2,
+    });
+    expect(g.sap.compradores).toEqual([
+      {
+        comprador: 'Jorge Sandoval',
+        tipo: 'capturo',
+        documentos_capturo: 3,
+        promedio_dias: 20,
+        mediana_dias: 20,
+        total: 3,
+        descartadas: 0,
+      },
+      // N < 3: después, por promedio
+      {
+        comprador: 'Ana Pérez',
+        tipo: 'capturo',
+        documentos_capturo: 1,
+        promedio_dias: 4,
+        mediana_dias: 4,
+        total: 1,
+        descartadas: 2,
+      },
+      // la OC 5 la capturó la integración: comprador de Maximo (quien creó PO500)
+      {
+        comprador: 'Víctor Martínez',
+        tipo: 'capturo',
+        documentos_capturo: 1,
+        promedio_dias: 7,
+        mediana_dias: 7,
+        total: 1,
+        descartadas: 0,
+      },
+      {
+        comprador: null,
+        tipo: null,
+        documentos_capturo: 0,
+        promedio_dias: 1,
+        mediana_dias: 1,
+        total: 1,
+        descartadas: 0,
+      },
+    ]);
+    // Maximo: 12, 20, 16, 7 y 3 días → 11.6; Jorge (solo una OC sin
+    // solicitud) no tiene barra
+    expect(g.maximo.total).toMatchObject({
+      promedio_dias: 11.6,
+      total: 5,
+      descartadas: 1,
+      sin_solicitud: 1,
+    });
+    expect(g.maximo.total_desde_aprobacion).toMatchObject({
+      promedio_dias: 5,
+      total: 4,
+    });
+    expect(g.maximo.compradores).toEqual([
+      {
+        comprador: 'Ana Aurora Mondragón',
+        tipo: 'capturo',
+        documentos_capturo: 2,
+        promedio_dias: 16,
+        mediana_dias: 16,
+        total: 3,
+        descartadas: 0,
+        sin_solicitud: 0,
+        desde_aprobacion: { promedio_dias: 7.5, mediana_dias: 7.5, total: 2 },
+      },
+      {
+        comprador: 'Víctor Martínez',
+        tipo: 'capturo',
+        documentos_capturo: 1,
+        promedio_dias: 7,
+        mediana_dias: 7,
+        total: 1,
+        descartadas: 1,
+        sin_solicitud: 0,
+        desde_aprobacion: { promedio_dias: 3, mediana_dias: 3, total: 1 },
+      },
+      {
+        comprador: null,
+        tipo: null,
+        documentos_capturo: 0,
+        promedio_dias: 3,
+        mediana_dias: 3,
+        total: 1,
+        descartadas: 0,
+        sin_solicitud: 0,
+        desde_aprobacion: { promedio_dias: 2, mediana_dias: 2, total: 1 },
+      },
+    ]);
+  });
+
+  it('sin OC con solicitud → totales sin base (null, nunca 0) y sin barras', async () => {
+    const { service, queryRaw } = makeService();
+    queryRaw.mockResolvedValue([]);
+    const { gestion_por_comprador: g } = await service.getOrdersKpis(2026);
+    expect(g.sap.total).toEqual({
+      promedio_dias: null,
+      mediana_dias: null,
+      total: 0,
+      descartadas: 0,
+    });
+    expect(g.maximo.total.promedio_dias).toBeNull();
+    expect(g.sap.compradores).toEqual([]);
+    expect(g.maximo.compradores).toEqual([]);
   });
 });

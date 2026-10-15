@@ -239,6 +239,15 @@ export function maximoPrLlegada(alias: string): Prisma.Sql {
 export interface MaximoGestionRow {
   dias: unknown;
   dias_desde_aprobacion: unknown;
+  /**
+   * M2 (2026-10-14, Ingrid): datos del comprador de la OC (regla E4/F1,
+   * `maximoBuyer`) para agrupar los mismos días por comprador. Opcionales:
+   * `maximoGestion` no los lee.
+   */
+  ponum?: string | null;
+  purchase_agent?: string | null;
+  purchase_agent_name?: string | null;
+  created_by?: string | null;
 }
 
 /**
@@ -252,6 +261,10 @@ export interface MaximoGestionRow {
  *  - `dias_desde_aprobacion` = fecha de la OC − el primer APPR más antiguo
  *    de sus PR (llegada a Compras), dato secundario.
  * Un solo lugar para el tablero y Reportes.
+ *
+ * M2 (2026-10-14): trae también el PONUM, PURCHASEAGENT y creador de cada OC
+ * para agrupar los mismos días por comprador en Órdenes (columnas extra; el
+ * cálculo no cambia).
  */
 export function maximoGestionSql(
   from: Date | null,
@@ -274,8 +287,43 @@ export function maximoGestionSql(
     SELECT extract(epoch FROM (oc.created_at_source
              - coalesce(oc.pr_issue_date, f.emision))) / 86400 AS dias,
            extract(epoch FROM (oc.created_at_source - f.aprobacion)) / 86400
-             AS dias_desde_aprobacion
+             AS dias_desde_aprobacion,
+           oc.ponum, oc.purchase_agent, oc.purchase_agent_name, oc.created_by
     FROM oc LEFT JOIN fechas f ON f.id = oc.id`;
+}
+
+/**
+ * Fila de `sapGestionSql`: una OC de SAP con solicitud base (G2/D3). M2:
+ * `created_by_name` y `maximo_ponum` son para su comprador (E4/F1).
+ */
+export interface SapGestionRow {
+  doc_entry: number;
+  doc_date: Date | null;
+  base_request_entries: number[];
+  created_by_name: string | null;
+  maximo_ponum: string | null;
+}
+
+/**
+ * G2 de SAP (D3): OC no canceladas que nacieron de una solicitud de pedido,
+ * con fecha (`doc_date`) en [from, toExcl) (sin límites = todas). Los días
+ * se calculan en memoria con `sapGestionDays`. Por sistema: aquí NO se
+ * descuentan las migradas (D1 es de los totales combinados).
+ *
+ * M2 (2026-10-14): una sola consulta para el tablero (`getSummary`) y la
+ * gráfica por comprador de Órdenes (`getOrdersKpis`), para que el periodo y
+ * el conjunto de OC sean los mismos en las dos.
+ */
+export function sapGestionSql(
+  from: Date | null,
+  toExcl: Date | null,
+): Prisma.Sql {
+  return Prisma.sql`
+    SELECT doc_entry, doc_date, base_request_entries, created_by_name, maximo_ponum
+    FROM sap_purchase_orders
+    WHERE cancelled IS DISTINCT FROM true
+      AND cardinality(base_request_entries) > 0
+      ${andBetween(Prisma.sql`doc_date`, from, toExcl)}`;
 }
 
 /** Inicio de la ventana de "pendientes" sin año: hace 12 meses (G3). */

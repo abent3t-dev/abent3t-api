@@ -12,6 +12,7 @@ import {
   maximoPrPending,
   montoBaseNota,
   poSubtotalColumns,
+  sapGestionSql,
   sapPoMonto,
   TABLERO_MONTO_BASE,
 } from './erp-views.sql';
@@ -119,6 +120,34 @@ describe('K4.3: G2 de Maximo (maximoGestionSql)', () => {
     );
     expect(sql.values).toEqual([from, to]);
     expect(maximoGestionSql(null, null).values).toEqual([]);
+  });
+
+  it('M2: trae el PONUM, PURCHASEAGENT y creador de cada OC para agrupar por comprador (los días no cambian)', () => {
+    const sql = text(maximoGestionSql(null, null));
+    expect(sql).toContain(
+      'AS dias_desde_aprobacion, oc.ponum, oc.purchase_agent, oc.purchase_agent_name, oc.created_by FROM oc LEFT JOIN fechas f',
+    );
+  });
+});
+
+describe('M2: G2 de SAP (sapGestionSql), la misma consulta para el tablero y Órdenes', () => {
+  it('OC no canceladas que nacieron de una solicitud, con quien la capturó y su PONUM; sin D1 (G2 es por sistema)', () => {
+    const sql = text(sapGestionSql(null, null));
+    expect(sql).toContain(
+      'SELECT doc_entry, doc_date, base_request_entries, created_by_name, maximo_ponum FROM sap_purchase_orders',
+    );
+    expect(sql).toContain('cancelled IS DISTINCT FROM true');
+    expect(sql).toContain('cardinality(base_request_entries) > 0');
+    expect(sql).not.toContain('EXISTS');
+    expect(sapGestionSql(null, null).values).toEqual([]);
+  });
+
+  it('el periodo va por la fecha de la OC (`doc_date`), [from, toExcl)', () => {
+    const from = new Date('2026-01-01T00:00:00Z');
+    const to = new Date('2027-01-01T00:00:00Z');
+    const sql = sapGestionSql(from, to);
+    expect(text(sql)).toContain('AND doc_date >= ? AND doc_date < ?');
+    expect(sql.values).toEqual([from, to]);
   });
 });
 
