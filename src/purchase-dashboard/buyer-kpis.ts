@@ -2,12 +2,15 @@ import { maximoBuyer, NO_BUYER } from '../common/utils/buyer.util';
 import type { Buyer, BuyerKind } from '../common/utils/buyer.util';
 import type { CurrencyAmount } from './purchase-dashboard.service';
 import {
+  averageAndMedian,
   MAXIMO_GESTION_APROBACION_DEFINICION,
   MAXIMO_GESTION_DEFINICION,
   maximoGestion,
   maximoGestionDays,
+  maximoGestionValues,
   SAP_GESTION_DEFINICION,
   sapGestionDays,
+  sapGestionValues,
 } from './sap-gestion-days';
 import type {
   SapGestionPo,
@@ -32,6 +35,15 @@ import type {
  * comprador y moneda) o las OC (M2) con su comprador, y aquí se agrupan con
  * la MISMA cuenta de la tarjeta y del tablero: la suma de las barras = el
  * total por construcción.
+ *
+ * Bloque N (2026-10-16, Ingrid):
+ *  - N1: por persona, el monto adjudicado (OC sin IVA) junto al ahorro.
+ *  - N2: gestiones por persona con "Ambos" sistemas: la N es la suma y el
+ *    promedio y la mediana salen de los días de cada OC.
+ *  - La persona se junta entre SAP y Maximo por su perfil de la plataforma
+ *    cuando lo hay (alias de Maximo ligado al perfil en Compras → Roles, o un
+ *    nombre igual al del perfil) y se nombra como el perfil; si no, por la
+ *    llave plegada del nombre, como en M.
  */
 
 /** M2: con menos OC en el periodo, el comprador va al final y sin destacar. */
@@ -70,9 +82,138 @@ export function sapBuyer(createdByName: string | null): Buyer {
 
 /**
  * Comprador de una OC para los KPIs: la regla E4/F1 y si el nombre salió de
- * un alias de Compras → Roles (`alias`), que gana para nombrar la barra.
+ * un alias de Compras → Roles (`alias`), que gana para nombrar la barra. N:
+ * `profileId`/`profileName` = el perfil de la plataforma de esa persona, si
+ * se pudo ligar (junta y nombra el grupo).
  */
-export type KpiBuyer = Buyer & { alias?: boolean };
+export type KpiBuyer = Buyer & {
+  alias?: boolean;
+  profileId?: string | null;
+  profileName?: string | null;
+};
+
+/**
+ * N2 (2026-10-16): con quién ligar a cada persona.
+ *  - `aliasProfile`: código de Maximo (minúsculas) → perfil ligado a su alias;
+ *  - `aliasNameProfile`: nombre plegado de un alias ligado → su perfil (así
+ *    el usuario de SAP que se llama como el alias cae en el mismo perfil
+ *    aunque el perfil tenga otro nombre);
+ *  - `profileByName`: nombre plegado → perfil activo.
+ * En las dos últimas, un nombre que lleva a dos perfiles no liga (no se
+ * adivina). `profileName` trae también los perfiles inactivos ligados.
+ */
+export interface PersonDirectory {
+  aliasProfile: Map<string, string>;
+  aliasNameProfile: Map<string, string>;
+  profileByName: Map<string, string>;
+  profileName: Map<string, string | null>;
+}
+
+export const EMPTY_DIRECTORY: PersonDirectory = {
+  aliasProfile: new Map(),
+  aliasNameProfile: new Map(),
+  profileByName: new Map(),
+  profileName: new Map(),
+};
+
+/** nombre plegado → perfil, solo donde el nombre lleva a uno solo. */
+function uniqueByName(pairs: Array<[string | null, string]>) {
+  const byName = new Map<string, Set<string>>();
+  for (const [name, id] of pairs) {
+    const key = buyerKey(name);
+    if (key) byName.set(key, (byName.get(key) ?? new Set()).add(id));
+  }
+  const unique = new Map<string, string>();
+  for (const [key, ids] of byName) {
+    if (ids.size === 1) unique.set(key, [...ids][0]);
+  }
+  return unique;
+}
+
+export function buildPersonDirectory(
+  aliases: Iterable<{
+    code: string;
+    display_name?: string | null;
+    profile_id: string | null;
+  }>,
+  profiles: Array<{
+    id: string;
+    full_name: string | null;
+    is_active?: boolean;
+  }>,
+): PersonDirectory {
+  const aliasProfile = new Map<string, string>();
+  const aliasNames: Array<[string | null, string]> = [];
+  for (const a of aliases) {
+    if (!a.profile_id) continue;
+    aliasProfile.set(a.code.trim().toLowerCase(), a.profile_id);
+    aliasNames.push([a.display_name ?? null, a.profile_id]);
+  }
+  const profileName = new Map<string, string | null>();
+  for (const p of profiles) profileName.set(p.id, p.full_name);
+  return {
+    aliasProfile,
+    aliasNameProfile: uniqueByName(aliasNames),
+    // por nombre solo los perfiles activos; los inactivos ligan por su alias
+    profileByName: uniqueByName(
+      profiles
+        .filter((p) => p.is_active !== false)
+        .map((p): [string | null, string] => [p.full_name, p.id]),
+    ),
+    profileName,
+  };
+}
+
+/** N2: liga el comprador a su perfil (por el alias del código o por su nombre). */
+function linkProfile(
+  buyer: KpiBuyer,
+  code: string | null,
+  dir: PersonDirectory,
+): KpiBuyer {
+  const key = buyerKey(buyer.name);
+  const profileId =
+    (code ? dir.aliasProfile.get(code.trim().toLowerCase()) : undefined) ??
+    (key ? dir.aliasNameProfile.get(key) : undefined) ??
+    (key ? dir.profileByName.get(key) : undefined);
+  if (!profileId) return buyer;
+  return {
+    ...buyer,
+    profileId,
+    profileName: dir.profileName.get(profileId) ?? null,
+  };
+}
+
+/**
+ * N1 (2026-10-16): usuarios de SAP que son la integración con Maximo, no
+ * personas. Nunca son el comprador (E4/F1): su OC, si su PO no está en el
+ * staging de Maximo (de donde saldría el comprador), va a "Sin comprador
+ * identificado" en los KPIs por persona. (Expeditación y los listados siguen
+ * diciendo "Capturó: …", que es un dato del documento.)
+ */
+export const SAP_INTEGRATION_USERS = ['FAVOR DE NO TOCAR USUARIO PP XAMAI'];
+
+/**
+ * N (2026-10-16): usuarios de sistema de Maximo (el código, no el nombre).
+ * Una OC que creó el sistema (p. ej. la automática de un contrato) y no trae
+ * PURCHASEAGENT no tiene comprador: va a "Sin comprador identificado" en los
+ * KPIs por persona, como la del usuario de la integración de SAP.
+ */
+export const MAXIMO_SYSTEM_USERS = ['MAXADMIN', 'MAXREG'];
+
+const isMaximoSystemUser = (code: string | null) =>
+  code !== null && MAXIMO_SYSTEM_USERS.includes(code.trim().toUpperCase());
+
+/** E4 con el perfil (N2): quien capturó la OC de SAP, ligado por su nombre. */
+export function sapKpiBuyer(
+  createdByName: string | null,
+  dir: PersonDirectory = EMPTY_DIRECTORY,
+): KpiBuyer {
+  const key = buyerKey(createdByName);
+  if (key && SAP_INTEGRATION_USERS.some((u) => buyerKey(u) === key)) {
+    return NO_BUYER;
+  }
+  return linkProfile(sapBuyer(createdByName), null, dir);
+}
 
 /**
  * E4/F1 de una OC de Maximo (o de la OC de SAP que nació allá) para los KPIs:
@@ -86,19 +227,25 @@ export function maximoKpiBuyer(
     created_by?: string | null;
   },
   aliases: Map<string, string>,
+  dir: PersonDirectory = EMPTY_DIRECTORY,
 ): KpiBuyer {
   const code = po.purchase_agent || po.created_by || null;
-  return {
-    ...maximoBuyer(
-      {
-        purchase_agent: po.purchase_agent ?? null,
-        purchase_agent_name: po.purchase_agent_name ?? null,
-        created_by: po.created_by ?? null,
-      },
-      aliases,
-    ),
-    alias: code !== null && aliases.has(code),
-  };
+  if (isMaximoSystemUser(code)) return { ...NO_BUYER, alias: false };
+  return linkProfile(
+    {
+      ...maximoBuyer(
+        {
+          purchase_agent: po.purchase_agent ?? null,
+          purchase_agent_name: po.purchase_agent_name ?? null,
+          created_by: po.created_by ?? null,
+        },
+        aliases,
+      ),
+      alias: code !== null && aliases.has(code),
+    },
+    code,
+    dir,
+  );
 }
 
 /** Comprador inferido (quien creó o capturó la OC) con nombre. */
@@ -118,11 +265,20 @@ export interface BuyerGroup<T> {
 }
 
 /**
- * Agrupa por persona con la llave plegada. Nombre del grupo = el del alias de
- * Compras si alguna OC lo trae; si no (o entre varios), la variante con más
- * OC (empate: la primera en orden alfabético). `weightOf` = OC que representa
- * cada elemento (renglón agrupado en M1; 1 por OC en M2). Los grupos salen en
- * el orden en que aparecen; el orden final lo pone cada KPI.
+ * N2: llave de la persona = su perfil, si se pudo ligar; si no, el nombre
+ * plegado. null = "Sin comprador identificado".
+ */
+export function personKey(buyer: KpiBuyer): string | null {
+  return buyer.profileId ? `perfil:${buyer.profileId}` : buyerKey(buyer.name);
+}
+
+/**
+ * Agrupa por persona (`personKey`). Nombre del grupo = el del perfil si está
+ * ligado; si no, el del alias de Compras si alguna OC lo trae; si no (o entre
+ * varios), la variante con más OC (empate: la primera en orden alfabético).
+ * `weightOf` = OC que representa cada elemento (renglón agrupado en M1; 1 por
+ * OC en M2). Los grupos salen en el orden en que aparecen; el orden final lo
+ * pone cada KPI.
  */
 export function groupByBuyer<T>(
   items: T[],
@@ -133,6 +289,7 @@ export function groupByBuyer<T>(
     string | null,
     {
       variants: Map<string, { oc: number; alias: boolean }>;
+      profileName: string | null;
       documentos: number;
       capturo: number;
       items: T[];
@@ -140,16 +297,18 @@ export function groupByBuyer<T>(
   >();
   for (const item of items) {
     const buyer = buyerOf(item);
-    const key = buyerKey(buyer.name);
+    const key = personKey(buyer);
     const weight = weightOf(item);
     const group = groups.get(key) ?? {
       variants: new Map<string, { oc: number; alias: boolean }>(),
+      profileName: null,
       documentos: 0,
       capturo: 0,
       items: [],
     };
     group.items.push(item);
     group.documentos += weight;
+    if (buyer.profileName) group.profileName = cleanName(buyer.profileName);
     if (key !== null && buyer.name) {
       const variant = cleanName(buyer.name);
       const seen = group.variants.get(variant) ?? { oc: 0, alias: false };
@@ -165,12 +324,14 @@ export function groupByBuyer<T>(
     comprador:
       key === null
         ? null
-        : [...g.variants.entries()].sort(
+        : (g.profileName ??
+          [...g.variants.entries()].sort(
             ([a, va], [b, vb]) =>
               Number(vb.alias) - Number(va.alias) ||
               vb.oc - va.oc ||
               a.localeCompare(b, 'es'),
-          )[0][0],
+          )[0]?.[0] ??
+          null),
     tipo: key === null ? null : g.capturo > 0 ? 'capturo' : 'comprador',
     documentos: g.documentos,
     documentos_capturo: g.capturo,
@@ -277,6 +438,146 @@ export function buildAhorro(entries: AhorroEntry[]) {
   };
 }
 
+// ── N1: monto adjudicado y ahorro por comprador ────────────────────────────
+
+/**
+ * N1: un renglón de las consultas de OC sin IVA (agrupadas por comprador y
+ * moneda), con los mismos filtros de la tarjeta de Órdenes del tablero.
+ */
+export interface AdjudicadoEntry {
+  fuente: 'sap' | 'maximo';
+  currency: string | null;
+  buyer: KpiBuyer;
+  /** Σ subtotal (sin IVA) de las OC que lo traen. */
+  total: number;
+  /** OC del renglón. */
+  count: number;
+  /** De esas, sin subtotal: no suman; se cuentan aparte, nunca como 0. */
+  sin_subtotal: number;
+}
+
+/** N1: monto adjudicado de una moneda (sin IVA) con las OC sin subtotal aparte. */
+export interface AdjudicadoAmount {
+  currency: string | null;
+  total: number;
+  count: number;
+  sin_subtotal: number;
+}
+
+/** Suma por moneda del adjudicado, sin convertir; de mayor a menor. */
+export function sumAdjudicado(
+  entries: Array<{
+    currency: string | null;
+    total: number;
+    count: number;
+    sin_subtotal: number;
+  }>,
+): AdjudicadoAmount[] {
+  const map = new Map<string, AdjudicadoAmount>();
+  for (const e of entries) {
+    if (e.count <= 0) continue;
+    const key = e.currency ?? 'sin_moneda';
+    const acc = map.get(key) ?? {
+      currency: e.currency,
+      total: 0,
+      count: 0,
+      sin_subtotal: 0,
+    };
+    acc.total += e.total;
+    acc.count += e.count;
+    acc.sin_subtotal += e.sin_subtotal;
+    map.set(key, acc);
+  }
+  return [...map.values()]
+    .map((a) => ({ ...a, total: round2(a.total) }))
+    .sort((a, b) => b.total - a.total);
+}
+
+export interface CompradorAdjudicado {
+  /** null = "Sin comprador identificado". */
+  comprador: string | null;
+  tipo: BuyerKind;
+  /** OC adjudicadas del periodo. */
+  documentos: number;
+  /** De esas, con comprador inferido (capturó o creó la OC). */
+  documentos_capturo: number;
+  /** Monto adjudicado sin IVA, por moneda. */
+  adjudicado: AdjudicadoAmount[];
+  /** Ahorro capturado (el de la tarjeta), por moneda. */
+  ahorro: { documentos: number; por_moneda: CurrencyAmount[] };
+}
+
+const mxnAdjudicado = (list: AdjudicadoAmount[]) =>
+  list.find((a) => a.currency === 'MXN')?.total ?? 0;
+
+/**
+ * N1: por persona, el monto adjudicado y el ahorro, de los mismos renglones
+ * que la tarjeta de Órdenes del tablero (adjudicado) y que "Ahorro acumulado"
+ * (ahorro). Orden: adjudicado en MXN de mayor a menor; "Sin comprador
+ * identificado" al final.
+ */
+export function compradoresAdjudicado(
+  adjudicado: AdjudicadoEntry[],
+  ahorro: AhorroEntry[],
+): CompradorAdjudicado[] {
+  type Item =
+    | { kind: 'adj'; e: AdjudicadoEntry }
+    | { kind: 'ahorro'; e: AhorroEntry };
+  const items: Item[] = [
+    ...adjudicado.map((e): Item => ({ kind: 'adj', e })),
+    ...ahorro.map((e): Item => ({ kind: 'ahorro', e })),
+  ];
+  return groupByBuyer(
+    items,
+    (i) => i.e.buyer,
+    // OC = las adjudicadas; el ahorro es de esas mismas OC
+    (i) => (i.kind === 'adj' ? i.e.count : 0),
+  )
+    .map((g) => {
+      const adj = g.items.flatMap((i) => (i.kind === 'adj' ? [i.e] : []));
+      const ah = g.items.flatMap((i) => (i.kind === 'ahorro' ? [i.e] : []));
+      return {
+        comprador: g.comprador,
+        tipo: g.tipo,
+        documentos: g.documentos,
+        documentos_capturo: g.documentos_capturo,
+        adjudicado: sumAdjudicado(adj),
+        ahorro: {
+          documentos: ah.reduce((sum, e) => sum + e.count, 0),
+          por_moneda: sumByCurrency(ah),
+        },
+      };
+    })
+    .sort(
+      (a, b) =>
+        Number(a.comprador === null) - Number(b.comprador === null) ||
+        mxnAdjudicado(b.adjudicado) - mxnAdjudicado(a.adjudicado) ||
+        b.documentos - a.documentos ||
+        byName(a.comprador, b.comprador),
+    );
+}
+
+/**
+ * N1: total del monto adjudicado (sin IVA) por moneda y por fuente: la suma
+ * de las barras por persona = este total = las OC sin IVA de la tarjeta de
+ * Órdenes del tablero (mismas OC, mismo periodo, D1).
+ */
+export function buildAdjudicado(entries: AdjudicadoEntry[]) {
+  const sap = entries.filter((e) => e.fuente === 'sap');
+  const maximo = entries.filter((e) => e.fuente === 'maximo');
+  const docs = (list: AdjudicadoEntry[]) =>
+    list.reduce((sum, e) => sum + e.count, 0);
+  return {
+    disponible: docs(entries) > 0,
+    documentos: docs(entries),
+    por_moneda: sumAdjudicado(entries),
+    por_fuente: {
+      sap: { documentos: docs(sap), por_moneda: sumAdjudicado(sap) },
+      maximo: { documentos: docs(maximo), por_moneda: sumAdjudicado(maximo) },
+    },
+  };
+}
+
 // ── M2: tiempo de gestión por comprador ────────────────────────────────────
 
 /** M2: días de un comprador con la misma cuenta de G2 (promedio, mediana y N). */
@@ -310,23 +611,24 @@ const tipoGestion = (comprador: string | null, capturo: number): BuyerKind =>
   comprador === null ? null : capturo > 0 ? 'capturo' : 'comprador';
 
 /**
- * M2: orden de las barras. Los de N ≥ `minOc` por promedio ascendente (el
- * más rápido arriba); luego los de menos OC; "Sin comprador identificado" al
- * final.
+ * N2 (2026-10-16): orden de la tabla. Los de N ≥ `minOc` por gestiones, de
+ * más a menos (empate: el más rápido primero); luego los de menos OC;
+ * "Sin comprador identificado" al final. (M2 los ordenaba por días.)
  */
-export function sortGestion(
-  list: GestionPorComprador[],
-  minOc = MIN_OC_GESTION,
-): GestionPorComprador[] {
-  const rank = (g: GestionPorComprador) =>
-    g.comprador === null ? 2 : g.total >= minOc ? 0 : 1;
-  const promedio = (g: GestionPorComprador) =>
-    g.promedio_dias ?? Number.MAX_VALUE;
+export function sortGestion<
+  T extends {
+    comprador: string | null;
+    total: number;
+    promedio_dias: number | null;
+  },
+>(list: T[], minOc = MIN_OC_GESTION): T[] {
+  const rank = (g: T) => (g.comprador === null ? 2 : g.total >= minOc ? 0 : 1);
+  const promedio = (g: T) => g.promedio_dias ?? Number.MAX_VALUE;
   return [...list].sort(
     (a, b) =>
       rank(a) - rank(b) ||
-      promedio(a) - promedio(b) ||
       b.total - a.total ||
+      promedio(a) - promedio(b) ||
       byName(a.comprador, b.comprador),
   );
 }
@@ -393,10 +695,88 @@ export function maximoGestionPorComprador(
   );
 }
 
+/** N2: gestiones de una persona en los dos sistemas. */
+export interface GestionAmbos {
+  comprador: string | null;
+  tipo: BuyerKind;
+  /** De las N, con comprador inferido. */
+  documentos_capturo: number;
+  /** Promedio y mediana de los días de cada OC de los dos sistemas. */
+  promedio_dias: number | null;
+  mediana_dias: number | null;
+  /** N = OC de SAP + OC de Maximo que entran en G2. */
+  total: number;
+  sap: number;
+  maximo: number;
+}
+
+export const GESTION_AMBOS_DEFINICION =
+  'Ambos sistemas: cada OC cuenta una vez en su sistema y mide desde su propia solicitud (SAP, la solicitud de pedido; Maximo, la PR); la N es la suma de las dos y el promedio y la mediana salen de los días de cada OC';
+
+/**
+ * N2: "Ambos" = SAP + Maximo juntos por persona. Los días de cada OC salen de
+ * las mismas funciones del tablero (`sapGestionValues`, `maximoGestionValues`,
+ * definición principal de Maximo: desde la creación de la PR); promedio y
+ * mediana se calculan sobre la unión, nunca promediando medianas.
+ */
+export function buildGestionAmbos(
+  sap: { pos: SapGestionOc[]; requests: SapGestionRequest[] },
+  maximo: MaximoGestionOc[],
+  minOc = MIN_OC_GESTION,
+) {
+  type Item = { sap: SapGestionOc } | { mx: MaximoGestionOc };
+  const items: Item[] = [
+    ...sap.pos.map((po): Item => ({ sap: po })),
+    ...maximo.map((r): Item => ({ mx: r })),
+  ];
+  const daysOf = (list: Item[], onlyInferred = false) => {
+    const sapItems = list.flatMap((i) =>
+      'sap' in i && (!onlyInferred || isInferred(i.sap.buyer)) ? [i.sap] : [],
+    );
+    const mxItems = list.flatMap((i) =>
+      'mx' in i && (!onlyInferred || isInferred(i.mx.buyer)) ? [i.mx] : [],
+    );
+    return {
+      sap: sapGestionValues(sapItems, sap.requests).days,
+      maximo: maximoGestionValues(mxItems).days,
+    };
+  };
+  const compradores = groupByBuyer(items, (i) =>
+    'sap' in i ? i.sap.buyer : i.mx.buyer,
+  ).map((g): GestionAmbos => {
+    const days = daysOf(g.items);
+    const inferred = daysOf(g.items, true);
+    const capturo = inferred.sap.length + inferred.maximo.length;
+    return {
+      comprador: g.comprador,
+      tipo: tipoGestion(g.comprador, capturo),
+      documentos_capturo: capturo,
+      ...averageAndMedian([...days.sap, ...days.maximo]),
+      total: days.sap.length + days.maximo.length,
+      sap: days.sap.length,
+      maximo: days.maximo.length,
+    };
+  });
+  const all = daysOf(items);
+  return {
+    definicion: GESTION_AMBOS_DEFINICION,
+    total: {
+      ...averageAndMedian([...all.sap, ...all.maximo]),
+      total: all.sap.length + all.maximo.length,
+      sap: all.sap.length,
+      maximo: all.maximo.length,
+    },
+    compradores: sortGestion(
+      compradores.filter((g) => g.total > 0),
+      minOc,
+    ),
+  };
+}
+
 /**
  * M2: bloque `gestion_por_comprador` de Órdenes. `total` = el mismo
  * resultado de G2 que el tablero (`summary.dias_gestion`) para las mismas OC;
- * las definiciones son las del tablero.
+ * las definiciones son las del tablero. N2: más `ambos`.
  */
 export function buildGestionPorComprador(
   sap: { pos: SapGestionOc[]; requests: SapGestionRequest[] },
@@ -418,5 +798,6 @@ export function buildGestionPorComprador(
       total_desde_aprobacion: maximoTotal.desde_aprobacion,
       compradores: maximoGestionPorComprador(maximo, minOc),
     },
+    ambos: buildGestionAmbos(sap, maximo, minOc),
   };
 }

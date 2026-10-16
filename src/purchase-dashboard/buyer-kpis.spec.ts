@@ -3,8 +3,11 @@ import {
   type AhorroEntry,
   ahorroPorComprador,
   buildAhorro,
+  buildGestionAmbos,
   buildGestionPorComprador,
+  buildPersonDirectory,
   buyerKey,
+  compradoresAdjudicado,
   groupByBuyer,
   type GestionPorComprador,
   maximoGestionPorComprador,
@@ -12,6 +15,7 @@ import {
   MIN_OC_GESTION,
   sapBuyer,
   sapGestionPorComprador,
+  sapKpiBuyer,
   sortGestion,
   sumByCurrency,
 } from './buyer-kpis';
@@ -23,6 +27,9 @@ import { maximoGestion, sapGestionDays } from './sap-gestion-days';
  * E4/F1; aquí se pinza cómo se junta a la misma persona, el tipo
  * ("comprador" o "capturó"), el orden de las barras y que las cuentas
  * cuadran con la tarjeta y el tablero.
+ *
+ * Bloque N (2026-10-16): la persona ligada a su perfil, adjudicado y ahorro
+ * por persona (N1) y gestiones de "Ambos" sistemas (N2).
  */
 const d = (iso: string) => new Date(`${iso}T00:00:00Z`);
 const comprador = (name: string): Buyer => ({ name, kind: 'comprador' });
@@ -490,5 +497,232 @@ describe('M2: tiempo de gestión por comprador', () => {
       'Jorge',
       null,
     ]);
+  });
+});
+
+describe('N2: la persona ligada a su perfil', () => {
+  const dir = buildPersonDirectory(
+    [
+      { code: 'IVTOG', profile_id: 'p-ingrid' },
+      { code: 'SINPERFIL', profile_id: null },
+    ],
+    [
+      { id: 'p-ingrid', full_name: 'Ingrid Torres Gutiérrez' },
+      { id: 'p-ana-1', full_name: 'Ana Pérez' },
+      { id: 'p-ana-2', full_name: 'ANA PEREZ' },
+    ],
+  );
+
+  it('SAP por su nombre (plegado) y Maximo por el alias ligado: el mismo perfil y su nombre', () => {
+    const sap = sapKpiBuyer('Ingrid Torres GUTIÉRREZ', dir);
+    const maximo = maximoKpiBuyer(
+      { created_by: 'IVTOG' },
+      new Map([['IVTOG', 'Ingrid']]),
+      dir,
+    );
+    expect(sap).toMatchObject({ profileId: 'p-ingrid' });
+    expect(maximo).toMatchObject({
+      name: 'Ingrid',
+      alias: true,
+      profileId: 'p-ingrid',
+      profileName: 'Ingrid Torres Gutiérrez',
+    });
+    const groups = groupByBuyer([sap, maximo], (b) => b);
+    expect(groups.map((g) => [g.comprador, g.documentos])).toEqual([
+      ['Ingrid Torres Gutiérrez', 2],
+    ]);
+  });
+
+  it('el usuario de la integración de SAP nunca es comprador: sin comprador identificado', () => {
+    expect(sapKpiBuyer('FAVOR DE NO TOCAR USUARIO PP XAMAI', dir)).toEqual({
+      name: null,
+      kind: null,
+    });
+    expect(sapKpiBuyer('Favor de no tocar usuario PP Xamai')).toEqual({
+      name: null,
+      kind: null,
+    });
+  });
+
+  it('el alias ligado nombra igual que SAP pero el perfil tiene otro nombre: una sola persona (revisión N)', () => {
+    const dir2 = buildPersonDirectory(
+      [
+        {
+          code: 'IVTOG',
+          display_name: 'Ingrid Torres Gutiérrez',
+          profile_id: 'p-ingrid',
+        },
+      ],
+      [{ id: 'p-ingrid', full_name: 'Ingrid Torres', is_active: true }],
+    );
+    const sap = sapKpiBuyer('Ingrid Torres GUTIÉRREZ', dir2);
+    const maximo = maximoKpiBuyer(
+      { created_by: 'IVTOG' },
+      new Map([['IVTOG', 'Ingrid Torres Gutiérrez']]),
+      dir2,
+    );
+    expect(
+      groupByBuyer([sap, maximo], (b) => b).map((g) => [
+        g.comprador,
+        g.documentos,
+      ]),
+    ).toEqual([['Ingrid Torres', 2]]);
+  });
+
+  it('perfil inactivo ligado por su alias: conserva su nombre; por nombre solo ligan los activos', () => {
+    const dir2 = buildPersonDirectory(
+      [{ code: 'JAGS1', display_name: 'Jorge', profile_id: 'p-jorge' }],
+      [{ id: 'p-jorge', full_name: 'Jorge González', is_active: false }],
+    );
+    expect(
+      maximoKpiBuyer({ created_by: 'JAGS1' }, new Map(), dir2),
+    ).toMatchObject({ profileId: 'p-jorge', profileName: 'Jorge González' });
+    expect(sapKpiBuyer('Jorge González', dir2).profileId).toBeUndefined();
+  });
+
+  it('usuarios de sistema de Maximo (MAXADMIN, MAXREG): sin comprador', () => {
+    expect(
+      maximoKpiBuyer(
+        { created_by: 'maxadmin' },
+        new Map([['maxadmin', 'MAXADMIN (usuario del sistema)']]),
+      ),
+    ).toEqual({ name: null, kind: null, alias: false });
+    expect(maximoKpiBuyer({ created_by: 'MAXREG' }, new Map())).toMatchObject({
+      name: null,
+    });
+  });
+
+  it('dos perfiles con el mismo nombre: no se adivina (queda por nombre)', () => {
+    expect(sapKpiBuyer('Ana Pérez', dir).profileId).toBeUndefined();
+  });
+});
+
+describe('N1: adjudicado y ahorro por persona', () => {
+  it('junta adjudicado y ahorro de la misma persona; OC = las adjudicadas; orden por adjudicado en MXN; sin comprador al final', () => {
+    const adj = (
+      fuente: 'sap' | 'maximo',
+      buyer: Buyer,
+      currency: string,
+      total: number,
+      count: number,
+      sin_subtotal = 0,
+    ) => ({ fuente, buyer, currency, total, count, sin_subtotal });
+    const list = compradoresAdjudicado(
+      [
+        adj('sap', capturo('Beto'), 'MXN', 100, 2),
+        adj('maximo', capturo('Carla'), 'MXN', 900.5, 3, 1),
+        adj('sap', nadie, 'MXN', 5000, 1),
+        adj('maximo', capturo('BETO'), 'USD', 10, 1),
+      ],
+      [ahorro('maximo', capturo('Carla'), 'MXN', 45, 2)],
+    );
+    expect(list).toEqual([
+      {
+        comprador: 'Carla',
+        tipo: 'capturo',
+        documentos: 3,
+        documentos_capturo: 3,
+        adjudicado: [
+          { currency: 'MXN', total: 900.5, count: 3, sin_subtotal: 1 },
+        ],
+        ahorro: {
+          documentos: 2,
+          por_moneda: [{ currency: 'MXN', total: 45, count: 2 }],
+        },
+      },
+      {
+        comprador: 'Beto',
+        tipo: 'capturo',
+        documentos: 3,
+        documentos_capturo: 3,
+        adjudicado: [
+          { currency: 'MXN', total: 100, count: 2, sin_subtotal: 0 },
+          { currency: 'USD', total: 10, count: 1, sin_subtotal: 0 },
+        ],
+        ahorro: { documentos: 0, por_moneda: [] },
+      },
+      {
+        comprador: null,
+        tipo: null,
+        documentos: 1,
+        documentos_capturo: 0,
+        adjudicado: [
+          { currency: 'MXN', total: 5000, count: 1, sin_subtotal: 0 },
+        ],
+        ahorro: { documentos: 0, por_moneda: [] },
+      },
+    ]);
+  });
+});
+
+describe('N2: gestiones de "Ambos" sistemas', () => {
+  it('N = SAP + Maximo; promedio y mediana de los días de cada OC (no el promedio de las medianas)', () => {
+    const sapPo = (doc: number, base: number, day: string, buyer: Buyer) => ({
+      doc_entry: doc,
+      doc_date: d(day),
+      base_request_entries: [base],
+      buyer,
+    });
+    const requests = [{ doc_entry: 1, doc_date: d('2026-03-01') }];
+    const ana = capturo('Ana');
+    const result = buildGestionAmbos(
+      {
+        // SAP: 1, 2 y 30 días (mediana 2)
+        pos: [
+          sapPo(10, 1, '2026-03-02', ana),
+          sapPo(11, 1, '2026-03-03', ana),
+          sapPo(12, 1, '2026-03-31', ana),
+        ],
+        requests,
+      },
+      // Maximo: 4 y 5 días (mediana 4.5)
+      [
+        { dias: '4', dias_desde_aprobacion: null, buyer: ana },
+        { dias: '5', dias_desde_aprobacion: null, buyer: ana },
+        { dias: null, dias_desde_aprobacion: null, buyer: capturo('Beto') },
+      ],
+    );
+    // 1, 2, 4, 5, 30 → promedio 8.4 y mediana 4 (las medianas promediadas
+    // darían 3.25)
+    expect(result.total).toEqual({
+      promedio_dias: 8.4,
+      mediana_dias: 4,
+      total: 5,
+      sap: 3,
+      maximo: 2,
+    });
+    // Beto no tiene OC en el promedio: no sale
+    expect(result.compradores).toEqual([
+      {
+        comprador: 'Ana',
+        tipo: 'capturo',
+        documentos_capturo: 5,
+        promedio_dias: 8.4,
+        mediana_dias: 4,
+        total: 5,
+        sap: 3,
+        maximo: 2,
+      },
+    ]);
+  });
+
+  it('orden: por gestiones (N ≥ min_oc), empate el más rápido; luego los de menos OC; sin comprador al final', () => {
+    const g = (comprador: string | null, total: number, promedio: number) => ({
+      comprador,
+      total,
+      promedio_dias: promedio,
+    });
+    expect(
+      sortGestion(
+        [
+          g(null, 50, 1),
+          g('Lenta', 3, 40),
+          g('Poca', 2, 1),
+          g('Mucha', 9, 30),
+          g('Rápida', 3, 5),
+        ],
+        3,
+      ).map((x) => x.comprador),
+    ).toEqual(['Mucha', 'Rápida', 'Lenta', 'Poca', null]);
   });
 });

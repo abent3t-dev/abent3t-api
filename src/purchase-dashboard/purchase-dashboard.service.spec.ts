@@ -26,6 +26,10 @@
  * Bloque M (2026-10-14): M1 ahorro y M2 días de gestión por comprador en
  * Órdenes, con OC sintéticas de SAP y Maximo (un "Postgres de juguete" que
  * agrupa como las consultas y aplica D1 y el año solo si el SQL los trae).
+ *
+ * Bloque N (2026-10-16): N1 monto adjudicado sin IVA por persona (= la
+ * tarjeta de Órdenes del tablero), N2 "Ambos" y la persona ligada a su
+ * perfil, N3 desde cuándo hay ahorro capturado.
  */
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -45,7 +49,12 @@ const erpViews = jest.requireActual<{ TABLERO_MONTO_BASE: string }>(
 
 function makeService(sapEnabled: boolean | string = true) {
   const queryRaw = jest.fn();
-  const prisma = { $queryRaw: queryRaw } as unknown as PrismaService;
+  // N2: perfiles activos para ligar a cada persona (ninguno por defecto)
+  const profilesFindMany = jest.fn().mockResolvedValue([]);
+  const prisma = {
+    $queryRaw: queryRaw,
+    profiles: { findMany: profilesFindMany },
+  } as unknown as PrismaService;
   const config = {
     get: (key: string) =>
       key === 'SAP_SYNC_ENABLED'
@@ -56,11 +65,22 @@ function makeService(sapEnabled: boolean | string = true) {
   } as unknown as ConfigService;
   // M1/M2: alias de Compras de los códigos de Maximo (sin alias por defecto)
   const resolveMany = jest.fn().mockResolvedValue(new Map<string, string>());
-  const aliases = { resolveMany } as unknown as ErpAliasesService;
+  // N2: alias con su perfil ligado (ninguno por defecto)
+  const byCode = jest
+    .fn()
+    .mockResolvedValue(
+      new Map<
+        string,
+        { code: string; display_name: string; profile_id: string | null }
+      >(),
+    );
+  const aliases = { resolveMany, byCode } as unknown as ErpAliasesService;
   return {
     service: new PurchaseDashboardService(prisma, config, aliases),
     queryRaw,
     resolveMany,
+    byCode,
+    profilesFindMany,
   };
 }
 
@@ -714,6 +734,7 @@ const SAP_OC = [
     created_by_name: 'Jorge Sandoval',
     maximo_ponum: null,
     ahorro_total: '1000.10',
+    subtotal: '900',
     base_request_entries: [100],
   },
   {
@@ -723,6 +744,7 @@ const SAP_OC = [
     created_by_name: 'JORGE  SANDOVAL',
     maximo_ponum: null,
     ahorro_total: '0.20',
+    subtotal: '100',
     base_request_entries: [100],
   },
   {
@@ -732,6 +754,7 @@ const SAP_OC = [
     created_by_name: 'Jorge Sandoval',
     maximo_ponum: null,
     ahorro_total: '50.25',
+    subtotal: '45',
     base_request_entries: [100, 101],
   },
   // sin quien la capturó → "Sin comprador identificado"; 1 día
@@ -742,6 +765,7 @@ const SAP_OC = [
     created_by_name: null,
     maximo_ponum: null,
     ahorro_total: '300',
+    subtotal: null,
     base_request_entries: [102],
   },
   // migrada: su copia de SAP no cuenta en el ahorro (D1); G2 sí (por
@@ -753,6 +777,7 @@ const SAP_OC = [
     created_by_name: 'FAVOR DE NO TOCAR USUARIO PP XAMAI',
     maximo_ponum: 'PO500',
     ahorro_total: '700',
+    subtotal: '650',
     base_request_entries: [101],
   },
   // Ana Pérez: 4 días; una negativa y una con la solicitud sin sincronizar
@@ -763,6 +788,7 @@ const SAP_OC = [
     created_by_name: 'Ana Pérez',
     maximo_ponum: null,
     ahorro_total: null,
+    subtotal: '200',
     base_request_entries: [101],
   },
   {
@@ -772,6 +798,7 @@ const SAP_OC = [
     created_by_name: 'Ana Pérez',
     maximo_ponum: null,
     ahorro_total: null,
+    subtotal: '300',
     base_request_entries: [101],
   },
   {
@@ -781,6 +808,7 @@ const SAP_OC = [
     created_by_name: 'Ana Pérez',
     maximo_ponum: null,
     ahorro_total: null,
+    subtotal: '50.5',
     base_request_entries: [999],
   },
   // 2025: solo cuenta sin año (10 días)
@@ -791,6 +819,7 @@ const SAP_OC = [
     created_by_name: 'Jorge Sandoval',
     maximo_ponum: null,
     ahorro_total: '99',
+    subtotal: '80',
     base_request_entries: [103],
   },
 ];
@@ -811,6 +840,7 @@ const MAXIMO_OC = [
     purchase_agent_name: null,
     created_by: 'VMM3',
     ab_ahorro: '700',
+    subtotal: '620',
     dias: '7',
     dias_desde_aprobacion: '3',
   },
@@ -823,6 +853,7 @@ const MAXIMO_OC = [
     purchase_agent_name: 'Ana Aurora Mondragón',
     created_by: 'VMM3',
     ab_ahorro: '2000',
+    subtotal: '1800',
     dias: '12',
     dias_desde_aprobacion: '5',
   },
@@ -835,6 +866,7 @@ const MAXIMO_OC = [
     purchase_agent_name: null,
     created_by: 'AMONDRAG',
     ab_ahorro: '500.5',
+    subtotal: null,
     dias: '20',
     dias_desde_aprobacion: '10',
   },
@@ -846,6 +878,7 @@ const MAXIMO_OC = [
     purchase_agent_name: null,
     created_by: 'AMONDRAG',
     ab_ahorro: '0.1',
+    subtotal: '10',
     dias: '16',
     dias_desde_aprobacion: null,
   },
@@ -858,6 +891,7 @@ const MAXIMO_OC = [
     purchase_agent_name: null,
     created_by: 'JSANDOVAL',
     ab_ahorro: '10',
+    subtotal: '9',
     dias: null,
     dias_desde_aprobacion: null,
   },
@@ -870,6 +904,7 @@ const MAXIMO_OC = [
     purchase_agent_name: null,
     created_by: 'VMM3',
     ab_ahorro: null,
+    subtotal: '400',
     dias: '-2',
     dias_desde_aprobacion: '-1',
   },
@@ -882,6 +917,7 @@ const MAXIMO_OC = [
     purchase_agent_name: null,
     created_by: null,
     ab_ahorro: null,
+    subtotal: '70',
     dias: '3',
     dias_desde_aprobacion: '2',
   },
@@ -894,6 +930,7 @@ const MAXIMO_OC = [
     purchase_agent_name: null,
     created_by: 'AMONDRAG',
     ab_ahorro: '42',
+    subtotal: '40',
     dias: '30',
     dias_desde_aprobacion: '20',
   },
@@ -939,8 +976,107 @@ function fakeDb(q: FakeQuery): unknown[] {
   const sql = norm(q.sql);
   const [from, to] = q.values.filter((v): v is Date => v instanceof Date);
   const inPeriod = (date: Date) => !from || (date >= from && date < to);
+  const enMaximo = new Set(MAXIMO_OC.map((m) => m.ponum));
+  // D1 tal como lo arma cada consulta (alias `po` o la tabla)
+  const sapCountedOnce = (o: (typeof SAP_OC)[number]) =>
+    !(
+      (sql.includes(D1_SAP_PO) ||
+        sql.includes(
+          'sap_purchase_orders.maximo_ponum IS NOT NULL AND EXISTS',
+        )) &&
+      o.maximo_ponum !== null &&
+      enMaximo.has(o.maximo_ponum)
+    );
+  /** GROUP BY con el subtotal sin IVA (poSubtotalColumns). */
+  const groupSubtotal = <T extends { subtotal: string | null }>(
+    rows: T[],
+    keyOf: (row: T) => Record<string, unknown>,
+  ) => {
+    const groups = new Map<
+      string,
+      {
+        key: Record<string, unknown>;
+        subtotal: number;
+        sin_subtotal: number;
+        count: number;
+      }
+    >();
+    for (const row of rows) {
+      const key = keyOf(row);
+      const id = JSON.stringify(key);
+      const g = groups.get(id) ?? {
+        key,
+        subtotal: 0,
+        sin_subtotal: 0,
+        count: 0,
+      };
+      if (row.subtotal === null) g.sin_subtotal += 1;
+      else g.subtotal += Number(row.subtotal);
+      g.count += 1;
+      groups.set(id, g);
+    }
+    return [...groups.values()].map((g) => ({
+      ...g.key,
+      total: '0',
+      subtotal: g.subtotal.toFixed(2),
+      sin_subtotal: g.sin_subtotal,
+      count: g.count,
+    }));
+  };
+  // N3: primera OC con ahorro de cada sistema
+  if (sql.includes('min(po.doc_date)')) {
+    const sapDates = SAP_OC.filter(
+      (o) => o.ahorro_total !== null && sapCountedOnce(o),
+    ).map((o) => o.doc_date.getTime());
+    const mxDates = MAXIMO_OC.filter((o) => o.ab_ahorro !== null).map((o) =>
+      o.created_at_source.getTime(),
+    );
+    return [
+      {
+        sap: sapDates.length ? new Date(Math.min(...sapDates)) : null,
+        maximo: mxDates.length ? new Date(Math.min(...mxDates)) : null,
+      },
+    ];
+  }
+  // N1: OC de SAP sin IVA por quien la capturó
+  if (sql.includes('sum(po.subtotal)')) {
+    return groupSubtotal(
+      SAP_OC.filter((o) => inPeriod(o.doc_date) && sapCountedOnce(o)),
+      (o) => ({ currency: o.currency, created_by_name: o.created_by_name }),
+    );
+  }
+  // N1: OC de Maximo sin IVA por PURCHASEAGENT/creador
+  if (sql.includes('sum(c.subtotal)') && sql.includes('c.purchase_agent')) {
+    return groupSubtotal(
+      MAXIMO_OC.filter((o) => inPeriod(o.created_at_source)),
+      (o) => ({
+        currency: o.currency,
+        purchase_agent: o.purchase_agent,
+        purchase_agent_name: o.purchase_agent_name,
+        created_by: o.created_by,
+      }),
+    );
+  }
+  // tablero: tarjeta de Órdenes (SAP y Maximo), con su subtotal
+  if (sql.includes('sum(sap_purchase_orders.subtotal)')) {
+    return groupSubtotal(
+      SAP_OC.filter((o) => inPeriod(o.doc_date) && sapCountedOnce(o)),
+      (o) => ({ currency: o.currency }),
+    );
+  }
+  // (se reconoce por agrupar solo por moneda, no por la base del monto, que
+  // puede cambiar con TABLERO_MONTO_BASE)
+  if (
+    sql.includes('sum(c.subtotal)') &&
+    !sql.includes('c.purchase_agent') &&
+    sql.includes('GROUP BY c.currency')
+  ) {
+    return groupSubtotal(
+      MAXIMO_OC.filter((o) => inPeriod(o.created_at_source)),
+      (o) => ({ currency: o.currency }),
+    );
+  }
   if (sql.includes('po.ahorro_total IS NOT NULL')) {
-    const enMaximo = new Set(MAXIMO_OC.map((m) => m.ponum));
     const d1 = sql.includes(D1_SAP_PO);
     return groupBy(
       SAP_OC.filter(
@@ -1138,11 +1274,15 @@ describe('Bloque M: ahorro por comprador (M1)', () => {
       // cuenta la migrada) y agrupado por PURCHASEAGENT/creador; el año va
       // en los parámetros (rango [1-ene, 1-ene siguiente))
       const queries = queriesOf(queryRaw);
-      const sapAhorro = queries.filter((q) =>
-        q.sql.includes('po.ahorro_total IS NOT NULL'),
+      const sapAhorro = queries.filter(
+        (q) =>
+          q.sql.includes('po.ahorro_total IS NOT NULL') &&
+          !q.sql.includes('min(po.doc_date)'),
       );
-      const maximoAhorro = queries.filter((q) =>
-        q.sql.includes('ab_ahorro IS NOT NULL'),
+      const maximoAhorro = queries.filter(
+        (q) =>
+          q.sql.includes('ab_ahorro IS NOT NULL') &&
+          !q.sql.includes('min(po.doc_date)'),
       );
       expect(sapAhorro).toHaveLength(1);
       expect(maximoAhorro).toHaveLength(1);
@@ -1271,7 +1411,7 @@ describe('Bloque M: tiempo de gestión por comprador (M2)', () => {
         total: 3,
         descartadas: 0,
       },
-      // N < 3: después, por promedio
+      // N < 3: después (N2: por gestiones; empate, el más rápido primero)
       {
         comprador: 'Ana Pérez',
         tipo: 'capturo',
@@ -1363,5 +1503,242 @@ describe('Bloque M: tiempo de gestión por comprador (M2)', () => {
     expect(g.maximo.total.promedio_dias).toBeNull();
     expect(g.sap.compradores).toEqual([]);
     expect(g.maximo.compradores).toEqual([]);
+  });
+});
+
+/** N1: Σ por moneda del adjudicado (monto a centavos, OC y OC sin subtotal). */
+function sumAdj(
+  lists: Array<
+    Array<{
+      currency: string | null;
+      total?: number;
+      subtotal?: number;
+      count: number;
+      sin_subtotal?: number;
+    }>
+  >,
+  field: 'total' | 'subtotal',
+) {
+  const map = new Map<
+    string | null,
+    { total: number; count: number; sin_subtotal: number }
+  >();
+  for (const list of lists) {
+    for (const m of list) {
+      const acc = map.get(m.currency) ?? {
+        total: 0,
+        count: 0,
+        sin_subtotal: 0,
+      };
+      acc.total = Math.round((acc.total + (m[field] ?? 0)) * 100) / 100;
+      acc.count += m.count;
+      acc.sin_subtotal += m.sin_subtotal ?? 0;
+      map.set(m.currency, acc);
+    }
+  }
+  return [...map.entries()]
+    .map(([currency, a]) => ({ currency, ...a }))
+    .sort((a, b) => (a.currency ?? '').localeCompare(b.currency ?? ''));
+}
+
+describe('Bloque N: monto adjudicado y ahorro por persona (N1)', () => {
+  it.each([2026, null])(
+    'año %p: Σ adjudicado por persona = total sin IVA de Órdenes = tarjeta de Órdenes del tablero; Σ ahorro = "Ahorro acumulado"',
+    async (year) => {
+      const { service } = makeFakeService();
+      const kpis = await service.getOrdersKpis(year);
+      const summary = await service.getSummary(year);
+
+      const barras = sumAdj(
+        kpis.compradores.map((c) => c.adjudicado),
+        'total',
+      );
+      expect(barras).toEqual(sumAdj([kpis.adjudicado.por_moneda], 'total'));
+      // la misma base que la tarjeta de Órdenes del tablero (SAP + Maximo,
+      // subtotal sin IVA, OC y OC sin subtotal)
+      expect(barras).toEqual(
+        sumAdj(
+          [
+            summary.ordenes.por_fuente.sap.monto_por_moneda,
+            summary.ordenes.por_fuente.maximo.monto_por_moneda,
+          ],
+          'subtotal',
+        ),
+      );
+      // el ahorro por persona = la tarjeta "Ahorro acumulado"
+      expect(sumOfBars(kpis.compradores.map((c) => c.ahorro))).toEqual(
+        byCurrencyCode(kpis.ahorro.por_moneda).map(
+          ({ currency, total, count }) => ({ currency, total, count }),
+        ),
+      );
+    },
+  );
+
+  it('2026: orden por adjudicado en MXN; la migrada una vez (del lado de Maximo); quien no tiene ahorro sale con 0 OC de ahorro; sin comprador al final', async () => {
+    const { service, queryRaw } = makeFakeService();
+    const kpis = await service.getOrdersKpis(2026);
+    expect(
+      kpis.compradores.map((c) => [
+        c.comprador,
+        c.adjudicado.find((m) => m.currency === 'MXN'),
+      ]),
+    ).toEqual([
+      // PO600 1,800 + PO602 10; PO601 sin subtotal: cuenta en OC, no en el monto
+      [
+        'Ana Aurora Mondragón',
+        { currency: 'MXN', total: 1810, count: 3, sin_subtotal: 1 },
+      ],
+      // PO500 620 (la copia de SAP, OC 5, no se cuenta: D1) + PO604 400
+      [
+        'Víctor Martínez',
+        { currency: 'MXN', total: 1020, count: 2, sin_subtotal: 0 },
+      ],
+      [
+        'Jorge Sandoval',
+        { currency: 'MXN', total: 1000, count: 2, sin_subtotal: 0 },
+      ],
+      [
+        'Ana Pérez',
+        { currency: 'MXN', total: 550.5, count: 3, sin_subtotal: 0 },
+      ],
+      [null, { currency: 'MXN', total: 70, count: 2, sin_subtotal: 1 }],
+    ]);
+    const anaPerez = kpis.compradores.find((c) => c.comprador === 'Ana Pérez');
+    expect(anaPerez?.ahorro).toEqual({ documentos: 0, por_moneda: [] });
+    const jorge = kpis.compradores.find(
+      (c) => c.comprador === 'Jorge Sandoval',
+    );
+    expect(jorge?.adjudicado).toContainEqual({
+      currency: 'USD',
+      total: 54,
+      count: 2,
+      sin_subtotal: 0,
+    });
+    expect(kpis.adjudicado.monto_base).toBe('sin_iva');
+    // SQL: SAP con D1 y el año en los parámetros; Maximo sin D1
+    const queries = queriesOf(queryRaw);
+    const sapAdj = queries.filter((q) => q.sql.includes('sum(po.subtotal)'));
+    const mxAdj = queries.filter(
+      (q) =>
+        q.sql.includes('sum(c.subtotal)') && q.sql.includes('c.purchase_agent'),
+    );
+    expect(sapAdj).toHaveLength(1);
+    expect(mxAdj).toHaveLength(1);
+    expect(norm(sapAdj[0].sql)).toContain(D1_SAP_PO);
+    expect(mxAdj[0].sql).not.toContain('maximo_ponum');
+    const bounds = [d('2026-01-01'), d('2027-01-01')];
+    expect(sapAdj[0].values).toEqual(bounds);
+    expect(mxAdj[0].values).toEqual(bounds);
+  });
+
+  it('N3: ahorro capturado desde = la primera OC con ahorro de cada sistema (sin año y contando una vez)', async () => {
+    const { service } = makeFakeService();
+    const kpis = await service.getOrdersKpis(2026);
+    expect(kpis.ahorro.desde).toEqual({
+      sap: '2025-11-30T00:00:00.000Z',
+      maximo: '2025-07-01T00:00:00.000Z',
+    });
+  });
+
+  it('sin OC → adjudicado no disponible, sin personas y sin fecha de ahorro', async () => {
+    const { service, queryRaw } = makeService();
+    queryRaw.mockResolvedValue([]);
+    const kpis = await service.getOrdersKpis(2026);
+    expect(kpis.adjudicado).toMatchObject({
+      disponible: false,
+      documentos: 0,
+      por_moneda: [],
+    });
+    expect(kpis.compradores).toEqual([]);
+    expect(kpis.ahorro.desde).toEqual({ sap: null, maximo: null });
+  });
+});
+
+describe('Bloque N: la misma persona entre SAP y Maximo (N2)', () => {
+  /** Jorge con un alias corto ligado a su perfil, que se llama como en SAP. */
+  function withLinkedJorge(linked: boolean) {
+    const harness = makeFakeService();
+    harness.resolveMany.mockImplementation(
+      (_s: string, codes: Array<string | null | undefined>) =>
+        resolveAliases(_s, codes).then(
+          (names) =>
+            new Map(
+              [...names].map(([code, name]) => [
+                code,
+                code === 'JSANDOVAL' ? 'Jorge S.' : name,
+              ]),
+            ),
+        ),
+    );
+    harness.byCode.mockResolvedValue(
+      new Map([
+        [
+          'jsandoval',
+          {
+            code: 'JSANDOVAL',
+            display_name: 'Jorge S.',
+            profile_id: linked ? 'p-jorge' : null,
+          },
+        ],
+      ]),
+    );
+    harness.profilesFindMany.mockResolvedValue(
+      linked
+        ? [{ id: 'p-jorge', full_name: 'Jorge Sandoval', is_active: true }]
+        : [],
+    );
+    return harness;
+  }
+
+  it('con el alias ligado al perfil: una sola persona aunque SAP y Maximo escriban su nombre distinto; sin ligar, dos', async () => {
+    const ligado = await withLinkedJorge(true).service.getOrdersKpis(2026);
+    expect(
+      ligado.compradores
+        .filter((c) => /jorge/i.test(c.comprador ?? ''))
+        .map((c) => [c.comprador, c.documentos]),
+    ).toEqual([['Jorge Sandoval', 4]]);
+
+    const suelto = await withLinkedJorge(false).service.getOrdersKpis(2026);
+    expect(
+      suelto.compradores
+        .filter((c) => /jorge/i.test(c.comprador ?? ''))
+        .map((c) => [c.comprador, c.documentos])
+        .sort(),
+    ).toEqual([
+      ['Jorge S.', 1],
+      ['Jorge Sandoval', 3],
+    ]);
+  });
+
+  it('"Ambos": N = SAP + Maximo; promedio y mediana de los días de cada OC; orden por gestiones', async () => {
+    const { service } = makeFakeService();
+    const { gestion_por_comprador: g } = await service.getOrdersKpis(2026);
+    // SAP 10, 20, 30, 1, 7, 4 y Maximo 12, 20, 16, 7, 3 → 11 OC
+    expect(g.ambos.total).toEqual({
+      promedio_dias: 11.8,
+      mediana_dias: 10,
+      total: 11,
+      sap: 6,
+      maximo: 5,
+    });
+    expect(g.ambos.total.total).toBe(g.sap.total.total + g.maximo.total.total);
+    expect(
+      g.ambos.compradores.map((c) => [
+        c.comprador,
+        c.total,
+        c.sap,
+        c.maximo,
+        c.promedio_dias,
+        c.mediana_dias,
+      ]),
+    ).toEqual([
+      // N ≥ 3 por gestiones; empate: el más rápido primero
+      ['Ana Aurora Mondragón', 3, 0, 3, 16, 16],
+      ['Jorge Sandoval', 3, 3, 0, 20, 20],
+      // Víctor: la OC 5 de SAP (comprador de Maximo) y PO500
+      ['Víctor Martínez', 2, 1, 1, 7, 7],
+      ['Ana Pérez', 1, 1, 0, 4, 4],
+      [null, 2, 1, 1, 2, 2],
+    ]);
   });
 });

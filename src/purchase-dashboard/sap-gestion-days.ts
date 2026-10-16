@@ -68,10 +68,15 @@ export function gestionDays(from: Date, to: Date): number | null {
   return value < 0 ? null : value;
 }
 
-export function sapGestionDays(
+/**
+ * N2 (2026-10-16): los días de cada OC de SAP que entran en G2 (y cuántas se
+ * descartan). `sapGestionDays` los resume; "Ambos" junta estos valores con
+ * los de Maximo para sacar promedio y mediana de los días de cada OC.
+ */
+export function sapGestionValues(
   orders: SapGestionPo[],
   requests: SapGestionRequest[],
-): SapGestionResult {
+): { days: number[]; descartadas: number } {
   const requestDate = new Map<number, Date>();
   for (const r of requests) {
     if (r.doc_date) requestDate.set(r.doc_entry, r.doc_date);
@@ -95,6 +100,14 @@ export function sapGestionDays(
     }
     days.push(value);
   }
+  return { days, descartadas };
+}
+
+export function sapGestionDays(
+  orders: SapGestionPo[],
+  requests: SapGestionRequest[],
+): SapGestionResult {
+  const { days, descartadas } = sapGestionValues(orders, requests);
   return { ...averageAndMedian(days), total: days.length, descartadas };
 }
 
@@ -110,9 +123,12 @@ export interface MaximoGestionResult extends SapGestionResult {
  * no la trae, la de la PR en AB_CONTRATOS, K4.3). `dias` null = OC sin
  * solicitud; negativos (OC fechada antes que su PR) se descartan.
  */
-export function maximoGestionDays(
-  rows: Array<{ dias: unknown }>,
-): MaximoGestionResult {
+/** N2: los días de cada OC de Maximo que entran en G2 (ver `sapGestionValues`). */
+export function maximoGestionValues(rows: Array<{ dias: unknown }>): {
+  days: number[];
+  descartadas: number;
+  sin_solicitud: number;
+} {
   const days: number[] = [];
   let descartadas = 0;
   let sinSolicitud = 0;
@@ -128,11 +144,18 @@ export function maximoGestionDays(
     }
     days.push(value);
   }
+  return { days, descartadas, sin_solicitud: sinSolicitud };
+}
+
+export function maximoGestionDays(
+  rows: Array<{ dias: unknown }>,
+): MaximoGestionResult {
+  const { days, descartadas, sin_solicitud } = maximoGestionValues(rows);
   return {
     ...averageAndMedian(days),
     total: days.length,
     descartadas,
-    sin_solicitud: sinSolicitud,
+    sin_solicitud,
   };
 }
 

@@ -33,11 +33,15 @@ import {
 } from './sap-gestion-days';
 import { loadPendingRequests } from './pending-requests';
 import {
+  type AdjudicadoEntry,
   type AhorroEntry,
+  buildAdjudicado,
   buildAhorro,
   buildGestionPorComprador,
+  buildPersonDirectory,
+  compradoresAdjudicado,
   maximoKpiBuyer,
-  sapBuyer,
+  sapKpiBuyer,
 } from './buyer-kpis';
 
 /**
@@ -97,6 +101,10 @@ import {
  * gestión de G2 (M2) POR COMPRADOR (regla E4/F1; ver buyer-kpis.ts). Las OC
  * de G2 de SAP salen de `sapGestionSql`, la misma consulta para el tablero y
  * Órdenes.
+ *
+ * Bloque N (2026-10-16, Ingrid): por persona, el monto adjudicado sin IVA
+ * junto al ahorro (N1), las gestiones de los dos sistemas juntas (N2) y desde
+ * cuándo hay ahorro capturado (N3).
  */
 
 export interface CurrencyAmount {
@@ -178,6 +186,18 @@ type MaximoAhorroRow = MaximoBuyerFields & {
 };
 /** M2: comprador de Maximo de una OC de SAP que nació allá (por PONUM). */
 type MaximoPonumBuyerRow = MaximoBuyerFields & { ponum: string };
+/** N1: OC sin IVA de SAP por quien la capturó y moneda. */
+type SapAdjudicadoRow = SapAhorroRow & {
+  subtotal: unknown;
+  sin_subtotal: number;
+};
+/** N1: OC sin IVA de Maximo por PURCHASEAGENT/creador y moneda. */
+type MaximoAdjudicadoRow = MaximoAhorroRow & {
+  subtotal: unknown;
+  sin_subtotal: number;
+};
+/** N3: primera OC con ahorro capturado, por sistema. */
+type AhorroDesdeRow = { sap: Date | null; maximo: Date | null };
 type ClasRow = {
   clas: string | null;
   currency: string | null;
@@ -571,6 +591,14 @@ export class PurchaseDashboardService {
    *    por fuente) y las barras: la suma de las barras = la tarjeta.
    *  - M2: `gestion_por_comprador`: los días de G2 del tablero (mismas OC,
    *    mismo periodo, mismas funciones) agrupados por comprador, por sistema.
+   *
+   * Bloque N (2026-10-16, Ingrid):
+   *  - N1: `adjudicado` (OC sin IVA: la base de la tarjeta de Órdenes del
+   *    tablero con `poSubtotalColumns`, mismos filtros y D1) y `compradores`
+   *    (por persona, adjudicado y ahorro, de los mismos renglones).
+   *  - N2: `gestion_por_comprador.ambos`; la persona se liga a su perfil de
+   *    la plataforma (alias de Maximo ligado o nombre igual al del perfil).
+   *  - N3: `ahorro.desde` = primera OC con ahorro de cada sistema (sin año).
    */
   async getOrdersKpis(year: number | null = null) {
     const sapYear = andYear('po.doc_date', year);
@@ -586,6 +614,11 @@ export class PurchaseDashboardService {
       maximoClas,
       gestionPos,
       maximoGestionRows,
+      sapAdjudicado,
+      maximoAdjudicado,
+      ahorroDesde,
+      aliasEntries,
+      profiles,
     ] = await Promise.all([
       // M1: ahorro de SAP por quien capturó la OC y moneda. D1: la OC migrada
       // que existe en Maximo NO llega aquí; se cuenta una vez, del lado de
@@ -638,6 +671,41 @@ export class PurchaseDashboardService {
       this.prisma.$queryRaw<MaximoGestionRow[]>(
         maximoGestionSql(yearFrom, yearTo),
       ),
+      // N1: OC de SAP sin IVA por quien la capturó y moneda: los filtros de
+      // la tarjeta de Órdenes del tablero (no canceladas, D1, año por
+      // doc_date) y su subtotal (`poSubtotalColumns`)
+      this.prisma.$queryRaw<SapAdjudicadoRow[]>(Prisma.sql`
+        SELECT po.currency, po.created_by_name, ${poSubtotalColumns('po')},
+               count(*)::int AS count
+        FROM sap_purchase_orders po
+        WHERE po.cancelled IS DISTINCT FROM true ${countedOnce} ${sapYear}
+        GROUP BY po.currency, po.created_by_name`),
+      // N1: OC de Maximo sin IVA (vista vigente, no canceladas, año por
+      // created_at_source) por PURCHASEAGENT / creador y moneda
+      this.prisma.$queryRaw<MaximoAdjudicadoRow[]>(Prisma.sql`
+        WITH current AS (${CURRENT_MAXIMO_POS})
+        SELECT c.currency, c.purchase_agent, c.purchase_agent_name, c.created_by,
+               ${poSubtotalColumns('c')}, count(*)::int AS count
+        FROM current c
+        WHERE coalesce(c.status, '') NOT IN ('CAN', 'CANCEL') ${andYear('c.created_at_source', year)}
+        GROUP BY c.currency, c.purchase_agent, c.purchase_agent_name, c.created_by`),
+      // N3: desde cuándo hay ahorro capturado (sin año), con los filtros de
+      // la tarjeta
+      this.prisma.$queryRaw<AhorroDesdeRow[]>(Prisma.sql`
+        SELECT
+          (SELECT min(po.doc_date) FROM sap_purchase_orders po
+            WHERE po.cancelled IS DISTINCT FROM true AND po.ahorro_total IS NOT NULL
+              ${countedOnce}) AS sap,
+          (SELECT min(c.created_at_source) FROM (${CURRENT_MAXIMO_POS}) c
+            WHERE coalesce(c.status, '') NOT IN ('CAN', 'CANCEL')
+              AND c.ab_ahorro IS NOT NULL) AS maximo`),
+      // N2: alias de Maximo ligados a un perfil y perfiles activos, para
+      // juntar a la misma persona entre SAP y Maximo
+      this.aliases.byCode('maximo'),
+      // todos: los inactivos solo para nombrar a quien liga su alias
+      this.prisma.profiles.findMany({
+        select: { id: true, full_name: true, is_active: true },
+      }),
     ]);
 
     // M2: fechas de las solicitudes base (D3) y comprador de Maximo de las OC
@@ -654,24 +722,31 @@ export class PurchaseDashboardService {
     // E4/F1: PURCHASEAGENT y creador son códigos → alias de Compras
     const names = await this.aliases.resolveMany(
       'maximo',
-      [...maximoAhorro, ...maximoGestionRows, ...ponumBuyers].flatMap((r) => [
-        r.purchase_agent,
-        r.created_by,
-      ]),
+      [
+        ...maximoAhorro,
+        ...maximoAdjudicado,
+        ...maximoGestionRows,
+        ...ponumBuyers,
+      ].flatMap((r) => [r.purchase_agent, r.created_by]),
     );
+    // N2: la persona ligada a su perfil (alias ligado o nombre igual)
+    const directory = buildPersonDirectory(aliasEntries.values(), profiles);
     // E4/F1 con el alias de Compras (el del alias nombra la barra)
-    const buyerOfMaximo = (r: MaximoBuyerFields) => maximoKpiBuyer(r, names);
+    const buyerOfMaximo = (r: MaximoBuyerFields) =>
+      maximoKpiBuyer(r, names, directory);
+    const buyerOfSap = (createdByName: string | null) =>
+      sapKpiBuyer(createdByName, directory);
     const maximoByPonum = new Map(
       ponumBuyers.map((m) => [m.ponum, buyerOfMaximo(m)]),
     );
 
     // M1: una sola lista de renglones para la tarjeta y las barras
-    const ahorro = buildAhorro([
+    const ahorroEntries = [
       ...sapAhorro.map(
         (r): AhorroEntry => ({
           fuente: 'sap',
           currency: r.currency,
-          buyer: sapBuyer(r.created_by_name),
+          buyer: buyerOfSap(r.created_by_name),
           total: toNumber(r.total) ?? 0,
           count: Number(r.count),
         }),
@@ -685,7 +760,31 @@ export class PurchaseDashboardService {
           count: Number(r.count),
         }),
       ),
-    ]);
+    ];
+    const ahorro = buildAhorro(ahorroEntries);
+    // N1: monto adjudicado sin IVA, con el mismo comprador por OC
+    const adjudicadoEntries = [
+      ...sapAdjudicado.map(
+        (r): AdjudicadoEntry => ({
+          fuente: 'sap',
+          currency: r.currency,
+          buyer: buyerOfSap(r.created_by_name),
+          total: toNumber(r.subtotal) ?? 0,
+          count: Number(r.count),
+          sin_subtotal: Number(r.sin_subtotal ?? 0),
+        }),
+      ),
+      ...maximoAdjudicado.map(
+        (r): AdjudicadoEntry => ({
+          fuente: 'maximo',
+          currency: r.currency,
+          buyer: buyerOfMaximo(r),
+          total: toNumber(r.subtotal) ?? 0,
+          count: Number(r.count),
+          sin_subtotal: Number(r.sin_subtotal ?? 0),
+        }),
+      ),
+    ];
     // M2: G2 es por sistema (sin D1). La OC de SAP que nació en Maximo y
     // existe allá toma el comprador de Maximo, nunca el usuario de la
     // integración; si no, quien la capturó en SAP (E4/F1).
@@ -696,7 +795,7 @@ export class PurchaseDashboardService {
           buyer:
             (po.maximo_ponum
               ? maximoByPonum.get(po.maximo_ponum)
-              : undefined) ?? sapBuyer(po.created_by_name),
+              : undefined) ?? buyerOfSap(po.created_by_name),
         })),
         requests: gestionPrs,
       },
@@ -767,7 +866,20 @@ export class PurchaseDashboardService {
         ...ahorro,
         // K6: AB_AHORRO ya llega; sin dato = no se capturó en Maximo
         nota: 'SAP: U_Imp_ahorro por línea (captura de Compras desde 2026-09-15, incremental). Maximo: AB_AHORRO de la OC (solo las que lo tienen capturado).',
+        // N3: primera OC con ahorro capturado de cada sistema (sin año)
+        desde: {
+          sap: iso(ahorroDesde[0]?.sap),
+          maximo: iso(ahorroDesde[0]?.maximo),
+        },
       },
+      // N1: monto adjudicado sin IVA (la base de la tarjeta de Órdenes del
+      // tablero) y, por persona, adjudicado y ahorro
+      adjudicado: {
+        ...buildAdjudicado(adjudicadoEntries),
+        monto_base: 'sin_iva' as const,
+        nota: `Monto adjudicado = OC no canceladas del periodo, ${montoBaseNota('sin_iva')}; las OC migradas de Maximo a SAP cuentan una vez.`,
+      },
+      compradores: compradoresAdjudicado(adjudicadoEntries, ahorroEntries),
       clasificacion: {
         disponible: capex.documentos + opex.documentos > 0,
         capex,
