@@ -19,7 +19,7 @@ import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { LocalAuthService } from './services/local-auth.service';
 import { JwtAuthService } from './services/jwt-auth.service';
-import { OIDCAuthService } from './services/oidc-auth.service';
+import { OIDCAuthService, oidcFailureCode } from './services/oidc-auth.service';
 import { AuthEventsService } from './services/auth-events.service';
 import { LoginLocalDto } from './dto/login-local.dto';
 import { SetLocalCredentialsDto } from './dto/set-local-credentials.dto';
@@ -259,6 +259,8 @@ export class AuthController {
    * contra la cookie, procesa el intercambio + validación del id_token en el
    * service, emite el JWT propio (cookies HttpOnly) y redirige al frontend.
    * Cualquier error redirige a `/login?error=...` (nunca JSON crudo al usuario).
+   * El código dice el motivo (sin perfil, dominio, desactivado…) para que la
+   * pantalla de login lo explique; lo no previsto sale como `oidc_failed`.
    */
   @Public()
   @Get('callback')
@@ -315,9 +317,9 @@ export class AuthController {
         cookieOptions(7 * 24 * 3600, true),
       );
       res.redirect(`${base}/`);
-    } catch {
-      // El detalle del error queda en el log del service; al usuario solo el redirect.
-      res.redirect(`${base}/login?error=oidc_failed`);
+    } catch (err) {
+      // El detalle técnico queda en el log del service; al usuario, el motivo.
+      res.redirect(`${base}/login?error=${oidcFailureCode(err)}`);
     }
   }
 

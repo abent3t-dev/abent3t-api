@@ -10,6 +10,36 @@ import * as crypto from 'crypto';
 import { AuthEventsService } from './auth-events.service';
 import { PrismaService } from '../../prisma/prisma.service';
 
+/**
+ * Motivo del rechazo que el callback manda al front en `/login?error=<código>`
+ * para que la pantalla de login lo explique (el callback nunca responde JSON).
+ * Lo demás (canje del code, id_token o nonce inválidos, Entra caído) sale como
+ * `oidc_failed`.
+ */
+export type OidcFailureCode =
+  | 'oidc_no_email'
+  | 'oidc_domain'
+  | 'oidc_no_profile'
+  | 'oidc_inactive';
+
+const OIDC_FAILURE = Symbol('oidcFailure');
+
+type WithOidcFailure = Error & { [OIDC_FAILURE]?: OidcFailureCode };
+
+/** Marca la excepción con su motivo, sin cambiar su tipo ni su mensaje. */
+function withFailure<E extends Error>(err: E, code: OidcFailureCode): E {
+  (err as WithOidcFailure)[OIDC_FAILURE] = code;
+  return err;
+}
+
+/** Código para `/login?error=` de un error del callback. */
+export function oidcFailureCode(err: unknown): OidcFailureCode | 'oidc_failed' {
+  return (
+    (err instanceof Error && (err as WithOidcFailure)[OIDC_FAILURE]) ||
+    'oidc_failed'
+  );
+}
+
 interface OidcDiscovery {
   issuer: string;
   authorization_endpoint: string;
@@ -212,7 +242,10 @@ export class OIDCAuthService {
         ip_address: context.ip_address,
         user_agent: context.user_agent,
       });
-      throw new UnauthorizedException('El token no contiene un correo');
+      throw withFailure(
+        new UnauthorizedException('El token no contiene un correo'),
+        'oidc_no_email',
+      );
     }
 
     const allowedDomain = process.env.ALLOWED_EMAIL_DOMAIN?.trim().toLowerCase();
@@ -225,7 +258,10 @@ export class OIDCAuthService {
         ip_address: context.ip_address,
         user_agent: context.user_agent,
       });
-      throw new ForbiddenException('Dominio de correo no permitido');
+      throw withFailure(
+        new ForbiddenException('Dominio de correo no permitido'),
+        'oidc_domain',
+      );
     }
 
     // 4) Perfil PRE-REGISTRADO (modelo K-7): debe existir.
@@ -242,9 +278,12 @@ export class OIDCAuthService {
         ip_address: context.ip_address,
         user_agent: context.user_agent,
       });
-      throw new ForbiddenException(
-        'Tu cuenta de Microsoft es válida pero no estás registrado en la plataforma. ' +
-          'Contacta al administrador.',
+      throw withFailure(
+        new ForbiddenException(
+          'Tu cuenta de Microsoft es válida pero no estás registrado en la plataforma. ' +
+            'Contacta al administrador.',
+        ),
+        'oidc_no_profile',
       );
     }
     if (!profile.is_active) {
@@ -257,7 +296,10 @@ export class OIDCAuthService {
         ip_address: context.ip_address,
         user_agent: context.user_agent,
       });
-      throw new ForbiddenException('Usuario desactivado');
+      throw withFailure(
+        new ForbiddenException('Usuario desactivado'),
+        'oidc_inactive',
+      );
     }
 
     // 5) Marcar activación (K-7) y registrar el éxito.
