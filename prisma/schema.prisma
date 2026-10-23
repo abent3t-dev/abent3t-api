@@ -653,6 +653,21 @@ model profiles {
   user_roles_user_roles_granted_byToprofiles                      user_roles[]                        @relation("user_roles_granted_byToprofiles")
   user_roles_user_roles_profile_idToprofiles                      user_roles[]                        @relation("user_roles_profile_idToprofiles")
   user_roles_user_roles_revoked_byToprofiles                      user_roles[]                        @relation("user_roles_revoked_byToprofiles")
+  fpa_areas                                                       fpa_areas[]
+  fpa_departments                                                 fpa_departments[]
+  fpa_assignments_fpa_assignments_profile_idToprofiles            fpa_assignments[]                   @relation("fpa_assignments_profile_idToprofiles")
+  fpa_assignments_fpa_assignments_created_byToprofiles            fpa_assignments[]                   @relation("fpa_assignments_created_byToprofiles")
+  fpa_assignments_fpa_assignments_revoked_byToprofiles            fpa_assignments[]                   @relation("fpa_assignments_revoked_byToprofiles")
+  fpa_categories                                                  fpa_categories[]
+  fpa_classifications                                             fpa_classifications[]
+  fpa_versions                                                    fpa_versions[]
+  fpa_exchange_rates                                              fpa_exchange_rates[]
+  fpa_travel_rates                                                fpa_travel_rates[]
+  fpa_budgets                                                     fpa_budgets[]
+  fpa_budget_events                                               fpa_budget_events[]
+  fpa_line_keys                                                   fpa_line_keys[]
+  fpa_budget_lines                                                fpa_budget_lines[]
+  fpa_line_comments                                               fpa_line_comments[]
 
   @@index([department_id], map: "idx_profiles_department")
   @@index([email], map: "idx_profiles_email")
@@ -876,6 +891,7 @@ model suppliers {
   updated_at        DateTime?         @default(now()) @updatedAt @db.Timestamptz(6)
   purchase_orders   purchase_orders[]
   contracts         contracts[]
+  fpa_budget_lines  fpa_budget_lines[]
   profiles          profiles?         @relation(fields: [blocked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([legal_name], map: "idx_suppliers_legal_name")
@@ -1118,6 +1134,7 @@ enum user_module {
   capacitacion
   compras
   contabilidad
+  fpa
 }
 
 enum user_role {
@@ -1140,6 +1157,9 @@ enum user_role {
   fiscal
   director_financiero
   accionista
+  fpa_area
+  fpa_planeacion
+  fpa_cfo
 }
 
 enum verification_status {
@@ -1853,4 +1873,324 @@ enum delivery_event_type {
   reprogramacion
   recepcion_parcial
   recepcion_total
+}
+
+// ============================================================================
+// FP&A — presupuesto por área y su flujo (prisma/sql/0021_fpa_presupuesto.sql,
+// A2/A3). Prefijo fpa_: budgets y periods son de capacitación. Solo se guarda
+// lo capturado: los montos en pesos, los totales y el consolidado los calcula
+// el service (fpa-calc). Los CHECK (estados, transiciones del flujo, formas de
+// cálculo, campos de viaje, un dato por mes, foto como objeto JSON, nombres
+// sin vacíos ni espacios de más) y los únicos parciales
+// (uq_fpa_assignments_*, uq_fpa_departments_cost_center,
+// uq_fpa_budgets_version_area, uq_fpa_budget_events_decision y _submit,
+// uq_fpa_budget_lines_version_key) viven solo en SQL: el service valida y
+// maneja P2002. Los índices parciales idx_fpa_assignments_profile e
+// idx_fpa_budget_lines_supplier tampoco se modelan. fpa_line_keys.number es
+// GENERATED ALWAYS AS IDENTITY: Prisma nunca lo manda.
+// ============================================================================
+
+/// A2 (0021): áreas que cargan presupuesto (una captura por área y versión).
+/// department_id = departamento propio, el que toma una línea por omisión.
+model fpa_areas {
+  id                                                       String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                                                     String            @unique(map: "uq_fpa_areas_name") @db.VarChar(120)
+  department_id                                            String?           @db.Uuid
+  sort_order                                               Int               @default(0) @db.SmallInt
+  is_active                                                Boolean           @default(true)
+  created_by                                               String?           @db.Uuid
+  created_at                                               DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at                                               DateTime          @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_departments_fpa_areas_department_idTofpa_departments fpa_departments?  @relation("fpa_areas_department_idTofpa_departments", fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles                                                 profiles?         @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_departments_fpa_departments_area_idTofpa_areas       fpa_departments[] @relation("fpa_departments_area_idTofpa_areas")
+  fpa_assignments                                          fpa_assignments[]
+  fpa_budgets                                              fpa_budgets[]
+}
+
+/// A2 (0021): departamentos a los que se carga el gasto; cost_center = centro
+/// de costos de SAP (pregunta 28). Toda línea lleva uno: por omisión, el
+/// propio del área que captura (fpa_areas.department_id).
+model fpa_departments {
+  id                                                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                                               String             @unique(map: "uq_fpa_departments_name") @db.VarChar(120)
+  area_id                                            String?            @db.Uuid
+  cost_center                                        String?            @db.VarChar(30)
+  is_active                                          Boolean            @default(true)
+  created_by                                         String?            @db.Uuid
+  created_at                                         DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at                                         DateTime           @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_areas_fpa_departments_area_idTofpa_areas       fpa_areas?         @relation("fpa_departments_area_idTofpa_areas", fields: [area_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles                                           profiles?          @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_areas_fpa_areas_department_idTofpa_departments fpa_areas[]        @relation("fpa_areas_department_idTofpa_departments")
+  fpa_budget_lines                                   fpa_budget_lines[]
+
+  @@index([area_id], map: "idx_fpa_departments_area")
+}
+
+/// A2 (0021): quién hace qué. duty: captura | aprobacion | consulta |
+/// planeacion | cfo; is_alternate = suplente. Nunca se borra: se revoca
+/// (is_active = false, revoked_at, revoked_by), como user_roles.
+model fpa_assignments {
+  id                                            String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  duty                                          String     @db.VarChar(12)
+  area_id                                       String?    @db.Uuid
+  profile_id                                    String     @db.Uuid
+  is_alternate                                  Boolean    @default(false)
+  notes                                         String?    @db.VarChar(500)
+  is_active                                     Boolean    @default(true)
+  created_by                                    String?    @db.Uuid
+  created_at                                    DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at                                    DateTime   @default(now()) @updatedAt @db.Timestamptz(6)
+  revoked_at                                    DateTime?  @db.Timestamptz(6)
+  revoked_by                                    String?    @db.Uuid
+  fpa_areas                                     fpa_areas? @relation(fields: [area_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_fpa_assignments_profile_idToprofiles profiles   @relation("fpa_assignments_profile_idToprofiles", fields: [profile_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_fpa_assignments_created_byToprofiles profiles?  @relation("fpa_assignments_created_byToprofiles", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_fpa_assignments_revoked_byToprofiles profiles?  @relation("fpa_assignments_revoked_byToprofiles", fields: [revoked_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+/// A2 (0021): categorías de gasto (sort_order = orden del reporte de Laura).
+model fpa_categories {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                String                @unique(map: "uq_fpa_categories_name") @db.VarChar(120)
+  sort_order          Int                   @default(0) @db.SmallInt
+  is_active           Boolean               @default(true)
+  created_by          String?               @db.Uuid
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
+  profiles            profiles?             @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_classifications fpa_classifications[]
+}
+
+/// A2 (0021): clasificaciones de cada categoría; allows_negative = acepta
+/// montos negativos (descuentos y ajustes D-5, pregunta 18).
+model fpa_classifications {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  category_id      String             @db.Uuid
+  name             String             @db.VarChar(120)
+  allows_negative  Boolean            @default(false)
+  sort_order       Int                @default(0) @db.SmallInt
+  is_active        Boolean            @default(true)
+  created_by       String?            @db.Uuid
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime           @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_categories   fpa_categories     @relation(fields: [category_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles         profiles?          @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_budget_lines fpa_budget_lines[]
+
+  @@unique([category_id, name], map: "uq_fpa_classifications_name")
+}
+
+/// A2 (0021): versión de un ejercicio. kind: presupuesto | forecast |
+/// comparacion; status: preparacion | captura | cerrada. inflation_pct NULL =
+/// sin fijar ("No disponible"). cutoff_month solo en forecast (1-11).
+model fpa_versions {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  fiscal_year        Int                  @db.SmallInt
+  kind               String               @db.VarChar(15)
+  code               String               @unique(map: "uq_fpa_versions_code") @db.VarChar(20)
+  name               String               @db.VarChar(120)
+  cutoff_month       Int?                 @db.SmallInt
+  base_version_id    String?              @db.Uuid
+  inflation_pct      Decimal?             @db.Decimal(6, 3)
+  status             String               @default("preparacion") @db.VarChar(15)
+  notes              String?
+  is_active          Boolean              @default(true)
+  created_by         String?              @db.Uuid
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_versions       fpa_versions?        @relation("fpa_versionsTofpa_versions", fields: [base_version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_fpa_versions fpa_versions[]       @relation("fpa_versionsTofpa_versions")
+  profiles           profiles?            @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_exchange_rates fpa_exchange_rates[]
+  fpa_travel_rates   fpa_travel_rates[]
+  fpa_budgets        fpa_budgets[]
+
+  @@index([fiscal_year], map: "idx_fpa_versions_year")
+}
+
+/// A2 (0021): tipo de cambio de la versión (pesos por unidad); MXN no se guarda.
+/// Una fila por moneda: el PUT hace upsert y reactiva la fila dada de baja.
+model fpa_exchange_rates {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  version_id   String       @db.Uuid
+  currency     String       @db.VarChar(3)
+  rate_mxn     Decimal      @db.Decimal(18, 6)
+  is_active    Boolean      @default(true)
+  created_by   String?      @db.Uuid
+  created_at   DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_versions fpa_versions @relation(fields: [version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles     profiles?    @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([version_id, currency], map: "uq_fpa_exchange_rates")
+}
+
+/// A2 (0021): tarifas de viaje de la versión, en pesos (hoja '2' de los B-26).
+/// Sin tarifa activa para un tipo de viajero, el viaje sale "No disponible".
+model fpa_travel_rates {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  version_id        String       @db.Uuid
+  trip_type         String       @db.VarChar(15)
+  traveler_type     String       @db.VarChar(15)
+  flight_per_person Decimal      @db.Decimal(15, 2)
+  hotel_per_night   Decimal      @db.Decimal(15, 2)
+  transport_per_day Decimal      @db.Decimal(15, 2)
+  meals_per_day     Decimal      @db.Decimal(15, 2)
+  is_active         Boolean      @default(true)
+  created_by        String?      @db.Uuid
+  created_at        DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_versions      fpa_versions @relation(fields: [version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles          profiles?    @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([version_id, trip_type, traveler_type], map: "uq_fpa_travel_rates")
+}
+
+/// A2 (0021): presupuesto de un área en una versión. status: borrador |
+/// enviado | aprobado_area | aprobado_planeacion | aprobado_cfo | devuelto.
+/// current_round = número de envíos. No confundir con budgets (capacitación).
+model fpa_budgets {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  version_id        String              @db.Uuid
+  area_id           String              @db.Uuid
+  status            String              @default("borrador") @db.VarChar(20)
+  current_round     Int                 @default(0) @db.SmallInt
+  submitted_at      DateTime?           @db.Timestamptz(6)
+  approved_at       DateTime?           @db.Timestamptz(6)
+  is_active         Boolean             @default(true)
+  created_by        String?             @db.Uuid
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_versions      fpa_versions        @relation(fields: [version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_areas         fpa_areas           @relation(fields: [area_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles          profiles?           @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_budget_events fpa_budget_events[]
+  fpa_budget_lines  fpa_budget_lines[]
+
+  @@unique([id, version_id], map: "uq_fpa_budgets_id_version")
+  @@index([version_id, status], map: "idx_fpa_budgets_version_status")
+  @@index([area_id], map: "idx_fpa_budgets_area")
+}
+
+/// A2 (0021): historial del flujo (solo inserción). action: enviado | aprobado
+/// | rechazado | retirado | reabierto; step: area | planeacion | cfo;
+/// acting_as: titular | suplente | rol | super_admin. snapshot = foto de cada
+/// envío (persistida a propósito, como evidencia), siempre un objeto JSON: no
+/// mandar Prisma.JsonNull. Primero el UPDATE condicional y después el INSERT.
+model fpa_budget_events {
+  id               String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  budget_id        String      @db.Uuid
+  round            Int         @db.SmallInt
+  action           String      @db.VarChar(12)
+  step             String?     @db.VarChar(12)
+  from_status      String      @db.VarChar(20)
+  to_status        String      @db.VarChar(20)
+  comment          String?
+  actor_profile_id String      @db.Uuid
+  actor_role       String?     @db.VarChar(50)
+  acting_as        String      @db.VarChar(12)
+  snapshot         Json?
+  total_mxn        Decimal?    @db.Decimal(15, 2)
+  created_at       DateTime    @default(now()) @db.Timestamptz(6)
+  fpa_budgets      fpa_budgets @relation(fields: [budget_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles         profiles    @relation(fields: [actor_profile_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([budget_id, created_at], map: "idx_fpa_budget_events_budget")
+}
+
+/// A2 (0021): identidad de la línea entre versiones; number = folio visible
+/// (L-000123), GENERATED ALWAYS AS IDENTITY en SQL: no se manda en create ni
+/// en update. origin: captura | importacion | real.
+model fpa_line_keys {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  number           Int                @unique(map: "uq_fpa_line_keys_number") @default(autoincrement())
+  origin           String             @db.VarChar(15)
+  created_by       String?            @db.Uuid
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  profiles         profiles?          @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_budget_lines fpa_budget_lines[]
+}
+
+/// A2 (0021): línea del formato único. calc_method: precio_veces | monto_mes |
+/// viaje; price_index: precio_acordado | inflacion. supplier_id NULL = OTROS
+/// (no se crea un proveedor genérico). version_id repite la del presupuesto
+/// (FK compuesta) para que una llave aparezca una vez por versión.
+/// department_id es obligatorio (por omisión, el propio del área).
+model fpa_budget_lines {
+  id                     String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  budget_id              String                   @db.Uuid
+  version_id             String                   @db.Uuid
+  line_key_id            String                   @db.Uuid
+  sort_order             Int                      @default(0)
+  department_id          String                   @db.Uuid
+  classification_id      String                   @db.Uuid
+  concept                String                   @db.VarChar(255)
+  justification          String?
+  supplier_id            String?                  @db.Uuid
+  supplier_name          String?                  @db.VarChar(255)
+  priority               String?                  @db.VarChar(15)
+  calc_method            String                   @db.VarChar(15)
+  currency               String                   @db.VarChar(3)
+  price_index            String                   @db.VarChar(16)
+  unit_price             Decimal?                 @db.Decimal(15, 4)
+  trip_type              String?                  @db.VarChar(15)
+  travelers_colaborador  Int?                     @db.SmallInt
+  travelers_director     Int?                     @db.SmallInt
+  nights                 Int?                     @db.SmallInt
+  car_rental             Boolean?
+  contract_label         String?                  @db.VarChar(120)
+  project_tag            String?                  @db.VarChar(60)
+  outside_ebitda         Boolean?
+  spend_type             String?                  @db.VarChar(15)
+  source_ref             String?                  @db.VarChar(120)
+  is_active              Boolean                  @default(true)
+  created_by             String?                  @db.Uuid
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime                 @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_budgets            fpa_budgets              @relation(fields: [budget_id, version_id], references: [id, version_id], onDelete: NoAction, onUpdate: NoAction, map: "fpa_budget_lines_budget_version_fkey")
+  fpa_line_keys          fpa_line_keys            @relation(fields: [line_key_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_departments        fpa_departments          @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_classifications    fpa_classifications      @relation(fields: [classification_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  suppliers              suppliers?               @relation(fields: [supplier_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles               profiles?                @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_budget_line_months fpa_budget_line_months[]
+  fpa_line_comments      fpa_line_comments[]
+
+  @@index([budget_id], map: "idx_fpa_budget_lines_budget")
+  @@index([line_key_id], map: "idx_fpa_budget_lines_line_key")
+  @@index([department_id], map: "idx_fpa_budget_lines_department")
+  @@index([classification_id], map: "idx_fpa_budget_lines_classification")
+}
+
+/// A2 (0021): lo capturado en un mes (un solo dato: quantity, amount o trips).
+/// Se reescribe con su línea; no guarda montos calculados.
+model fpa_budget_line_months {
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  line_id          String           @db.Uuid
+  month            Int              @db.SmallInt
+  quantity         Decimal?         @db.Decimal(12, 4)
+  unit_price       Decimal?         @db.Decimal(15, 4)
+  amount           Decimal?         @db.Decimal(15, 2)
+  trips            Int?             @db.SmallInt
+  fpa_budget_lines fpa_budget_lines @relation(fields: [line_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([line_id, month], map: "uq_fpa_budget_line_months")
+}
+
+/// A2 (0021): comentarios de una línea (month NULL = de toda la línea).
+model fpa_line_comments {
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  line_id          String           @db.Uuid
+  month            Int?             @db.SmallInt
+  body             String
+  is_active        Boolean          @default(true)
+  created_by       String           @db.Uuid
+  created_at       DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime         @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_budget_lines fpa_budget_lines @relation(fields: [line_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles         profiles         @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([line_id, created_at], map: "idx_fpa_line_comments_line")
 }

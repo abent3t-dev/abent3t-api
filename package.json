@@ -26,6 +26,7 @@
     "contracts:import-excel": "ts-node -T scripts/contracts-import-xlsx.ts",
     "expediting:check": "ts-node -T scripts/expediting-check.ts",
     "avance:check": "ts-node -T scripts/avance-semanal-check.ts",
+    "fpa:seed-dev": "ts-node -T scripts/fpa-seed-dev.ts",
     "sap:smoke": "node scripts/smoke-sap-b1.mjs"
   },
   "dependencies": {

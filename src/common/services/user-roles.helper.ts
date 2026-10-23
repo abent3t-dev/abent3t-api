@@ -13,7 +13,12 @@ import type { PrismaService } from '../../prisma/prisma.service';
  * `SupabaseClient`). La semántica es idéntica.
  */
 
-export type UserModule = 'core' | 'capacitacion' | 'compras' | 'contabilidad';
+export type UserModule =
+  | 'core'
+  | 'capacitacion'
+  | 'compras'
+  | 'contabilidad'
+  | 'fpa';
 
 /**
  * Mapeo de rol → módulo. Refleja la categorización aplicada en la migración
@@ -47,10 +52,18 @@ export const ROLE_TO_MODULE: Record<string, UserModule> = {
   fiscal: 'contabilidad',
   director_financiero: 'contabilidad',
   accionista: 'contabilidad',
+
+  // FP&A (0021, decisión de Alex del 2026-10-19): el rol da la entrada; quién
+  // captura y quién aprueba cada área vive en fpa_assignments
+  fpa_area: 'fpa',
+  fpa_planeacion: 'fpa',
+  fpa_cfo: 'fpa',
 };
 
 /** Devuelve el módulo correspondiente a un rol, o null si es desconocido. */
-export function getModuleForRole(role: string | null | undefined): UserModule | null {
+export function getModuleForRole(
+  role: string | null | undefined,
+): UserModule | null {
   if (!role) return null;
   return ROLE_TO_MODULE[role] ?? null;
 }
@@ -82,6 +95,13 @@ export const ROLE_PRIORITY: string[] = [
   'executive',
   'colaborador',
   'collaborator',
+  // FP&A al final: hay código que compara el rol principal directo
+  // (enrollments, requests, proposals, auditoría), así que un colaborador o
+  // gerente que también tenga un rol fpa conserva su rol de Capacitación. Quien
+  // solo tiene FP&A resuelve a su rol fpa. Mismo orden en abent3t-next.
+  'fpa_planeacion',
+  'fpa_cfo',
+  'fpa_area',
 ];
 
 /**
@@ -89,7 +109,9 @@ export const ROLE_PRIORITY: string[] = [
  * para fines de display y redirección. Si el usuario no tiene ningún rol
  * conocido, devuelve null (la UI debe manejar ese caso edge).
  */
-export function getDisplayRole(roles: string[] | undefined | null): string | null {
+export function getDisplayRole(
+  roles: string[] | undefined | null,
+): string | null {
   if (!roles || roles.length === 0) return null;
   const set = new Set(roles);
   for (const r of ROLE_PRIORITY) {

@@ -66,6 +66,8 @@ import { PurchaseDashboardModule } from './purchase-dashboard/purchase-dashboard
 import { ErpAliasesModule } from './erp-aliases/erp-aliases.module';
 // G1 (2026-09-28): proveedor efectivo de Maximo (cruce contra SAP)
 import { ErpVendorsModule } from './erp-vendors/erp-vendors.module';
+// FP&A (0021, A3): presupuesto por área, captura y consolidado
+import { FpaModule } from './fpa/fpa.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import {
@@ -160,6 +162,7 @@ import {
     PurchaseDashboardModule,
     ErpAliasesModule,
     ErpVendorsModule,
+    FpaModule,
   ],
   controllers: [AppController],
   providers: [
