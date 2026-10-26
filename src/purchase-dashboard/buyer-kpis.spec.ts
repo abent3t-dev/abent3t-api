@@ -1,18 +1,26 @@
 import type { Buyer } from '../common/utils/buyer.util';
 import {
+  type AdjudicadoEntry,
   type AhorroEntry,
   ahorroPorComprador,
+  buildAdjudicado,
   buildAhorro,
+  buildBuyerMark,
   buildGestionAmbos,
   buildGestionPorComprador,
   buildPersonDirectory,
   buyerKey,
+  COMPRADORES_SAP,
+  compradorAviso,
   compradoresAdjudicado,
   groupByBuyer,
   type GestionPorComprador,
+  isMarkedBuyer,
+  type KpiBuyer,
   maximoGestionPorComprador,
   maximoKpiBuyer,
   MIN_OC_GESTION,
+  OC_DE_CONTRATO,
   sapBuyer,
   sapGestionPorComprador,
   sapKpiBuyer,
@@ -71,7 +79,7 @@ describe('sapBuyer (E4)', () => {
   });
 });
 
-describe('maximoKpiBuyer (E4/F1 con el alias)', () => {
+describe('maximoKpiBuyer (O3: RQ › PURCHASEAGENT › sin comprador, con el alias)', () => {
   const aliases = new Map([
     ['JSANDOVAL', 'Jorge Sandoval'],
     ['AMONDRAG', 'Ana Aurora Mondragón'],
@@ -103,7 +111,8 @@ describe('maximoKpiBuyer (E4/F1 con el alias)', () => {
     ).toEqual({ name: 'Otro Comprador', kind: 'comprador', alias: false });
   });
 
-  it('sin PURCHASEAGENT → quien la creó (capturó), con o sin alias; sin nadie → sin comprador', () => {
+  it('O3: sin RQ ni PURCHASEAGENT → sin comprador, aunque alguien la haya creado ("Capturó" ya no cuenta)', () => {
+    const nadieMx = { name: null, kind: null, alias: false };
     expect(
       maximoKpiBuyer(
         {
@@ -113,15 +122,11 @@ describe('maximoKpiBuyer (E4/F1 con el alias)', () => {
         },
         aliases,
       ),
-    ).toEqual({ name: 'Ana Aurora Mondragón', kind: 'capturo', alias: true });
+    ).toEqual(nadieMx);
     expect(
       maximoKpiBuyer({ purchase_agent: '', created_by: 'VMM3' }, aliases),
-    ).toEqual({ name: 'VMM3', kind: 'capturo', alias: false });
-    expect(maximoKpiBuyer({}, aliases)).toEqual({
-      name: null,
-      kind: null,
-      alias: false,
-    });
+    ).toEqual(nadieMx);
+    expect(maximoKpiBuyer({}, aliases)).toEqual(nadieMx);
   });
 });
 
@@ -209,6 +214,7 @@ describe('M1: ahorro por comprador', () => {
       {
         // 3 OC con la variante de Maximo contra 1 con la de SAP
         comprador: 'Ingrid Torres Gutiérrez',
+        grupo: 'persona',
         tipo: 'capturo',
         documentos: 4,
         documentos_capturo: 3,
@@ -382,6 +388,7 @@ describe('M2: tiempo de gestión por comprador', () => {
     expect(list).toEqual([
       {
         comprador: 'Ana Aurora Mondragón',
+        grupo: 'persona',
         tipo: 'comprador',
         documentos_capturo: 0,
         promedio_dias: 10,
@@ -415,6 +422,7 @@ describe('M2: tiempo de gestión por comprador', () => {
     expect(maximoGestionPorComprador(rows)).toEqual([
       {
         comprador: 'Ana Aurora Mondragón',
+        grupo: 'persona',
         tipo: 'capturo',
         documentos_capturo: 2,
         promedio_dias: 16,
@@ -426,6 +434,7 @@ describe('M2: tiempo de gestión por comprador', () => {
       },
       {
         comprador: 'Víctor',
+        grupo: 'persona',
         tipo: 'capturo',
         documentos_capturo: 1,
         promedio_dias: 7,
@@ -456,6 +465,7 @@ describe('M2: tiempo de gestión por comprador', () => {
       total: number,
     ): GestionPorComprador => ({
       comprador,
+      grupo: comprador === null ? 'sin_comprador' : 'persona',
       tipo: comprador === null ? null : 'capturo',
       documentos_capturo: comprador === null ? 0 : total,
       promedio_dias,
@@ -516,7 +526,7 @@ describe('N2: la persona ligada a su perfil', () => {
   it('SAP por su nombre (plegado) y Maximo por el alias ligado: el mismo perfil y su nombre', () => {
     const sap = sapKpiBuyer('Ingrid Torres GUTIÉRREZ', dir);
     const maximo = maximoKpiBuyer(
-      { created_by: 'IVTOG' },
+      { rq_buyer: 'IVTOG' },
       new Map([['IVTOG', 'Ingrid']]),
       dir,
     );
@@ -557,7 +567,7 @@ describe('N2: la persona ligada a su perfil', () => {
     );
     const sap = sapKpiBuyer('Ingrid Torres GUTIÉRREZ', dir2);
     const maximo = maximoKpiBuyer(
-      { created_by: 'IVTOG' },
+      { rq_buyer: 'IVTOG' },
       new Map([['IVTOG', 'Ingrid Torres Gutiérrez']]),
       dir2,
     );
@@ -575,7 +585,7 @@ describe('N2: la persona ligada a su perfil', () => {
       [{ id: 'p-jorge', full_name: 'Jorge González', is_active: false }],
     );
     expect(
-      maximoKpiBuyer({ created_by: 'JAGS1' }, new Map(), dir2),
+      maximoKpiBuyer({ rq_buyer: 'JAGS1' }, new Map(), dir2),
     ).toMatchObject({ profileId: 'p-jorge', profileName: 'Jorge González' });
     expect(sapKpiBuyer('Jorge González', dir2).profileId).toBeUndefined();
   });
@@ -583,11 +593,13 @@ describe('N2: la persona ligada a su perfil', () => {
   it('usuarios de sistema de Maximo (MAXADMIN, MAXREG): sin comprador', () => {
     expect(
       maximoKpiBuyer(
-        { created_by: 'maxadmin' },
+        { rq_buyer: 'maxadmin' },
         new Map([['maxadmin', 'MAXADMIN (usuario del sistema)']]),
       ),
     ).toEqual({ name: null, kind: null, alias: false });
-    expect(maximoKpiBuyer({ created_by: 'MAXREG' }, new Map())).toMatchObject({
+    expect(
+      maximoKpiBuyer({ purchase_agent: 'MAXREG' }, new Map()),
+    ).toMatchObject({
       name: null,
     });
   });
@@ -619,6 +631,7 @@ describe('N1: adjudicado y ahorro por persona', () => {
     expect(list).toEqual([
       {
         comprador: 'Carla',
+        grupo: 'persona',
         tipo: 'capturo',
         documentos: 3,
         documentos_capturo: 3,
@@ -632,6 +645,7 @@ describe('N1: adjudicado y ahorro por persona', () => {
       },
       {
         comprador: 'Beto',
+        grupo: 'persona',
         tipo: 'capturo',
         documentos: 3,
         documentos_capturo: 3,
@@ -643,6 +657,7 @@ describe('N1: adjudicado y ahorro por persona', () => {
       },
       {
         comprador: null,
+        grupo: 'sin_comprador',
         tipo: null,
         documentos: 1,
         documentos_capturo: 0,
@@ -695,6 +710,7 @@ describe('N2: gestiones de "Ambos" sistemas', () => {
     expect(result.compradores).toEqual([
       {
         comprador: 'Ana',
+        grupo: 'persona',
         tipo: 'capturo',
         documentos_capturo: 5,
         promedio_dias: 8.4,
@@ -709,6 +725,8 @@ describe('N2: gestiones de "Ambos" sistemas', () => {
   it('orden: por gestiones (N ≥ min_oc), empate el más rápido; luego los de menos OC; sin comprador al final', () => {
     const g = (comprador: string | null, total: number, promedio: number) => ({
       comprador,
+      grupo:
+        comprador === null ? ('sin_comprador' as const) : ('persona' as const),
       total,
       promedio_dias: promedio,
     });
@@ -724,5 +742,252 @@ describe('N2: gestiones de "Ambos" sistemas', () => {
         3,
       ).map((x) => x.comprador),
     ).toEqual(['Mucha', 'Rápida', 'Lenta', 'Poca', null]);
+  });
+});
+
+describe('O3: solo compradores, y las OC de contrato aparte', () => {
+  const aliases = new Map([
+    ['ADCS1', 'Ana Daniela Contreras Sánchez'],
+    ['DYMP1', 'Diana Yohara Méndez'],
+  ]);
+  const mark = buildBuyerMark();
+
+  it('Maximo: una OC de contrato va a su grupo aunque traiga RQ o agente de compras', () => {
+    expect(
+      maximoKpiBuyer(
+        {
+          de_contrato: true,
+          rq_buyer: 'ADCS1',
+          purchase_agent: 'DYMP1',
+          created_by: 'ACXA1',
+        },
+        aliases,
+      ),
+    ).toBe(OC_DE_CONTRATO);
+  });
+
+  it('Maximo: el comprador de la RQ gana al agente de compras; su nombre es el del alias, si no el de la RQ, si no el usuario', () => {
+    expect(
+      maximoKpiBuyer(
+        {
+          rq_buyer: 'DYMP1',
+          rq_buyer_name: 'Diana Yohara',
+          purchase_agent: 'ADCS1',
+          created_by: 'IVTOG',
+        },
+        aliases,
+      ),
+    ).toEqual({ name: 'Diana Yohara Méndez', kind: 'comprador', alias: true });
+    expect(
+      maximoKpiBuyer(
+        { rq_buyer: 'JAGS1', rq_buyer_name: 'Jorge Alberto González Soriano' },
+        aliases,
+      ),
+    ).toEqual({
+      name: 'Jorge Alberto González Soriano',
+      kind: 'comprador',
+      alias: false,
+    });
+    expect(maximoKpiBuyer({ rq_buyer: 'NUEVO1' }, aliases)).toEqual({
+      name: 'NUEVO1',
+      kind: 'comprador',
+      alias: false,
+    });
+    // sin RQ, el agente de compras (E4)
+    expect(
+      maximoKpiBuyer({ purchase_agent: 'ADCS1', created_by: 'IVTOG' }, aliases),
+    ).toEqual({
+      name: 'Ana Daniela Contreras Sánchez',
+      kind: 'comprador',
+      alias: true,
+    });
+  });
+
+  it('SAP: quien capturó cuenta solo si está marcado; la marca se compara sin acentos ni mayúsculas', () => {
+    expect(COMPRADORES_SAP.map((c) => c.maximo)).toEqual([
+      'IVTOG',
+      'DYMP1',
+      'JAGS1',
+      'ADCS1',
+    ]);
+    expect(sapKpiBuyer('Ingrid Torres GUTIÉRREZ', undefined, mark)).toEqual({
+      name: 'Ingrid Torres GUTIÉRREZ',
+      kind: 'capturo',
+    });
+    expect(sapKpiBuyer('Diana Yohara MÉNDEZ', undefined, mark).name).toBe(
+      'Diana Yohara MÉNDEZ',
+    );
+    expect(sapKpiBuyer('Francisco López ORATO', undefined, mark)).toEqual({
+      name: null,
+      kind: null,
+    });
+    // sin marca, como en N
+    expect(sapKpiBuyer('Francisco López ORATO').name).toBe(
+      'Francisco López ORATO',
+    );
+  });
+
+  it('la marca vale para la persona: SAP la escribe distinto pero liga al perfil de su usuario de Maximo', () => {
+    const dir = buildPersonDirectory(
+      [
+        {
+          code: 'ADCS1',
+          display_name: 'Ana Daniela Contreras Sánchez',
+          profile_id: 'p-ana',
+        },
+      ],
+      [{ id: 'p-ana', full_name: 'Ana Contreras', is_active: true }],
+    );
+    const conPerfil = buildBuyerMark(dir);
+    expect(conPerfil.profiles).toEqual(new Set(['p-ana']));
+    const ana = sapKpiBuyer('ANA CONTRERAS', dir, conPerfil);
+    expect(ana).toMatchObject({ name: 'ANA CONTRERAS', profileId: 'p-ana' });
+    expect(isMarkedBuyer(ana, conPerfil)).toBe(true);
+    expect(
+      isMarkedBuyer({ name: 'Otra Persona', kind: 'capturo' }, conPerfil),
+    ).toBe(false);
+  });
+
+  it('terminado cuando: la OC de contrato va a su grupo y la OC sin contrato que capturó quien no es comprador va a "Sin comprador identificado"; las sumas cuadran', () => {
+    const adj = (
+      fuente: AdjudicadoEntry['fuente'],
+      buyer: KpiBuyer,
+      currency: string,
+      total: number,
+      count = 1,
+    ): AdjudicadoEntry => ({
+      fuente,
+      buyer,
+      currency,
+      total,
+      count,
+      sin_subtotal: 0,
+    });
+    const deMaximo = (fields: Parameters<typeof maximoKpiBuyer>[0]) =>
+      maximoKpiBuyer(fields, aliases);
+    const adjudicado = [
+      // de contrato, la capturó quien no es comprador (Acxa)
+      adj(
+        'maximo',
+        deMaximo({ de_contrato: true, created_by: 'ACXA1' }),
+        'MXN',
+        50000,
+      ),
+      // sin contrato ni RQ, la capturó Ingrid: ya no es su barra
+      adj('maximo', deMaximo({ created_by: 'IVTOG' }), 'MXN', 700),
+      adj('maximo', deMaximo({ rq_buyer: 'ADCS1' }), 'MXN', 1000, 2),
+      adj('maximo', deMaximo({ rq_buyer: 'ADCS1' }), 'USD', 100),
+      // SAP: Ingrid marcada; Francisco López no
+      adj(
+        'sap',
+        sapKpiBuyer('Ingrid Torres GUTIÉRREZ', undefined, mark),
+        'MXN',
+        300,
+      ),
+      adj(
+        'sap',
+        sapKpiBuyer('Francisco López ORATO', undefined, mark),
+        'MXN',
+        90,
+      ),
+    ];
+    const ahorros = [
+      ahorro('maximo', deMaximo({ rq_buyer: 'ADCS1' }), 'MXN', 40),
+      ahorro('maximo', deMaximo({ de_contrato: true }), 'MXN', 25),
+      ahorro(
+        'sap',
+        sapKpiBuyer('Francisco López ORATO', undefined, mark),
+        'MXN',
+        5,
+      ),
+    ];
+    const list = compradoresAdjudicado(adjudicado, ahorros);
+    expect(
+      list.map((c) => [c.comprador, c.grupo, c.tipo, c.documentos]),
+    ).toEqual([
+      ['Ana Daniela Contreras Sánchez', 'persona', 'comprador', 3],
+      ['Ingrid Torres GUTIÉRREZ', 'persona', 'capturo', 1],
+      // gris y al final: primero sin comprador, luego las de contrato
+      [null, 'sin_comprador', null, 2],
+      [null, 'contrato', null, 1],
+    ]);
+    expect(list[2].adjudicado).toEqual([
+      { currency: 'MXN', total: 790, count: 2, sin_subtotal: 0 },
+    ]);
+    expect(list[3].adjudicado[0].total).toBe(50000);
+    // personas + "Sin comprador" + "OC de contrato" = Órdenes sin IVA del tablero
+    const total = buildAdjudicado(adjudicado);
+    for (const card of total.por_moneda) {
+      const bars = list.flatMap((c) =>
+        c.adjudicado.filter((m) => m.currency === card.currency),
+      );
+      expect(
+        Math.round(bars.reduce((s, m) => s + m.total, 0) * 100) / 100,
+      ).toBe(card.total);
+      expect(bars.reduce((s, m) => s + m.count, 0)).toBe(card.count);
+    }
+    // y el ahorro = la tarjeta
+    const card = buildAhorro(ahorros);
+    expect(
+      list.reduce(
+        (s, c) =>
+          s +
+          (c.ahorro.por_moneda.find((m) => m.currency === 'MXN')?.total ?? 0),
+        0,
+      ),
+    ).toBe(card.por_moneda[0].total);
+    expect(card.por_comprador.map((b) => b.grupo)).toEqual([
+      'persona',
+      'sin_comprador',
+      'contrato',
+    ]);
+  });
+
+  it('gestiones: el grupo de contrato va después de "Sin comprador identificado", sin tipo', () => {
+    const result = buildGestionAmbos({ pos: [], requests: [] }, [
+      { dias: '30', dias_desde_aprobacion: null, buyer: OC_DE_CONTRATO },
+      { dias: '9', dias_desde_aprobacion: null, buyer: OC_DE_CONTRATO },
+      {
+        dias: '4',
+        dias_desde_aprobacion: null,
+        buyer: { name: null, kind: null },
+      },
+      { dias: '2', dias_desde_aprobacion: null, buyer: comprador('Ana') },
+    ]);
+    expect(
+      result.compradores.map((c) => [c.comprador, c.grupo, c.tipo, c.total]),
+    ).toEqual([
+      ['Ana', 'persona', 'comprador', 1],
+      [null, 'sin_comprador', null, 1],
+      [null, 'contrato', null, 2],
+    ]);
+    expect(result.total.total).toBe(4);
+  });
+
+  it('aviso antes de 2026: con "Todos" o un año anterior, sí; desde 2026, no; explica Maximo y SAP', () => {
+    expect(compradorAviso(2026)).toBeNull();
+    expect(compradorAviso(2027)).toBeNull();
+    expect(compradorAviso(null)).toBe(
+      'El comprador se registra desde 2026. En Maximo sale de la solicitud de cotización (RQ), que las OC de antes casi no traen; en SAP solo cuentan quienes hoy son compradores (Ingrid, Diana, Jorge y Ana). Por eso, con "Todos", muchas OC van a "Sin comprador identificado".',
+    );
+    expect(compradorAviso(2025)).toContain('Por eso, en 2025, muchas OC');
+  });
+
+  it('una RQ movida por un usuario de sistema no tiene comprador: sigue el agente de compras', () => {
+    expect(
+      maximoKpiBuyer(
+        { rq_buyer: 'MAXADMIN', purchase_agent: 'ADCS1' },
+        aliases,
+      ),
+    ).toEqual({
+      name: 'Ana Daniela Contreras Sánchez',
+      kind: 'comprador',
+      alias: true,
+    });
+    expect(maximoKpiBuyer({ rq_buyer: 'maxreg' }, aliases)).toEqual({
+      name: null,
+      kind: null,
+      alias: false,
+    });
   });
 });

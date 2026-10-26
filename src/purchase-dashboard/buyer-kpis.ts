@@ -44,6 +44,19 @@ import type {
  *    cuando lo hay (alias de Maximo ligado al perfil en Compras → Roles, o un
  *    nombre igual al del perfil) y se nombra como el perfil; si no, por la
  *    llave plegada del nombre, como en M.
+ *
+ * Bloque O3 (2026-10-26, Ingrid: "solo debería salir Ana, Jorge, Diana y
+ * yo"; regla con CIISA el 23-oct) — en N1, N2 y M1 solo personas
+ * compradoras y dos grupos en gris al final:
+ *  - "OC de contrato" (`grupo='contrato'`): la OC de Maximo con
+ *    CONTRACTREFNUM (`maximoPoDeContrato`), la misma marca que los montos del
+ *    avance (O1); no se le atribuye a quien la capturó;
+ *  - "Sin comprador identificado" (`grupo='sin_comprador'`).
+ * Maximo (y la OC de SAP que nació allá): comprador de la RQ (RFQSTATUS,
+ * `maximoRqBuyerJoin`) › agente de compras (PURCHASEAGENT) › sin comprador;
+ * "Capturó" ya no cuenta como comprador. SAP (no tiene RQ): quien capturó
+ * la OC si está marcado como comprador (`COMPRADORES_SAP`); si no, sin
+ * comprador. Las tablas (Órdenes, Expeditación) siguen diciendo "Capturó".
  */
 
 /** M2: con menos OC en el periodo, el comprador va al final y sin destacar. */
@@ -90,7 +103,114 @@ export type KpiBuyer = Buyer & {
   alias?: boolean;
   profileId?: string | null;
   profileName?: string | null;
+  /** O3: la OC es de contrato y va a su grupo, sin persona. */
+  grupo?: 'contrato';
 };
+
+/**
+ * O3: a qué grupo va cada renglón de los KPIs por persona: una persona
+ * compradora, "Sin comprador identificado" o "OC de contrato" (los dos
+ * últimos en gris y al final, en ese orden).
+ */
+export type GrupoComprador = 'persona' | 'sin_comprador' | 'contrato';
+
+const ORDEN_GRUPO: Record<GrupoComprador, number> = {
+  persona: 0,
+  sin_comprador: 1,
+  contrato: 2,
+};
+
+/** O3: comprador de una OC de contrato (su grupo, sin persona). */
+export const OC_DE_CONTRATO: KpiBuyer = {
+  name: null,
+  kind: null,
+  grupo: 'contrato',
+};
+
+/** O3: llave del grupo de contrato (`personKey`); no choca con un nombre. */
+const CONTRATO_KEY = 'grupo:contrato';
+
+/**
+ * O3 (2026-10-26): desde cuándo vale el comprador de las gráficas: la RQ de
+ * Maximo trae al comprador en las OC de 2026 (480 de 483 sin contrato) e
+ * Ingrid pidió acotar las gráficas a 2026.
+ */
+export const COMPRADOR_DESDE_ANIO = 2026;
+
+/** "Ingrid, Diana, Jorge y Ana": los nombres de pila de la marca de SAP. */
+export function compradoresSapTexto(): string {
+  const nombres = COMPRADORES_SAP.map((c) => c.nombre.split(' ')[0]);
+  return nombres.length <= 1
+    ? nombres.join('')
+    : `${nombres.slice(0, -1).join(', ')} y ${nombres[nombres.length - 1]}`;
+}
+
+/**
+ * O3: aviso para "Todos" o un año anterior a 2026; null desde 2026. En
+ * Maximo, las OC de antes casi no traen RQ; en SAP, la marca es la lista de
+ * hoy y quien capturaba antes (p. ej. Laura Montaño) no está en ella.
+ */
+export function compradorAviso(year: number | null): string | null {
+  if (year !== null && year >= COMPRADOR_DESDE_ANIO) return null;
+  return `El comprador se registra desde ${COMPRADOR_DESDE_ANIO}. En Maximo sale de la solicitud de cotización (RQ), que las OC de antes casi no traen; en SAP solo cuentan quienes hoy son compradores (${compradoresSapTexto()}). Por eso, ${
+    year === null ? 'con "Todos"' : `en ${year}`
+  }, muchas OC van a "Sin comprador identificado".`;
+}
+
+/**
+ * O3 (2026-10-26): quién es comprador en SAP, por su nombre en SAP (y su
+ * usuario de Maximo, para ligarlo por el perfil). Va en una constante
+ * mientras no exista la marca "Es comprador" en Compras → Roles: sería una
+ * columna nueva (migración 0022). Se compara sin acentos ni mayúsculas
+ * ("Ingrid Torres GUTIÉRREZ" de SAP = "Ingrid Torres Gutiérrez").
+ */
+export const COMPRADORES_SAP: ReadonlyArray<{
+  nombre: string;
+  maximo: string;
+}> = [
+  { nombre: 'Ingrid Torres Gutiérrez', maximo: 'IVTOG' },
+  { nombre: 'Diana Yohara Méndez', maximo: 'DYMP1' },
+  { nombre: 'Jorge González', maximo: 'JAGS1' },
+  { nombre: 'Ana Daniela Contreras Sánchez', maximo: 'ADCS1' },
+];
+
+/** O3: a quién marca `COMPRADORES_SAP`: nombres plegados y perfiles ligados. */
+export interface BuyerMark {
+  keys: Set<string>;
+  profiles: Set<string>;
+}
+
+/**
+ * O3: la marca con el directorio de personas de N2: además del nombre, el
+ * perfil al que liga cada comprador (por su usuario de Maximo o por su
+ * nombre), para que valga en los dos sistemas aunque SAP lo escriba distinto.
+ */
+export function buildBuyerMark(
+  dir: PersonDirectory = EMPTY_DIRECTORY,
+  compradores = COMPRADORES_SAP,
+): BuyerMark {
+  const keys = new Set<string>();
+  const profiles = new Set<string>();
+  for (const c of compradores) {
+    const key = buyerKey(c.nombre);
+    if (key) keys.add(key);
+    const profile =
+      dir.aliasProfile.get(c.maximo.trim().toLowerCase()) ??
+      (key ? dir.aliasNameProfile.get(key) : undefined) ??
+      (key ? dir.profileByName.get(key) : undefined);
+    if (profile) profiles.add(profile);
+  }
+  return { keys, profiles };
+}
+
+/** O3: la persona está marcada como compradora (por nombre o por perfil). */
+export function isMarkedBuyer(buyer: KpiBuyer, mark: BuyerMark): boolean {
+  const key = buyerKey(buyer.name);
+  return (
+    (key !== null && mark.keys.has(key)) ||
+    (!!buyer.profileId && mark.profiles.has(buyer.profileId))
+  );
+}
 
 /**
  * N2 (2026-10-16): con quién ligar a cada persona.
@@ -203,49 +323,79 @@ export const MAXIMO_SYSTEM_USERS = ['MAXADMIN', 'MAXREG'];
 const isMaximoSystemUser = (code: string | null) =>
   code !== null && MAXIMO_SYSTEM_USERS.includes(code.trim().toUpperCase());
 
-/** E4 con el perfil (N2): quien capturó la OC de SAP, ligado por su nombre. */
+/**
+ * E4 con el perfil (N2): quien capturó la OC de SAP, ligado por su nombre.
+ * O3: con `mark`, solo si está marcado como comprador (`COMPRADORES_SAP`);
+ * si no, "Sin comprador identificado". Sin `mark`, como en N.
+ */
 export function sapKpiBuyer(
   createdByName: string | null,
   dir: PersonDirectory = EMPTY_DIRECTORY,
+  mark?: BuyerMark,
 ): KpiBuyer {
   const key = buyerKey(createdByName);
   if (key && SAP_INTEGRATION_USERS.some((u) => buyerKey(u) === key)) {
     return NO_BUYER;
   }
-  return linkProfile(sapBuyer(createdByName), null, dir);
+  const buyer = linkProfile(sapBuyer(createdByName), null, dir);
+  if (mark && buyer.name !== null && !isMarkedBuyer(buyer, mark)) {
+    return NO_BUYER;
+  }
+  return buyer;
+}
+
+/** O3: lo que necesita `maximoKpiBuyer` de una OC de Maximo. */
+export interface MaximoKpiFields {
+  purchase_agent?: string | null;
+  purchase_agent_name?: string | null;
+  /** Ya no cuenta como comprador (O3); queda para "Capturó" en las tablas. */
+  created_by?: string | null;
+  /** O3: comprador de la RQ (`maximoRqBuyerJoin`). */
+  rq_buyer?: string | null;
+  rq_buyer_name?: string | null;
+  /** O3: la OC trae CONTRACTREFNUM (`maximoPoDeContrato`). */
+  de_contrato?: boolean | null;
 }
 
 /**
- * E4/F1 de una OC de Maximo (o de la OC de SAP que nació allá) para los KPIs:
- * `maximoBuyer` más `alias` = el nombre salió de Compras → Roles (el código
- * que usó la regla, PURCHASEAGENT o, sin él, el creador, tiene alias).
+ * O3 (2026-10-26) — comprador de una OC de Maximo (o de la OC de SAP que
+ * nació allá) para los KPIs por persona:
+ *  1. de contrato → grupo "OC de contrato";
+ *  2. el comprador de su RQ (CHANGEBY de RFQSTATUS): alias de Compras >
+ *     DISPLAYNAME de esa fila > usuario;
+ *  3. el agente de compras (PURCHASEAGENT), con la regla de E4;
+ *  4. si no, sin comprador ("Capturó" ya no cuenta).
+ * Un usuario de sistema (MAXADMIN, MAXREG) no es comprador: una RQ suya
+ * cuenta como sin RQ (sigue el agente) y como agente, sin comprador.
+ * `alias` = el nombre salió de Compras → Roles.
  */
 export function maximoKpiBuyer(
-  po: {
-    purchase_agent?: string | null;
-    purchase_agent_name?: string | null;
-    created_by?: string | null;
-  },
+  po: MaximoKpiFields,
   aliases: Map<string, string>,
   dir: PersonDirectory = EMPTY_DIRECTORY,
 ): KpiBuyer {
-  const code = po.purchase_agent || po.created_by || null;
-  if (isMaximoSystemUser(code)) return { ...NO_BUYER, alias: false };
-  return linkProfile(
-    {
-      ...maximoBuyer(
+  if (po.de_contrato) return OC_DE_CONTRATO;
+  // una RQ movida por un usuario de sistema no tiene comprador: sigue el agente
+  const rqCode = po.rq_buyer?.trim() || null;
+  const rq = rqCode && !isMaximoSystemUser(rqCode) ? rqCode : null;
+  const code = rq ?? (po.purchase_agent?.trim() || null);
+  if (code === null || isMaximoSystemUser(code)) {
+    return { ...NO_BUYER, alias: false };
+  }
+  const buyer: KpiBuyer = rq
+    ? {
+        name: aliases.get(rq) ?? (po.rq_buyer_name?.trim() || null) ?? rq,
+        kind: 'comprador',
+      }
+    : maximoBuyer(
         {
-          purchase_agent: po.purchase_agent ?? null,
+          purchase_agent: code,
           purchase_agent_name: po.purchase_agent_name ?? null,
-          created_by: po.created_by ?? null,
+          created_by: null,
         },
         aliases,
-      ),
-      alias: code !== null && aliases.has(code),
-    },
-    code,
-    dir,
-  );
+      );
+  return linkProfile({ ...buyer, alias: aliases.has(code) }, code, dir);
 }
 
 /** Comprador inferido (quien creó o capturó la OC) con nombre. */
@@ -253,9 +403,11 @@ const isInferred = (buyer: Buyer) =>
   buyer.kind === 'capturo' && buyerKey(buyer.name) !== null;
 
 export interface BuyerGroup<T> {
-  /** null = "Sin comprador identificado". */
+  /** null = sin persona: "Sin comprador identificado" u "OC de contrato" (`grupo`). */
   comprador: string | null;
-  /** 'capturo' si al menos una de sus OC tiene comprador inferido; null sin comprador. */
+  /** O3: persona, sin comprador o de contrato. */
+  grupo: GrupoComprador;
+  /** 'capturo' si al menos una de sus OC tiene comprador inferido; null sin persona. */
   tipo: BuyerKind;
   /** OC del grupo (suma de `weightOf`). */
   documentos: number;
@@ -266,11 +418,21 @@ export interface BuyerGroup<T> {
 
 /**
  * N2: llave de la persona = su perfil, si se pudo ligar; si no, el nombre
- * plegado. null = "Sin comprador identificado".
+ * plegado. null = "Sin comprador identificado". O3: las OC de contrato van a
+ * su propia llave.
  */
 export function personKey(buyer: KpiBuyer): string | null {
+  if (buyer.grupo === 'contrato') return CONTRATO_KEY;
   return buyer.profileId ? `perfil:${buyer.profileId}` : buyerKey(buyer.name);
 }
+
+/** O3: grupo de una llave de `personKey`. */
+const grupoDe = (key: string | null): GrupoComprador =>
+  key === null
+    ? 'sin_comprador'
+    : key === CONTRATO_KEY
+      ? 'contrato'
+      : 'persona';
 
 /**
  * Agrupa por persona (`personKey`). Nombre del grupo = el del perfil si está
@@ -309,7 +471,7 @@ export function groupByBuyer<T>(
     group.items.push(item);
     group.documentos += weight;
     if (buyer.profileName) group.profileName = cleanName(buyer.profileName);
-    if (key !== null && buyer.name) {
+    if (grupoDe(key) === 'persona' && buyer.name) {
       const variant = cleanName(buyer.name);
       const seen = group.variants.get(variant) ?? { oc: 0, alias: false };
       group.variants.set(variant, {
@@ -320,24 +482,33 @@ export function groupByBuyer<T>(
     }
     groups.set(key, group);
   }
-  return [...groups.entries()].map(([key, g]) => ({
-    comprador:
-      key === null
-        ? null
-        : (g.profileName ??
-          [...g.variants.entries()].sort(
-            ([a, va], [b, vb]) =>
-              Number(vb.alias) - Number(va.alias) ||
-              vb.oc - va.oc ||
-              a.localeCompare(b, 'es'),
-          )[0]?.[0] ??
-          null),
-    tipo: key === null ? null : g.capturo > 0 ? 'capturo' : 'comprador',
-    documentos: g.documentos,
-    documentos_capturo: g.capturo,
-    items: g.items,
-  }));
+  return [...groups.entries()].map(([key, g]) => {
+    const grupo = grupoDe(key);
+    return {
+      comprador:
+        grupo !== 'persona'
+          ? null
+          : (g.profileName ??
+            [...g.variants.entries()].sort(
+              ([a, va], [b, vb]) =>
+                Number(vb.alias) - Number(va.alias) ||
+                vb.oc - va.oc ||
+                a.localeCompare(b, 'es'),
+            )[0]?.[0] ??
+            null),
+      grupo,
+      tipo:
+        grupo !== 'persona' ? null : g.capturo > 0 ? 'capturo' : 'comprador',
+      documentos: g.documentos,
+      documentos_capturo: g.capturo,
+      items: g.items,
+    };
+  });
 }
+
+/** O3: personas primero; luego "Sin comprador identificado" y "OC de contrato". */
+const porGrupo = (a: { grupo: GrupoComprador }, b: { grupo: GrupoComprador }) =>
+  ORDEN_GRUPO[a.grupo] - ORDEN_GRUPO[b.grupo];
 
 /**
  * Suma por moneda, sin convertir (misma moneda se suma, distintas no),
@@ -374,8 +545,10 @@ export interface AhorroEntry {
 }
 
 export interface AhorroPorComprador {
-  /** null = "Sin comprador identificado". */
+  /** null = sin persona ("Sin comprador identificado" u "OC de contrato"). */
   comprador: string | null;
+  /** O3: persona, sin comprador o de contrato. */
+  grupo: GrupoComprador;
   tipo: BuyerKind;
   /** OC con ahorro. */
   documentos: number;
@@ -390,7 +563,7 @@ const mxnTotal = (list: CurrencyAmount[]) =>
 
 /**
  * M1: ahorro por comprador. Orden: ahorro en MXN de mayor a menor, luego
- * más OC; "Sin comprador identificado" al final.
+ * más OC; "Sin comprador identificado" y "OC de contrato" al final (O3).
  */
 export function ahorroPorComprador(
   entries: AhorroEntry[],
@@ -402,6 +575,7 @@ export function ahorroPorComprador(
   )
     .map((g) => ({
       comprador: g.comprador,
+      grupo: g.grupo,
       tipo: g.tipo,
       documentos: g.documentos,
       documentos_capturo: g.documentos_capturo,
@@ -409,7 +583,7 @@ export function ahorroPorComprador(
     }))
     .sort(
       (a, b) =>
-        Number(a.comprador === null) - Number(b.comprador === null) ||
+        porGrupo(a, b) ||
         mxnTotal(b.por_moneda) - mxnTotal(a.por_moneda) ||
         b.documentos - a.documentos ||
         byName(a.comprador, b.comprador),
@@ -494,8 +668,10 @@ export function sumAdjudicado(
 }
 
 export interface CompradorAdjudicado {
-  /** null = "Sin comprador identificado". */
+  /** null = sin persona ("Sin comprador identificado" u "OC de contrato"). */
   comprador: string | null;
+  /** O3: persona, sin comprador o de contrato. */
+  grupo: GrupoComprador;
   tipo: BuyerKind;
   /** OC adjudicadas del periodo. */
   documentos: number;
@@ -514,7 +690,7 @@ const mxnAdjudicado = (list: AdjudicadoAmount[]) =>
  * N1: por persona, el monto adjudicado y el ahorro, de los mismos renglones
  * que la tarjeta de Órdenes del tablero (adjudicado) y que "Ahorro acumulado"
  * (ahorro). Orden: adjudicado en MXN de mayor a menor; "Sin comprador
- * identificado" al final.
+ * identificado" y "OC de contrato" al final (O3).
  */
 export function compradoresAdjudicado(
   adjudicado: AdjudicadoEntry[],
@@ -538,6 +714,7 @@ export function compradoresAdjudicado(
       const ah = g.items.flatMap((i) => (i.kind === 'ahorro' ? [i.e] : []));
       return {
         comprador: g.comprador,
+        grupo: g.grupo,
         tipo: g.tipo,
         documentos: g.documentos,
         documentos_capturo: g.documentos_capturo,
@@ -550,7 +727,7 @@ export function compradoresAdjudicado(
     })
     .sort(
       (a, b) =>
-        Number(a.comprador === null) - Number(b.comprador === null) ||
+        porGrupo(a, b) ||
         mxnAdjudicado(b.adjudicado) - mxnAdjudicado(a.adjudicado) ||
         b.documentos - a.documentos ||
         byName(a.comprador, b.comprador),
@@ -582,8 +759,10 @@ export function buildAdjudicado(entries: AdjudicadoEntry[]) {
 
 /** M2: días de un comprador con la misma cuenta de G2 (promedio, mediana y N). */
 export interface GestionPorComprador extends SapGestionResult {
-  /** null = "Sin comprador identificado". */
+  /** null = sin persona ("Sin comprador identificado" u "OC de contrato"). */
   comprador: string | null;
+  /** O3: persona, sin comprador o de contrato. */
+  grupo: GrupoComprador;
   /** 'capturo' si alguna de sus N OC tiene comprador inferido. */
   tipo: BuyerKind;
   /** De las N, con comprador inferido (quien creó o capturó la OC). */
@@ -607,22 +786,25 @@ export interface MaximoGestionOc {
   buyer: KpiBuyer;
 }
 
-const tipoGestion = (comprador: string | null, capturo: number): BuyerKind =>
-  comprador === null ? null : capturo > 0 ? 'capturo' : 'comprador';
+const tipoGestion = (grupo: GrupoComprador, capturo: number): BuyerKind =>
+  grupo !== 'persona' ? null : capturo > 0 ? 'capturo' : 'comprador';
 
 /**
  * N2 (2026-10-16): orden de la tabla. Los de N ≥ `minOc` por gestiones, de
  * más a menos (empate: el más rápido primero); luego los de menos OC;
- * "Sin comprador identificado" al final. (M2 los ordenaba por días.)
+ * "Sin comprador identificado" y "OC de contrato" al final (O3). (M2 los
+ * ordenaba por días.)
  */
 export function sortGestion<
   T extends {
     comprador: string | null;
+    grupo: GrupoComprador;
     total: number;
     promedio_dias: number | null;
   },
 >(list: T[], minOc = MIN_OC_GESTION): T[] {
-  const rank = (g: T) => (g.comprador === null ? 2 : g.total >= minOc ? 0 : 1);
+  const rank = (g: T) =>
+    g.grupo !== 'persona' ? 1 + ORDEN_GRUPO[g.grupo] : g.total >= minOc ? 0 : 1;
   const promedio = (g: T) => g.promedio_dias ?? Number.MAX_VALUE;
   return [...list].sort(
     (a, b) =>
@@ -650,7 +832,8 @@ export function sapGestionPorComprador(
     ).total;
     return {
       comprador: g.comprador,
-      tipo: tipoGestion(g.comprador, capturo),
+      grupo: g.grupo,
+      tipo: tipoGestion(g.grupo, capturo),
       documentos_capturo: capturo,
       ...sapGestionDays(g.items, requests),
     };
@@ -679,7 +862,8 @@ export function maximoGestionPorComprador(
     ).total;
     return {
       comprador: g.comprador,
-      tipo: tipoGestion(g.comprador, capturo),
+      grupo: g.grupo,
+      tipo: tipoGestion(g.grupo, capturo),
       documentos_capturo: capturo,
       ...creacion,
       desde_aprobacion: {
@@ -698,6 +882,8 @@ export function maximoGestionPorComprador(
 /** N2: gestiones de una persona en los dos sistemas. */
 export interface GestionAmbos {
   comprador: string | null;
+  /** O3: persona, sin comprador o de contrato. */
+  grupo: GrupoComprador;
   tipo: BuyerKind;
   /** De las N, con comprador inferido. */
   documentos_capturo: number;
@@ -749,7 +935,8 @@ export function buildGestionAmbos(
     const capturo = inferred.sap.length + inferred.maximo.length;
     return {
       comprador: g.comprador,
-      tipo: tipoGestion(g.comprador, capturo),
+      grupo: g.grupo,
+      tipo: tipoGestion(g.grupo, capturo),
       documentos_capturo: capturo,
       ...averageAndMedian([...days.sap, ...days.maximo]),
       total: days.sap.length + days.maximo.length,

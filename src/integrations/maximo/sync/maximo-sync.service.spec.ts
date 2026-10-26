@@ -809,6 +809,133 @@ describe('K8 — re-mapeo sin "cambio" (AB_COMPRAS)', () => {
   });
 });
 
+describe('O (2026-10-26): CIISA agrega RFQSTATUS y EXCHANGERATE a las OC ya sincronizadas', () => {
+  /** La OC de PO104896 con lo que CIISA agregó el 26-oct (mismo rowstamp). */
+  function conRq(raw: NestedMbo = po5Raw()): NestedMbo {
+    raw.Attributes.EXCHANGERATE = { content: 1.19 };
+    raw.RelatedMbos = {
+      ...raw.RelatedMbos,
+      RFQSTATUS: [
+        {
+          rowstamp: '990300001',
+          Attributes: {
+            RFQNUM: { content: 'RQ990001' },
+            CHANGEBY: { content: 'USR041' },
+            RFQSTATUSSEQ: { content: 52164 },
+          },
+          RelatedMbos: {
+            PERSON: [
+              {
+                rowstamp: '990300002',
+                Attributes: {
+                  PERSONID: { content: 'USR041' },
+                  DISPLAYNAME: { content: 'Persona Demo 41' },
+                },
+              },
+            ],
+          },
+        },
+        {
+          rowstamp: '990300003',
+          Attributes: {
+            RFQNUM: { content: 'RQ990001' },
+            CHANGEBY: { content: 'USR042' },
+            RFQSTATUSSEQ: { content: 52100 },
+          },
+        },
+      ],
+    };
+    return raw;
+  }
+
+  it('el primer full con el mapper nuevo: un remapped por mapper con el raw nuevo, sin last_changed_at; después unchanged', async () => {
+    const { service, prisma, client, lines } = makeService({
+      sync: { pageSize: 100 },
+    });
+    // Sincronizada antes de que CIISA agregara los campos, con el mapper anterior
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(po5Raw()));
+    await service.syncPurchaseOrders('manual');
+    const row = prisma.maximo_purchase_orders.rows[0];
+    row.mapper_version = '2026.10.05-1';
+    const hashAntes = row.raw_hash;
+
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(conRq()));
+    const second = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(second)).toEqual({
+      status: 'success',
+      inserted: 0,
+      updated: 0,
+      remapped: 1,
+      unchanged: 0,
+      failed: 0,
+    });
+    // la razón es el mapper (cambian los dos; el mapper manda)
+    expect(lines.join('\n')).toContain('remapped=1 (por mapper=1, por hash=0)');
+    expect(row.mapper_version).toBe(MAXIMO_MAPPER_VERSION);
+    expect(row.raw_hash).not.toBe(hashAntes);
+    expect(row.last_changed_at).toBeUndefined();
+    // lo que leen las consultas (erp-views) ya está en el raw guardado
+    const guardado = toPurchaseOrder(row.raw);
+    expect(guardado.rfqBuyer?.changedBy).toBe('USR041');
+    expect(guardado.exchangeRate).toBe(1.19);
+    // las columnas mapeadas no cambian
+    expect(row.created_by).toBe('USR024');
+    expect(row.purchase_agent).toBe('USR024');
+
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(conRq()));
+    const third = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(third)).toMatchObject({
+      updated: 0,
+      remapped: 0,
+      unchanged: 1,
+    });
+  });
+
+  it('si CIISA los agrega cuando el mapper ya es el nuevo: remapped por hash, una vez', async () => {
+    const { service, prisma, client, lines } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(po5Raw()));
+    await service.syncPurchaseOrders('manual');
+    client.fetchPurchaseOrders.mockResolvedValueOnce(poPageOf(conRq()));
+    const second = await service.syncPurchaseOrders('cron');
+    expect(summaryOf(second)).toMatchObject({ updated: 0, remapped: 1 });
+    expect(lines.join('\n')).toContain('por mapper=0, por hash=1');
+    expect(
+      prisma.maximo_purchase_orders.rows[0].last_changed_at,
+    ).toBeUndefined();
+  });
+
+  it('el hash de RFQSTATUS: su orden, sus rowstamps y los campos de su PERSON fuera de la proyección no cuentan; el DISPLAYNAME sí', () => {
+    const hash = maximoRawHash(conRq());
+
+    const reordered = conRq();
+    related(reordered, 'RFQSTATUS').reverse();
+    related(reordered, 'RFQSTATUS')[0].rowstamp = '111111111';
+    expect(maximoRawHash(reordered)).toBe(hash);
+
+    const personStatus = conRq();
+    related(
+      related(personStatus, 'RFQSTATUS')[0],
+      'PERSON',
+    )[0].Attributes.STATUS = { content: 'INACTIVE' };
+    expect(maximoRawHash(personStatus)).toBe(hash);
+
+    const otroNombre = conRq();
+    related(
+      related(otroNombre, 'RFQSTATUS')[0],
+      'PERSON',
+    )[0].Attributes.DISPLAYNAME = { content: 'Persona Demo 43' };
+    expect(maximoRawHash(otroNombre)).not.toBe(hash);
+
+    const otroComprador = conRq();
+    related(otroComprador, 'RFQSTATUS')[0].Attributes.CHANGEBY = {
+      content: 'USR043',
+    };
+    expect(maximoRawHash(otroComprador)).not.toBe(hash);
+  });
+});
+
 describe('K3/K8 — AB_CONTRATOS: historial de la PR y filas obsoletas', () => {
   it('K3: escribe los pr_* y UN historial por PR; una PR con dos revisiones queda con un historial completo', async () => {
     const { service, prisma, client } = makeService({

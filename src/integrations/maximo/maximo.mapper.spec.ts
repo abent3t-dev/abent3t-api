@@ -28,6 +28,9 @@ const legacyRecords = (name: string, os: 'AB_COMPRAS' | 'AB_CONTRATOS') =>
   parseLegacyEnvelope(fixture(name), os).records;
 const oslcRecords = (name: string) => parseOslcEnvelope(fixture(name)).records;
 
+/** O (2026-10-26): RFQSTATUS, EXCHANGERATE y CONTRACTREFNUM (SYNTHETIC). */
+const RQ_FIXTURE = 'ab-compras.legacy-nested.rq-tc-contrato.SYNTHETIC.json';
+
 /** Recorre el DTO y devuelve las rutas cuyo valor es `undefined`. */
 function undefinedPaths(value: unknown, path = '$'): string[] {
   if (value === undefined) return [path];
@@ -121,8 +124,8 @@ describe('canonicalize (common, K3.7)', () => {
 });
 
 describe('versión del mapper', () => {
-  it('2026.10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas', () => {
-    expect(MAXIMO_MAPPER_VERSION).toBe('2026.10.05-1');
+  it('2026.10.26-1: comprador de la RQ (O3), tipo de cambio y referencia de contrato (O1)', () => {
+    expect(MAXIMO_MAPPER_VERSION).toBe('2026.10.26-1');
   });
 });
 
@@ -318,6 +321,7 @@ describe('toPurchaseOrder (AB_COMPRAS)', () => {
         'ab-compras.legacy-nested.po5-linecost.SYNTHETIC.json',
         'AB_COMPRAS',
       ),
+      ...legacyRecords(RQ_FIXTURE, 'AB_COMPRAS'),
     ].map(toPurchaseOrder);
     for (const po of pos) expect(undefinedPaths(po)).toEqual([]);
     // Registro mínimo: solo PONUM
@@ -1349,5 +1353,153 @@ describe('PR de AB_CONTRATOS: estatus, fechas e historial (K3, 2026-10-05)', () 
     // La PR de contrato APPR con la PR en CLOSE no es pendiente de nada.
     expect(deContrato.has('PR990006')).toBe(true);
     expect(byPr('PR990006').prStatus).toBe('CLOSE');
+  });
+});
+
+describe('comprador de la RQ, tipo de cambio y contrato (O, 2026-10-26)', () => {
+  const rqPos = () =>
+    new Map(
+      legacyRecords(RQ_FIXTURE, 'AB_COMPRAS')
+        .map(toPurchaseOrder)
+        .map((po) => [po.ponum, po]),
+    );
+
+  /** La forma OSLC del mismo registro: claves en minúsculas y `_rowstamp`. */
+  function toOslc(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(toOslc);
+    if (value === null || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        k === 'ROWSTAMP' ? '_rowstamp' : k.toLowerCase(),
+        toOslc(v),
+      ]),
+    );
+  }
+
+  it('el comprador es la fila de RFQSTATUS con el RFQSTATUSSEQ más alto, con su nombre', () => {
+    const po = rqPos().get('PO990101')!;
+    expect(po.rfqBuyer).toEqual({
+      rfqNum: 'RQ990101',
+      changedBy: 'USR041',
+      displayName: 'Persona Demo 41',
+      seq: 52164,
+    });
+    expect(po.rfqNums).toEqual(['RQ990101']);
+    // "Capturó" sigue siendo quien creó la OC (dato del documento)
+    expect(po.createdBy).toBe('USR031');
+    expect(po.exchangeRate).toBe(0.0580848);
+    expect(po.contractRefNum).toBeNull();
+  });
+
+  it('RFQSTATUS debajo de la línea también cuenta; si su PERSON es otra persona, sin nombre', () => {
+    const po = rqPos().get('PO990102')!;
+    expect(po.rfqBuyer).toEqual({
+      rfqNum: 'RQ990102',
+      changedBy: 'USR043',
+      displayName: null,
+      seq: 52200,
+    });
+    expect(po.currencyCode).toBe('USD');
+    expect(po.exchangeRate).toBe(1);
+  });
+
+  it('OC de contrato = CONTRACTREFNUM con valor en la cabecera o en una línea', () => {
+    const pos = rqPos();
+    expect(pos.get('PO990103')!.contractRefNum).toBe('1035');
+    expect(pos.get('PO990103')!.rfqBuyer).toBeNull();
+    expect(pos.get('PO990105')!.contractRefNum).toBe('1040');
+    // vacío en la cabecera y "~null~" en la línea: no es de contrato
+    const eur = pos.get('PO990104')!;
+    expect(eur.contractRefNum).toBeNull();
+    expect(eur.rfqBuyer).toBeNull();
+    expect(eur.rfqNums).toEqual([]);
+    expect(eur.exchangeRate).toBe(1.19);
+  });
+
+  it('las tres formas (anidado, compacto y OSLC) dan el mismo DTO', () => {
+    for (const raw of legacyRecords(RQ_FIXTURE, 'AB_COMPRAS')) {
+      const nested = toPurchaseOrder(raw);
+      const compact = canonicalize(raw);
+      expect(toPurchaseOrder(compact)).toEqual(nested);
+      expect(toPurchaseOrder(toOslc(compact))).toEqual(nested);
+    }
+  });
+
+  it('filas sin CHANGEBY no cuentan; sin RFQSTATUSSEQ van al final; empate, el usuario menor', () => {
+    const base = { PONUM: 'PO-RQ' };
+    const row = (changeby: string | null, seq: number | null) => ({
+      RFQNUM: 'RQ1',
+      CHANGEBY: changeby,
+      RFQSTATUSSEQ: seq,
+    });
+    expect(
+      toPurchaseOrder({
+        ...base,
+        RFQSTATUS: [row(null, 99), row('USR002', null), row('USR001', 5)],
+      }).rfqBuyer?.changedBy,
+    ).toBe('USR001');
+    expect(
+      toPurchaseOrder({
+        ...base,
+        RFQSTATUS: [row('USR009', 7), row('USR003', 7)],
+      }).rfqBuyer?.changedBy,
+    ).toBe('USR003');
+    expect(
+      toPurchaseOrder({ ...base, RFQSTATUS: [row('USR004', null)] }).rfqBuyer,
+    ).toEqual({
+      rfqNum: 'RQ1',
+      changedBy: 'USR004',
+      displayName: null,
+      seq: null,
+    });
+    const sinRq = toPurchaseOrder({ ...base, RFQSTATUS: [row(' ', 3)] });
+    expect(sinRq.rfqBuyer).toBeNull();
+    expect(sinRq.rfqNums).toEqual(['RQ1']);
+  });
+
+  it('casos borde, igual que el SQL: espacios ASCII, " ~null~ ", números, la primera PERSON que es objeto y el empate por orden', () => {
+    const po = (extra: Record<string, unknown>) =>
+      toPurchaseOrder({ PONUM: 'PO-B', ...extra });
+    expect(
+      po({ CONTRACTREFNUM: '\t', POLINE: [{ CONTRACTREFNUM: ' ~null~ ' }] })
+        .contractRefNum,
+    ).toBeNull();
+    expect(po({ EXCHANGERATE: ' 17.5 ' }).exchangeRate).toBe(17.5);
+    expect(po({ EXCHANGERATE: '0x10' }).exchangeRate).toBeNull();
+    expect(
+      po({
+        RFQSTATUS: [
+          { CHANGEBY: '\t', RFQSTATUSSEQ: 9 },
+          { CHANGEBY: 'USR007', RFQSTATUSSEQ: '0x10' },
+        ],
+      }).rfqBuyer,
+    ).toEqual({
+      rfqNum: null,
+      changedBy: 'USR007',
+      displayName: null,
+      seq: null,
+    });
+    expect(
+      po({
+        RFQSTATUS: [
+          {
+            CHANGEBY: 'USR008',
+            PERSON: [
+              'x',
+              { PERSONID: 'USR008', DISPLAYNAME: 'Persona Demo 8' },
+            ],
+          },
+        ],
+      }).rfqBuyer?.displayName,
+    ).toBe('Persona Demo 8');
+    // empate completo (mismo usuario y número): gana la primera que llega
+    expect(
+      po({
+        RFQSTATUS: [
+          { CHANGEBY: 'USR001', RFQSTATUSSEQ: 5, RFQNUM: 'RQA' },
+          { CHANGEBY: 'USR001', RFQSTATUSSEQ: 5, RFQNUM: 'RQB' },
+        ],
+      }).rfqBuyer?.rfqNum,
+    ).toBe('RQA');
   });
 });

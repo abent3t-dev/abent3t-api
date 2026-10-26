@@ -68,6 +68,22 @@ export interface MaximoPurchaseOrderLineDto {
   lineCost: number | null;
 }
 
+/**
+ * O3 (2026-10-26): comprador de la solicitud de cotización (RQ) de la OC.
+ * CIISA manda en AB_COMPRAS un RFQSTATUS por OC con RQ, ya elegido (el
+ * cambio de estatus que hizo el comprador, sin estatus ni fecha).
+ */
+export interface MaximoRfqBuyerDto {
+  /** RFQSTATUS.RFQNUM: liga la OC con su RQ. */
+  rfqNum: string | null;
+  /** RFQSTATUS.CHANGEBY: usuario de Maximo del comprador. */
+  changedBy: string;
+  /** PERSON.DISPLAYNAME de esa fila (si su PERSONID es otro, null). */
+  displayName: string | null;
+  /** RFQSTATUS.RFQSTATUSSEQ: con varias filas, gana la más alta. */
+  seq: number | null;
+}
+
 export interface MaximoPurchaseOrderDto {
   erp: typeof MAXIMO_ERP;
   ponum: string;
@@ -129,6 +145,26 @@ export interface MaximoPurchaseOrderDto {
   purchaseAgent: string | null;
   /** DISPLAYNAME de la PERSON de la OC cuando es el PURCHASEAGENT (E4). */
   purchaseAgentName: string | null;
+  /**
+   * O3 (2026-10-26): comprador de la RQ = la fila de RFQSTATUS (de la
+   * cabecera o de una línea) con CHANGEBY y el RFQSTATUSSEQ más alto. null =
+   * OC sin RQ. La misma regla en SQL: `maximoRqBuyerJoin` (erp-views).
+   */
+  rfqBuyer: MaximoRfqBuyerDto | null;
+  /** O3: RFQNUM distintos de todas las filas de RFQSTATUS, ordenados. */
+  rfqNums: string[];
+  /**
+   * O1 (2026-10-26): PO.EXCHANGERATE tal como llega, CONTRA EL DÓLAR (la
+   * moneda base de Maximo): ~0.058 en una OC en pesos, 1 en dólares y ~1.19
+   * en euros. null = no viene.
+   */
+  exchangeRate: number | null;
+  /**
+   * O1/O3 (2026-10-26): CONTRACTREFNUM de la OC: el de la cabecera o, si no,
+   * el de la primera línea que lo traiga. OC de contrato =
+   * `contractRefNum !== null`; en SQL, `maximoPoDeContrato` (erp-views).
+   */
+  contractRefNum: string | null;
 
   /** PERSON.DEPARTMENT. */
   area: string | null;

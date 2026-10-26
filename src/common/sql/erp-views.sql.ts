@@ -171,6 +171,122 @@ export function andBetween(
   return Prisma.sql`${desde} ${hasta}`;
 }
 
+/*
+ * O (2026-10-26) — Datos de AB_COMPRAS que CIISA agregó y que no tienen
+ * columna (sin migración): se leen del `raw` de la OC, en sus tres formas
+ * (legacy anidado `Attributes`/`RelatedMbos`, compacto y OSLC en
+ * minúsculas), con la MISMA regla que el mapper (`contractRefNumOf`,
+ * `rfqBuyerOf` y `exchangeRate` en maximo.mapper.ts). Solo se mira la
+ * cabecera y las líneas (POLINE): recorrer todo el JSON con `.**` costaba
+ * ~14 veces más (2.5 s contra 0.18 s por cada 5,000 OC).
+ */
+
+/**
+ * Texto de un escalar del raw como lo desenvuelve el canonizador: texto o
+ * número tal cual, `{ content: X }` → X; booleanos y lo demás → NULL.
+ */
+function rawScalar(value: string): string {
+  return `(CASE jsonb_typeof(${value})
+    WHEN 'string' THEN ${value} #>> '{}' WHEN 'number' THEN ${value} #>> '{}'
+    WHEN 'object' THEN (CASE WHEN jsonb_typeof(${value} -> 'content') IN ('string', 'number')
+      THEN ${value} ->> 'content' END) END)`;
+}
+
+/**
+ * Texto de un atributo de un nodo del raw, sin espacios ASCII a los lados
+ * (espacio, tabulador, saltos, \f y \v: los mismos que recorta el mapper);
+ * vacío y "~null~" → NULL.
+ */
+function rawText(node: string, key: string): string {
+  const upper = key.toUpperCase();
+  const lower = key.toLowerCase();
+  return `nullif(nullif(btrim(coalesce(${rawScalar(`(${node} #> '{Attributes,${upper}}')`)},
+    ${rawScalar(`(${node} -> '${upper}')`)}, ${rawScalar(`(${node} -> '${lower}')`)}),
+    E' \\t\\n\\r\\f\\x0B'), ''), '~null~')`;
+}
+
+/** Número de un atributo de un nodo del raw; si no es número, NULL. */
+function rawNumber(node: string, key: string): string {
+  const text = rawText(node, key);
+  return `(CASE WHEN ${text} ~ '^[-+]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][-+]?[0-9]+)?$' THEN (${text})::numeric END)`;
+}
+
+/** Hijos `key` de un nodo del raw como arreglo (si no es arreglo, vacío). */
+function rawChildren(node: string, key: string): string {
+  const upper = key.toUpperCase();
+  const value = `coalesce(${node} #> '{RelatedMbos,${upper}}', ${node} -> '${upper}', ${node} -> '${key.toLowerCase()}')`;
+  return `(CASE WHEN jsonb_typeof(${value}) = 'array' THEN ${value} ELSE '[]'::jsonb END)`;
+}
+
+/**
+ * La cabecera de la OC (`alias.raw`) y sus líneas: una fila por nodo,
+ * columnas `n` y `nodo_ord` (0 la cabecera; las líneas en su orden).
+ */
+function rawHeaderAndLines(alias: string): string {
+  return `SELECT ${alias}.raw AS n, 0::bigint AS nodo_ord
+    UNION ALL SELECT l.value, l.ord
+    FROM jsonb_array_elements(${rawChildren(`${alias}.raw`, 'POLINE')}) WITH ORDINALITY AS l(value, ord)`;
+}
+
+/**
+ * O1/O3: la OC de Maximo (`alias`, con `raw`) es de contrato = trae
+ * CONTRACTREFNUM con valor en la cabecera o en una línea (mapper:
+ * `contractRefNumOf`). Es la marca de "OC de contrato" de los montos del
+ * avance (O1) y de las gráficas por comprador (O3).
+ */
+export function maximoPoDeContrato(alias: string): Prisma.Sql {
+  return Prisma.raw(`EXISTS (SELECT 1 FROM (${rawHeaderAndLines(alias)}) AS nodos
+    WHERE ${rawText('nodos.n', 'CONTRACTREFNUM')} IS NOT NULL)`);
+}
+
+/**
+ * O1: PO.EXCHANGERATE de la OC (`alias`), CONTRA EL DÓLAR (la moneda base
+ * de Maximo): ~0.058 en pesos, 1 en dólares y ~1.19 en euros. NULL si no
+ * viene o no es número.
+ */
+export function maximoPoExchangeRate(alias: string): Prisma.Sql {
+  return Prisma.raw(rawNumber(`${alias}.raw`, 'EXCHANGERATE'));
+}
+
+/**
+ * O3: comprador de la RQ de la OC (`alias`) como `LEFT JOIN LATERAL` con
+ * alias `as`: columnas `rq_buyer` (CHANGEBY), `rq_buyer_name`
+ * (PERSON.DISPLAYNAME de esa fila, salvo que su PERSONID sea otro) y
+ * `rq_num` (RFQNUM). Es la fila de RFQSTATUS de la cabecera o de una línea
+ * con CHANGEBY y el RFQSTATUSSEQ más alto (sin número al final; empate, el
+ * usuario menor y luego la primera que llega), con el nombre de su primera
+ * PERSON. Mapper: `rfqBuyerOf`. Sin RQ, las tres en NULL.
+ */
+export function maximoRqBuyerJoin(alias: string, as = 'rq'): Prisma.Sql {
+  return Prisma.raw(`LEFT JOIN LATERAL (
+    SELECT f.changeby AS rq_buyer,
+           CASE WHEN f.personid IS NULL OR upper(f.personid) = upper(f.changeby)
+                THEN f.displayname END AS rq_buyer_name,
+           f.rfqnum AS rq_num
+    FROM (
+      SELECT ${rawText('r.value', 'CHANGEBY')} AS changeby,
+             ${rawNumber('r.value', 'RFQSTATUSSEQ')} AS seq,
+             ${rawText('r.value', 'RFQNUM')} AS rfqnum,
+             ${rawText('p.person', 'DISPLAYNAME')} AS displayname,
+             ${rawText('p.person', 'PERSONID')} AS personid,
+             nodos.nodo_ord, r.ord AS fila_ord
+      FROM (${rawHeaderAndLines(alias)}) AS nodos
+      CROSS JOIN LATERAL jsonb_array_elements(${rawChildren('nodos.n', 'RFQSTATUS')})
+        WITH ORDINALITY AS r(value, ord)
+      LEFT JOIN LATERAL (
+        SELECT pe.value AS person
+        FROM jsonb_array_elements(${rawChildren('r.value', 'PERSON')}) WITH ORDINALITY AS pe(value, ord)
+        WHERE jsonb_typeof(pe.value) = 'object'
+        ORDER BY pe.ord
+        LIMIT 1
+      ) AS p ON true
+    ) f
+    WHERE f.changeby IS NOT NULL
+    ORDER BY f.seq DESC NULLS LAST, f.changeby COLLATE "C", f.nodo_ord, f.fila_ord
+    LIMIT 1
+  ) ${as} ON true`);
+}
+
 /** PRNUM que ya tienen OC: las de las OC vigentes no canceladas (G3). */
 export const MAXIMO_PRS_WITH_PO = Prisma.sql`
   SELECT DISTINCT unnest(p.pr_nums) AS prnum
@@ -248,6 +364,13 @@ export interface MaximoGestionRow {
   purchase_agent?: string | null;
   purchase_agent_name?: string | null;
   created_by?: string | null;
+  /**
+   * O3 (2026-10-26), solo con `{ comprador: true }`: comprador de la RQ
+   * (`maximoRqBuyerJoin`) y si la OC es de contrato (`maximoPoDeContrato`).
+   */
+  rq_buyer?: string | null;
+  rq_buyer_name?: string | null;
+  de_contrato?: boolean | null;
 }
 
 /**
@@ -265,11 +388,21 @@ export interface MaximoGestionRow {
  * M2 (2026-10-14): trae también el PONUM, PURCHASEAGENT y creador de cada OC
  * para agrupar los mismos días por comprador en Órdenes (columnas extra; el
  * cálculo no cambia).
+ *
+ * O3 (2026-10-26): con `{ comprador: true }` (solo Órdenes) agrega el
+ * comprador de la RQ y la marca de contrato, que se leen del `raw`; el
+ * tablero y Reportes no los piden y no pagan esa lectura.
  */
 export function maximoGestionSql(
   from: Date | null,
   toExcl: Date | null,
+  opciones: { comprador?: boolean } = {},
 ): Prisma.Sql {
+  const comprador = opciones.comprador
+    ? Prisma.sql`, ${maximoPoDeContrato('oc')} AS de_contrato,
+           rq.rq_buyer, rq.rq_buyer_name`
+    : Prisma.empty;
+  const rq = opciones.comprador ? maximoRqBuyerJoin('oc') : Prisma.empty;
   return Prisma.sql`
     WITH oc AS (
       SELECT v.* FROM (${CURRENT_MAXIMO_POS}) v
@@ -289,7 +422,8 @@ export function maximoGestionSql(
            extract(epoch FROM (oc.created_at_source - f.aprobacion)) / 86400
              AS dias_desde_aprobacion,
            oc.ponum, oc.purchase_agent, oc.purchase_agent_name, oc.created_by
-    FROM oc LEFT JOIN fechas f ON f.id = oc.id`;
+           ${comprador}
+    FROM oc LEFT JOIN fechas f ON f.id = oc.id ${rq}`;
 }
 
 /**

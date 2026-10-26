@@ -1,0 +1,795 @@
+{
+  "QueryAB_COMPRASResponse": {
+    "rsStart": 0,
+    "rsCount": 5,
+    "AB_COMPRASSet": {
+      "PO": [
+        {
+          "rowstamp": "990201001",
+          "Attributes": {
+            "CURRENCYCODE": {
+              "content": "MXN"
+            },
+            "DESCRIPTION": {
+              "content": "OC demo PO990101"
+            },
+            "EXCHANGERATE": {
+              "content": 0.0580848
+            },
+            "ORDERDATE": {
+              "content": "2026-10-12T16:00:00+00:00"
+            },
+            "PO5": {
+              "content": "PROCESADO"
+            },
+            "PONUM": {
+              "content": "PO990101"
+            },
+            "RECEIPTS": {
+              "content": "NONE"
+            },
+            "REVISIONNUM": {
+              "content": 0
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "APPR"
+            },
+            "TOTALCOST": {
+              "content": 116.0
+            }
+          },
+          "RelatedMbos": {
+            "POLINE": [
+              {
+                "rowstamp": "990201101",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Servicio demo"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-10-12T16:00:00+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 100.0
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "PRNUM": {
+                    "content": "PR990101"
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "990201111",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 1
+                        },
+                        "PRNUM": {
+                          "content": "PR990101"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "990201121",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2026-10-05T15:00:00+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR021"
+                              },
+                              "STATUSDATE": {
+                                "content": "2026-10-12T16:00:00+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "COMPANIES": [
+              {
+                "rowstamp": "990201901",
+                "Attributes": {
+                  "COMPANY": {
+                    "content": "0009990001"
+                  },
+                  "NAME": {
+                    "content": "Proveedor Demo SL"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  }
+                }
+              }
+            ],
+            "POSTATUS": [
+              {
+                "rowstamp": "990201201",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR032"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-12T18:00:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990211,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "APPR"
+                  }
+                }
+              },
+              {
+                "rowstamp": "990201202",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR031"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-12T16:00:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990210,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ],
+            "RFQSTATUS": [
+              {
+                "rowstamp": "990201301",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR042"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 52100
+                  }
+                },
+                "RelatedMbos": {
+                  "PERSON": [
+                    {
+                      "rowstamp": "990201302",
+                      "Attributes": {
+                        "DEPARTMENT": {
+                          "content": "Compras"
+                        },
+                        "DISPLAYNAME": {
+                          "content": "Persona Demo 42"
+                        },
+                        "PERSONID": {
+                          "content": "USR042"
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "rowstamp": "990201311",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR041"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 52164
+                  }
+                },
+                "RelatedMbos": {
+                  "PERSON": [
+                    {
+                      "rowstamp": "990201312",
+                      "Attributes": {
+                        "DEPARTMENT": {
+                          "content": "Compras"
+                        },
+                        "DISPLAYNAME": {
+                          "content": "Persona Demo 41"
+                        },
+                        "PERSONID": {
+                          "content": "USR041"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990201002",
+          "Attributes": {
+            "CURRENCYCODE": {
+              "content": "USD"
+            },
+            "DESCRIPTION": {
+              "content": "OC demo PO990102"
+            },
+            "EXCHANGERATE": {
+              "content": 1
+            },
+            "ORDERDATE": {
+              "content": "2026-10-13T17:30:00+00:00"
+            },
+            "PO5": {
+              "content": "PROCESADO"
+            },
+            "PONUM": {
+              "content": "PO990102"
+            },
+            "RECEIPTS": {
+              "content": "NONE"
+            },
+            "REVISIONNUM": {
+              "content": 0
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "APPR"
+            },
+            "TOTALCOST": {
+              "content": 1160.0
+            }
+          },
+          "RelatedMbos": {
+            "POLINE": [
+              {
+                "rowstamp": "990202101",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Servicio demo"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-10-13T17:30:00+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 1000.0
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "PRNUM": {
+                    "content": "PR990102"
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "990202111",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 1
+                        },
+                        "PRNUM": {
+                          "content": "PR990102"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "990202121",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2026-10-06T15:00:00+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR021"
+                              },
+                              "STATUSDATE": {
+                                "content": "2026-10-13T17:30:00+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  "RFQSTATUS": [
+                    {
+                      "rowstamp": "990202301",
+                      "Attributes": {
+                        "CHANGEBY": {
+                          "content": "USR043"
+                        },
+                        "RFQNUM": {
+                          "content": "RQ990102"
+                        },
+                        "RFQSTATUSSEQ": {
+                          "content": 52200
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PERSON": [
+                          {
+                            "rowstamp": "990202302",
+                            "Attributes": {
+                              "DEPARTMENT": {
+                                "content": "Compras"
+                              },
+                              "DISPLAYNAME": {
+                                "content": "Persona Demo 99"
+                              },
+                              "PERSONID": {
+                                "content": "USR099"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "COMPANIES": [
+              {
+                "rowstamp": "990201902",
+                "Attributes": {
+                  "COMPANY": {
+                    "content": "0009990001"
+                  },
+                  "NAME": {
+                    "content": "Proveedor Demo SL"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  }
+                }
+              }
+            ],
+            "POSTATUS": [
+              {
+                "rowstamp": "990202201",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR043"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-13T17:30:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990220,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990201003",
+          "Attributes": {
+            "CURRENCYCODE": {
+              "content": "MXN"
+            },
+            "DESCRIPTION": {
+              "content": "OC demo PO990103"
+            },
+            "EXCHANGERATE": {
+              "content": 0.0586761
+            },
+            "ORDERDATE": {
+              "content": "2026-10-14T15:00:00+00:00"
+            },
+            "PO5": {
+              "content": "PROCESADO"
+            },
+            "PONUM": {
+              "content": "PO990103"
+            },
+            "RECEIPTS": {
+              "content": "NONE"
+            },
+            "REVISIONNUM": {
+              "content": 0
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "APPR"
+            },
+            "TOTALCOST": {
+              "content": 58000.0
+            },
+            "CONTRACTREFNUM": {
+              "content": "1035"
+            }
+          },
+          "RelatedMbos": {
+            "POLINE": [
+              {
+                "rowstamp": "990203101",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Servicio demo"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-10-14T15:00:00+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 50000.0
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "PRNUM": {
+                    "content": "PR990103"
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "990203111",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 1
+                        },
+                        "PRNUM": {
+                          "content": "PR990103"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "990203121",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2026-10-07T15:00:00+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR021"
+                              },
+                              "STATUSDATE": {
+                                "content": "2026-10-14T15:00:00+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "COMPANIES": [
+              {
+                "rowstamp": "990201903",
+                "Attributes": {
+                  "COMPANY": {
+                    "content": "0009990001"
+                  },
+                  "NAME": {
+                    "content": "Proveedor Demo SL"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  }
+                }
+              }
+            ],
+            "POSTATUS": [
+              {
+                "rowstamp": "990203201",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR031"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-14T15:00:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990230,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990201004",
+          "Attributes": {
+            "CURRENCYCODE": {
+              "content": "EUR"
+            },
+            "DESCRIPTION": {
+              "content": "OC demo PO990104"
+            },
+            "EXCHANGERATE": {
+              "content": 1.19
+            },
+            "ORDERDATE": {
+              "content": "2026-10-15T16:00:00+00:00"
+            },
+            "PO5": {
+              "content": "PROCESADO"
+            },
+            "PONUM": {
+              "content": "PO990104"
+            },
+            "RECEIPTS": {
+              "content": "NONE"
+            },
+            "REVISIONNUM": {
+              "content": 0
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "APPR"
+            },
+            "TOTALCOST": {
+              "content": 500.0
+            },
+            "CONTRACTREFNUM": {
+              "content": ""
+            }
+          },
+          "RelatedMbos": {
+            "POLINE": [
+              {
+                "rowstamp": "990204101",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Servicio demo"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-10-15T16:00:00+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 431.03
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "PRNUM": {
+                    "content": "PR990104"
+                  },
+                  "CONTRACTREFNUM": {
+                    "content": "~null~"
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "990204111",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 1
+                        },
+                        "PRNUM": {
+                          "content": "PR990104"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "990204121",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2026-10-08T15:00:00+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR021"
+                              },
+                              "STATUSDATE": {
+                                "content": "2026-10-15T16:00:00+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "COMPANIES": [
+              {
+                "rowstamp": "990201904",
+                "Attributes": {
+                  "COMPANY": {
+                    "content": "0009990001"
+                  },
+                  "NAME": {
+                    "content": "Proveedor Demo SL"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  }
+                }
+              }
+            ],
+            "POSTATUS": [
+              {
+                "rowstamp": "990204201",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR033"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-15T16:00:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990240,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990201005",
+          "Attributes": {
+            "CURRENCYCODE": {
+              "content": "MXN"
+            },
+            "DESCRIPTION": {
+              "content": "OC demo PO990105"
+            },
+            "EXCHANGERATE": {
+              "content": 0.0580309
+            },
+            "ORDERDATE": {
+              "content": "2026-10-16T15:00:00+00:00"
+            },
+            "PO5": {
+              "content": "PROCESADO"
+            },
+            "PONUM": {
+              "content": "PO990105"
+            },
+            "RECEIPTS": {
+              "content": "NONE"
+            },
+            "REVISIONNUM": {
+              "content": 0
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "APPR"
+            },
+            "TOTALCOST": {
+              "content": 2320.0
+            }
+          },
+          "RelatedMbos": {
+            "POLINE": [
+              {
+                "rowstamp": "990205101",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Servicio demo"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-10-16T15:00:00+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 2000.0
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "PRNUM": {
+                    "content": "PR990105"
+                  },
+                  "CONTRACTREFNUM": {
+                    "content": "1040"
+                  }
+                },
+                "RelatedMbos": {
+                  "PRLINE": [
+                    {
+                      "rowstamp": "990205111",
+                      "Attributes": {
+                        "PRLINENUM": {
+                          "content": 1
+                        },
+                        "PRNUM": {
+                          "content": "PR990105"
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PR": [
+                          {
+                            "rowstamp": "990205121",
+                            "Attributes": {
+                              "ISSUEDATE": {
+                                "content": "2026-10-09T15:00:00+00:00"
+                              },
+                              "REQUESTEDBY": {
+                                "content": "USR021"
+                              },
+                              "STATUSDATE": {
+                                "content": "2026-10-16T15:00:00+00:00"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "COMPANIES": [
+              {
+                "rowstamp": "990201905",
+                "Attributes": {
+                  "COMPANY": {
+                    "content": "0009990001"
+                  },
+                  "NAME": {
+                    "content": "Proveedor Demo SL"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  }
+                }
+              }
+            ],
+            "POSTATUS": [
+              {
+                "rowstamp": "990205201",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR034"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-16T15:00:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990250,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

@@ -10,7 +10,9 @@ import {
   CURRENT_MAXIMO_POS,
   CURRENT_MAXIMO_PRS,
   maximoGestionSql,
+  maximoPoDeContrato,
   maximoPoMonto,
+  maximoRqBuyerJoin,
   type MontoBase,
   montoBaseNota,
   pendingWindowStart,
@@ -37,9 +39,14 @@ import {
   type AhorroEntry,
   buildAdjudicado,
   buildAhorro,
+  buildBuyerMark,
   buildGestionPorComprador,
   buildPersonDirectory,
+  COMPRADOR_DESDE_ANIO,
+  COMPRADORES_SAP,
+  compradorAviso,
   compradoresAdjudicado,
+  type MaximoKpiFields,
   maximoKpiBuyer,
   sapKpiBuyer,
 } from './buyer-kpis';
@@ -172,13 +179,9 @@ type SapAhorroRow = {
   total: unknown;
   count: number;
 };
-/** E4/F1: lo que necesita `maximoBuyer` de una OC de Maximo. */
-type MaximoBuyerFields = {
-  purchase_agent?: string | null;
-  purchase_agent_name?: string | null;
-  created_by?: string | null;
-};
-/** M1: ahorro de Maximo por PURCHASEAGENT/creador y moneda. */
+/** O3: lo que necesita `maximoKpiBuyer` de una OC de Maximo. */
+type MaximoBuyerFields = MaximoKpiFields;
+/** M1: ahorro de Maximo por comprador (O3: RQ, PURCHASEAGENT, contrato) y moneda. */
 type MaximoAhorroRow = MaximoBuyerFields & {
   currency: string | null;
   total: unknown;
@@ -191,7 +194,7 @@ type SapAdjudicadoRow = SapAhorroRow & {
   subtotal: unknown;
   sin_subtotal: number;
 };
-/** N1: OC sin IVA de Maximo por PURCHASEAGENT/creador y moneda. */
+/** N1: OC sin IVA de Maximo por comprador (O3) y moneda. */
 type MaximoAdjudicadoRow = MaximoAhorroRow & {
   subtotal: unknown;
   sin_subtotal: number;
@@ -632,14 +635,16 @@ export class PurchaseDashboardService {
         WHERE po.cancelled IS DISTINCT FROM true AND po.ahorro_total IS NOT NULL
           ${countedOnce} ${sapYear}
         GROUP BY po.currency, po.created_by_name`),
-      // M1: ahorro de Maximo por PURCHASEAGENT / creador (E4/F1) y moneda
+      // M1: ahorro de Maximo por comprador y moneda. O3: comprador de la RQ,
+      // PURCHASEAGENT y la marca de contrato, leídos del raw (erp-views)
       this.prisma.$queryRaw<MaximoAhorroRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
-        SELECT currency, purchase_agent, purchase_agent_name, created_by,
-               coalesce(sum(ab_ahorro), 0) AS total, count(*)::int AS count
-        FROM current
-        WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL') AND ab_ahorro IS NOT NULL ${maximoYear}
-        GROUP BY currency, purchase_agent, purchase_agent_name, created_by`),
+        SELECT c.currency, c.purchase_agent, c.purchase_agent_name,
+               ${maximoPoDeContrato('c')} AS de_contrato, rq.rq_buyer, rq.rq_buyer_name,
+               coalesce(sum(c.ab_ahorro), 0) AS total, count(*)::int AS count
+        FROM current c ${maximoRqBuyerJoin('c')}
+        WHERE coalesce(c.status, '') NOT IN ('CAN', 'CANCEL') AND c.ab_ahorro IS NOT NULL ${andYear('c.created_at_source', year)}
+        GROUP BY 1, 2, 3, 4, 5, 6`),
       // SAP: la clasificación vive en la línea (U_Clas_gts); el importe de
       // la línea (sin IVA) va en la moneda del documento (LineTotal en MXN,
       // RowTotalFC en documentos extranjeros — misma regla que el mapper).
@@ -666,10 +671,11 @@ export class PurchaseDashboardService {
         WHERE coalesce(status, '') NOT IN ('CAN', 'CANCEL')
           AND upper(ab_clasfpo) IN ('CAPEX', 'OPEX') ${maximoYear}
         GROUP BY 1, 2`),
-      // M2: las MISMAS OC de G2 que el tablero (misma consulta y periodo)
+      // M2: las MISMAS OC de G2 que el tablero (misma consulta y periodo);
+      // O3: con el comprador de la RQ y la marca de contrato
       this.prisma.$queryRaw<SapGestionRow[]>(sapGestionSql(yearFrom, yearTo)),
       this.prisma.$queryRaw<MaximoGestionRow[]>(
-        maximoGestionSql(yearFrom, yearTo),
+        maximoGestionSql(yearFrom, yearTo, { comprador: true }),
       ),
       // N1: OC de SAP sin IVA por quien la capturó y moneda: los filtros de
       // la tarjeta de Órdenes del tablero (no canceladas, D1, año por
@@ -681,14 +687,15 @@ export class PurchaseDashboardService {
         WHERE po.cancelled IS DISTINCT FROM true ${countedOnce} ${sapYear}
         GROUP BY po.currency, po.created_by_name`),
       // N1: OC de Maximo sin IVA (vista vigente, no canceladas, año por
-      // created_at_source) por PURCHASEAGENT / creador y moneda
+      // created_at_source) por comprador (O3) y moneda
       this.prisma.$queryRaw<MaximoAdjudicadoRow[]>(Prisma.sql`
         WITH current AS (${CURRENT_MAXIMO_POS})
-        SELECT c.currency, c.purchase_agent, c.purchase_agent_name, c.created_by,
+        SELECT c.currency, c.purchase_agent, c.purchase_agent_name,
+               ${maximoPoDeContrato('c')} AS de_contrato, rq.rq_buyer, rq.rq_buyer_name,
                ${poSubtotalColumns('c')}, count(*)::int AS count
-        FROM current c
+        FROM current c ${maximoRqBuyerJoin('c')}
         WHERE coalesce(c.status, '') NOT IN ('CAN', 'CANCEL') ${andYear('c.created_at_source', year)}
-        GROUP BY c.currency, c.purchase_agent, c.purchase_agent_name, c.created_by`),
+        GROUP BY 1, 2, 3, 4, 5, 6`),
       // N3: desde cuándo hay ahorro capturado (sin año), con los filtros de
       // la tarjeta
       this.prisma.$queryRaw<AhorroDesdeRow[]>(Prisma.sql`
@@ -719,7 +726,8 @@ export class PurchaseDashboardService {
       this.sapGestionRequests(gestionPos),
       this.maximoBuyersByPonum(ponums),
     ]);
-    // E4/F1: PURCHASEAGENT y creador son códigos → alias de Compras
+    // O3: el comprador de la RQ y el PURCHASEAGENT son códigos → alias de
+    // Compras
     const names = await this.aliases.resolveMany(
       'maximo',
       [
@@ -727,15 +735,17 @@ export class PurchaseDashboardService {
         ...maximoAdjudicado,
         ...maximoGestionRows,
         ...ponumBuyers,
-      ].flatMap((r) => [r.purchase_agent, r.created_by]),
+      ].flatMap((r) => [r.rq_buyer, r.purchase_agent]),
     );
     // N2: la persona ligada a su perfil (alias ligado o nombre igual)
     const directory = buildPersonDirectory(aliasEntries.values(), profiles);
-    // E4/F1 con el alias de Compras (el del alias nombra la barra)
+    // O3: en SAP solo cuentan los marcados como compradores
+    const mark = buildBuyerMark(directory);
+    // O3 con el alias de Compras (el del alias nombra la barra)
     const buyerOfMaximo = (r: MaximoBuyerFields) =>
       maximoKpiBuyer(r, names, directory);
     const buyerOfSap = (createdByName: string | null) =>
-      sapKpiBuyer(createdByName, directory);
+      sapKpiBuyer(createdByName, directory, mark);
     const maximoByPonum = new Map(
       ponumBuyers.map((m) => [m.ponum, buyerOfMaximo(m)]),
     );
@@ -892,6 +902,13 @@ export class PurchaseDashboardService {
       },
       // M2: días de G2 por comprador, por sistema; `total` = el del tablero
       gestion_por_comprador: gestionPorComprador,
+      // O3: desde cuándo vale el comprador y, antes de 2026, el aviso
+      comprador: {
+        desde_anio: COMPRADOR_DESDE_ANIO,
+        aviso: compradorAviso(year),
+        // los marcados como compradores en SAP (la constante; el front los nombra)
+        compradores_sap: COMPRADORES_SAP.map((c) => c.nombre),
+      },
       generated_at: new Date().toISOString(),
     };
   }
@@ -919,11 +936,15 @@ export class PurchaseDashboardService {
     ponums: string[],
   ): Promise<MaximoPonumBuyerRow[]> {
     if (ponums.length === 0) return [];
+    // O3: con el comprador de la RQ y la marca de contrato de esa revisión
     return this.prisma.$queryRaw<MaximoPonumBuyerRow[]>(Prisma.sql`
-      SELECT DISTINCT ON (ponum) ponum, purchase_agent, purchase_agent_name, created_by
-      FROM maximo_purchase_orders
-      WHERE ponum IN (${Prisma.join(ponums)})
-      ORDER BY ponum, coalesce(revisionnum, 0) DESC`);
+      SELECT m.ponum, m.purchase_agent, m.purchase_agent_name, m.created_by,
+             ${maximoPoDeContrato('m')} AS de_contrato, rq.rq_buyer, rq.rq_buyer_name
+      FROM (SELECT DISTINCT ON (ponum) *
+            FROM maximo_purchase_orders
+            WHERE ponum IN (${Prisma.join(ponums)})
+            ORDER BY ponum, coalesce(revisionnum, 0) DESC) m
+      ${maximoRqBuyerJoin('m')}`);
   }
 
   /** Joi ya lo convirtió a boolean; se tolera el string por robustez. */

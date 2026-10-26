@@ -12,6 +12,7 @@ import {
   MaximoPurchaseOrderDto,
   MaximoPurchaseOrderLineDto,
   MaximoPurchaseRequestRefDto,
+  MaximoRfqBuyerDto,
   MaximoStatusChangeDto,
   MaximoVendorDto,
 } from './dto/maximo-po.dto';
@@ -37,8 +38,12 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * Histórico (2026-09-21): Isaac confirmó CONTRACTVALUE=TOTALCOST y
  * CONTRACTREFNUM=CONTRACTNUM (§20.2 resuelta); antes de K8 eso se aplicaba
  * con `maximo:remap`.
+ * O (2026-10-26): los campos nuevos de la OC (comprador de la RQ, tipo de
+ * cambio y referencia de contrato) no tienen columna: se leen del `raw` (en
+ * SQL, erp-views), que el sync ya guarda completo. La versión sube para que
+ * el primer full los marque 'remapped' y no 'updated'.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.10.05-1'; // 10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas; 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
+export const MAXIMO_MAPPER_VERSION = '2026.10.26-1'; // 10.26-1: rfqBuyer/rfqNums (RFQSTATUS, O3) + exchangeRate + contractRefNum (O1); 10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas; 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -109,6 +114,112 @@ function first(
 
 function hasKey(rec: MaximoCanonicalRecord | null, key: string): boolean {
   return rec !== null && Object.prototype.hasOwnProperty.call(rec, key);
+}
+
+/**
+ * O (2026-10-26): la cabecera de la OC y sus líneas (POLINE), en ese orden.
+ * Ahí se buscan CONTRACTREFNUM (viene en la cabecera y puede venir en las
+ * líneas) y RFQSTATUS (CIISA no dijo en qué nivel lo puso). Solo esos dos
+ * niveles, igual que en SQL (erp-views): recorrer todo el JSON en cada
+ * consulta costaba ~14 veces más.
+ */
+function headerAndLines(r: MaximoCanonicalRecord): MaximoCanonicalRecord[] {
+  return [r, ...children(r, 'POLINE')];
+}
+
+/** Espacios que recorta el SQL (`btrim` con estos caracteres en erp-views). */
+const ESPACIOS_ASCII = /^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g;
+
+/**
+ * O: texto de un campo como lo lee el SQL (`rawText` en erp-views): sin
+ * espacios ASCII a los lados; vacío y "~null~" → null. Así el mapper y las
+ * consultas dan lo mismo también en casos raros (tabuladores, " ~null~ ").
+ */
+function textoComoSql(
+  rec: MaximoCanonicalRecord | null,
+  key: string,
+): string | null {
+  const text = str(rec, key)?.replace(ESPACIOS_ASCII, '') ?? '';
+  return text === '' || text === '~null~' ? null : text;
+}
+
+/** Número decimal o científico, la misma expresión que `rawNumber` (erp-views). */
+const NUMERO_SQL = /^[-+]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][-+]?[0-9]+)?$/;
+
+/** O: número de un campo como lo lee el SQL; si el texto no es número, null. */
+function numeroComoSql(
+  rec: MaximoCanonicalRecord | null,
+  key: string,
+): number | null {
+  const v = rec?.[key];
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  const text = textoComoSql(rec, key);
+  return text !== null && NUMERO_SQL.test(text) ? Number(text) : null;
+}
+
+/**
+ * O1/O3: CONTRACTREFNUM de la OC (la marca de "OC de contrato"): el de la
+ * cabecera o, si no, el de la primera línea que lo traiga con valor. La
+ * misma regla que el diagnóstico del 22-oct ("cabecera o líneas"; 132 OC de
+ * contrato en 2026). En SQL: `maximoPoDeContrato`.
+ */
+export function contractRefNumOf(r: MaximoCanonicalRecord): string | null {
+  for (const node of headerAndLines(r)) {
+    const text = textoComoSql(node, 'CONTRACTREFNUM');
+    if (text !== null) return text;
+  }
+  return null;
+}
+
+/** O1: PO.EXCHANGERATE (contra el dólar), como lo lee el SQL. */
+export function exchangeRateOf(r: MaximoCanonicalRecord): number | null {
+  return numeroComoSql(r, 'EXCHANGERATE');
+}
+
+/**
+ * O3 (2026-10-26): comprador de la RQ = la fila de RFQSTATUS (de la cabecera
+ * o de una línea) con CHANGEBY y el RFQSTATUSSEQ más alto (sin número al
+ * final; empate, el CHANGEBY menor y luego la primera que llega). Su nombre
+ * es el PERSON.DISPLAYNAME de la fila (su primera PERSON), salvo que esa
+ * PERSON sea otra persona (PERSONID distinto). Misma regla en SQL:
+ * `maximoRqBuyerJoin` (erp-views).
+ */
+export function rfqBuyerOf(r: MaximoCanonicalRecord): {
+  buyer: MaximoRfqBuyerDto | null;
+  rfqNums: string[];
+} {
+  const rows = headerAndLines(r).flatMap((node) => children(node, 'RFQSTATUS'));
+  const rfqNums = [
+    ...new Set(
+      rows
+        .map((row) => textoComoSql(row, 'RFQNUM'))
+        .filter((n): n is string => n !== null),
+    ),
+  ].sort();
+  let buyer: MaximoRfqBuyerDto | null = null;
+  for (const row of rows) {
+    const changedBy = textoComoSql(row, 'CHANGEBY');
+    if (changedBy === null) continue;
+    const seq = numeroComoSql(row, 'RFQSTATUSSEQ');
+    // estrictamente mejor: en un empate completo gana la que llegó primero
+    const better =
+      buyer === null ||
+      (seq ?? -Infinity) > (buyer.seq ?? -Infinity) ||
+      ((seq ?? -Infinity) === (buyer.seq ?? -Infinity) &&
+        changedBy < buyer.changedBy);
+    if (!better) continue;
+    const person = first(row, 'PERSON');
+    const personId = textoComoSql(person, 'PERSONID');
+    const samePerson =
+      personId === null || personId.toUpperCase() === changedBy.toUpperCase();
+    buyer = {
+      rfqNum: textoComoSql(row, 'RFQNUM'),
+      changedBy,
+      displayName: samePerson ? textoComoSql(person, 'DISPLAYNAME') : null,
+      seq,
+    };
+  }
+  return { buyer, rfqNums };
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +522,8 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
     .map((l) => l.pr?.issueDate ?? null)
     .filter((d): d is string => d !== null && !Number.isNaN(Date.parse(d)))
     .sort((a, b) => Date.parse(a) - Date.parse(b));
+  // O3: comprador de la RQ (RFQSTATUS, CIISA 26-oct)
+  const rfq = rfqBuyerOf(r);
 
   return {
     erp: MAXIMO_ERP,
@@ -444,6 +557,11 @@ export function toPurchaseOrder(raw: unknown): MaximoPurchaseOrderDto {
       str(r, 'PURCHASEAGENT'),
       mapPerson(buyerPerson),
     ),
+    // O1/O3 (2026-10-26): sin columna; en SQL se leen del raw (erp-views)
+    rfqBuyer: rfq.buyer,
+    rfqNums: rfq.rfqNums,
+    exchangeRate: exchangeRateOf(r),
+    contractRefNum: contractRefNumOf(r),
 
     area: str(buyerPerson, 'DEPARTMENT'),
     buyer: mapPerson(buyerPerson),
