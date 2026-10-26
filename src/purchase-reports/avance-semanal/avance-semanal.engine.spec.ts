@@ -4,6 +4,7 @@ import {
   type AvanceData,
   avanceDefiniciones,
   buildAvancePage,
+  cohorteAlDia,
   cohortes,
   type CuentaDias,
   diasHabiles,
@@ -19,6 +20,8 @@ import {
   montosAdjudicados,
   type OrdenMonto,
   semanaStats,
+  tipoDeCambio,
+  type TiposCambio,
   ventanaSemana,
   weeksBetween,
 } from './avance-semanal.engine';
@@ -76,6 +79,16 @@ const data = (
 const opciones = (o: Partial<AvanceOpciones>): AvanceOpciones => ({
   ...AVANCE_OPCIONES,
   ...o,
+});
+
+/**
+ * Las reglas de antes de O1 (corte el domingo, días naturales, montos sin
+ * IVA): las pruebas que las fijan las piden explícitas, porque el default ya
+ * es el de Jorge (viernes, hábiles y con IVA).
+ */
+const K5: AvanceOpciones = opciones({
+  reglas: { ...AVANCE_REGLAS, corte: 'domingo', dias_tipo: 'naturales' },
+  monto_base: 'sin_iva',
 });
 
 describe('semanas', () => {
@@ -254,6 +267,7 @@ describe('lo que pasó en la semana', () => {
         sap({ recibida: D('2026-09-01'), primera_oc: D('2026-09-20') }),
       ],
       D('2026-09-21'),
+      'domingo',
     );
     expect(s).toMatchObject({
       lunes: '2026-09-21',
@@ -270,13 +284,13 @@ describe('lo que pasó en la semana', () => {
 
   it('K5: una PR aprobada el domingo 23:30 de México cuenta en esa semana (no en la siguiente)', () => {
     const g = maximo({ recibida: T('2026-09-28T05:30:00Z') });
-    expect(semanaStats([g], D('2026-09-21')).nuevas).toBe(1);
-    expect(semanaStats([g], D('2026-09-28')).nuevas).toBe(0);
-    const [y2026] = cohortes([g], [2026], D('2026-09-21'));
+    expect(semanaStats([g], D('2026-09-21'), 'domingo').nuevas).toBe(1);
+    expect(semanaStats([g], D('2026-09-28'), 'domingo').nuevas).toBe(0);
+    const [y2026] = cohortes([g], [2026], D('2026-09-21'), 'domingo');
     expect(y2026.recibidas).toBe(1);
     // SAP por día calendario: el lunes 28 ya es de la semana siguiente
     const s = sap({ recibida: D('2026-09-28') });
-    expect(semanaStats([s], D('2026-09-21')).nuevas).toBe(0);
+    expect(semanaStats([s], D('2026-09-21'), 'domingo').nuevas).toBe(0);
     // con corte el viernes, el sábado 06:00 de México ya es de la siguiente
     const sabado = maximo({ recibida: T('2026-09-26T12:00:00Z') });
     expect(semanaStats([sabado], D('2026-09-21'), 'viernes').nuevas).toBe(0);
@@ -504,7 +518,7 @@ describe('H3: días hábiles (lunes a viernes sin festivos, con fracción)', () 
     };
     const now = T('2026-09-30T18:00:00Z');
     const enHabiles = opciones({
-      reglas: { ...AVANCE_REGLAS, dias_tipo: 'habiles' },
+      reglas: { ...AVANCE_REGLAS, corte: 'domingo', dias_tipo: 'habiles' },
     });
     const maximoPag = buildAvancePage(
       conFestivos,
@@ -543,13 +557,15 @@ describe('H3: días hábiles (lunes a viernes sin festivos, con fracción)', () 
     expect(sinFestivos.notas.join(' ')).toContain(
       'no hay días festivos registrados',
     );
-    // default (AVANCE_REGLAS): naturales, aunque haya festivos
-    expect(AVANCE_REGLAS.dias_tipo).toBe('naturales');
+    // O1: el default (AVANCE_REGLAS) ya es hábiles; en naturales, aunque
+    // haya festivos, no se quitan
+    expect(AVANCE_REGLAS.dias_tipo).toBe('habiles');
     const naturales = buildAvancePage(
       conFestivos,
       D('2026-09-21'),
       'maximo',
       now,
+      K5,
     );
     expect(naturales.cierre).toMatchObject({ unidad: 'días' });
     expect(naturales.cancelacion.unidad).toBe('días');
@@ -687,9 +703,10 @@ describe('montos adjudicados', () => {
       },
     ];
 
-    it('sin IVA (default): suma el subtotal, da el con IVA aparte y cuenta las OC sin subtotal', () => {
-      expect(AVANCE_OPCIONES.monto_base).toBe('sin_iva');
-      const m = montosAdjudicados(k5, 'maximo', 2026, lunes);
+    it('sin IVA: suma el subtotal, da el con IVA aparte y cuenta las OC sin subtotal', () => {
+      // O1: el default ya es con IVA
+      expect(AVANCE_OPCIONES.monto_base).toBe('con_iva');
+      const m = montosAdjudicados(k5, 'maximo', 2026, lunes, K5);
       expect(m.base).toBe('sin_iva');
       expect(m.total).toEqual({ MXN: 110 });
       expect(m.meses[0].montos).toEqual({ MXN: 10 });
@@ -715,7 +732,10 @@ describe('montos adjudicados', () => {
     });
 
     it("con 'sap_migradas', Maximo toma las OC de SAP migradas; SAP no cambia", () => {
-      const conMigradas = opciones({ montos_fuente_maximo: 'sap_migradas' });
+      const conMigradas = opciones({
+        montos_fuente_maximo: 'sap_migradas',
+        monto_base: 'sin_iva',
+      });
       const m = montosAdjudicados(k5, 'maximo', 2026, lunes, conMigradas);
       expect(m.total).toEqual({ MXN: 200 });
       expect(m.otro.total).toEqual({ MXN: 232 });
@@ -736,7 +756,7 @@ describe('montos adjudicados', () => {
         // abril: solo una OC en USD sin subtotal
         o('maximo', '2026-04-10', 58, { subtotal: null, moneda: 'USD' }),
       ];
-      const m = montosAdjudicados(conAbril, 'maximo', 2026, lunes);
+      const m = montosAdjudicados(conAbril, 'maximo', 2026, lunes, K5);
       expect(m.meses[0].sin_subtotal).toEqual({});
       // febrero: sin OC
       expect(m.meses[1]).toMatchObject({ montos: {}, sin_subtotal: {} });
@@ -755,7 +775,10 @@ describe('montos adjudicados', () => {
     });
 
     it("con 'sap_migradas', las copias de la misma PO en SAP se suman una vez (D1); 'sap' y 'todas' no cambian", () => {
-      const conMigradas = opciones({ montos_fuente_maximo: 'sap_migradas' });
+      const conMigradas = opciones({
+        montos_fuente_maximo: 'sap_migradas',
+        monto_base: 'sin_iva',
+      });
       // PO103374: la integración creó varias OC con el mismo NumAtCard,
       // total y fecha; vale la de menor DocNum (copia_migrada = false)
       const copias = [
@@ -792,17 +815,18 @@ describe('montos adjudicados', () => {
         lunes,
         'maximo',
         T('2026-09-30T18:00:00Z'),
+        K5,
       );
       expect(page.notas.join(' ')).toContain(
         'Montos sin IVA (suma de las líneas de la OC)',
       );
       expect(page.notas.join(' ')).toContain('1 OC sin subtotal');
+      // O1: el default es con IVA
       const conIva = buildAvancePage(
         data([], k5),
         lunes,
         'maximo',
         T('2026-09-30T18:00:00Z'),
-        opciones({ monto_base: 'con_iva' }),
       );
       expect(conIva.notas.join(' ')).toContain('Montos con IVA');
     });
@@ -826,6 +850,7 @@ describe('página de la semana', () => {
       D('2026-09-23'),
       'todas',
       now,
+      K5,
     );
     expect(page.semana).toMatchObject({
       lunes: '2026-09-21',
@@ -836,7 +861,7 @@ describe('página de la semana', () => {
       corte_dia: 'domingo',
     });
     expect(page.fuente.etiqueta).toBe('Maximo + SAP');
-    expect(page.opciones).toEqual(AVANCE_OPCIONES);
+    expect(page.opciones).toEqual(K5);
     expect(page.avance).toMatchObject({
       recibidas_anio: 4,
       nuevas_semana: 1,
@@ -881,6 +906,7 @@ describe('página de la semana', () => {
       D('2026-09-21'),
       'maximo',
       now,
+      K5,
     );
     expect(page.cancelacion).toMatchObject({
       disponible: true,
@@ -966,9 +992,20 @@ describe('página de la semana', () => {
       recibida: T('2026-09-07T15:00:00Z'),
       inicio_dias: T('2026-09-07T15:00:00Z'),
     });
-    const page = buildAvancePage(data([pr]), D('2026-08-31'), 'maximo', now);
+    const page = buildAvancePage(
+      data([pr]),
+      D('2026-08-31'),
+      'maximo',
+      now,
+      K5,
+    );
     expect(page.avance.maximo_no_recibidas).toBe(1);
     expect(page.avance.recibidas_anio).toBe(0);
+    // O1: con corte el viernes, el domingo ya es de la semana siguiente
+    expect(
+      buildAvancePage(data([pr]), D('2026-08-31'), 'maximo', now).avance
+        .maximo_no_recibidas,
+    ).toBe(0);
     // con la regla 'emision' la recibida ES la emisión: nunca va aparte
     const porEmision = maximo({
       folio: 'PR79',
@@ -1019,7 +1056,7 @@ describe('página de la semana', () => {
     const sapPage = buildAvancePage(conMigradas, D('2026-09-21'), 'sap', now);
     expect(sapPage.montos.total).toEqual({});
     expect(sapPage.notas).toContain(
-      '2 OC de SAP creadas desde Maximo en 2026 no se suman aquí: son de la gestión de Maximo y se cuentan en su página.',
+      '2 OC de SAP creadas desde Maximo en 2026 no se suman aquí: son de la gestión de Maximo y se cuentan en su página, salvo las de contrato.',
     );
     const maximoPage = buildAvancePage(
       conMigradas,
@@ -1083,7 +1120,7 @@ describe('I3: un reporte por sistema, homologados', () => {
     expect(propias('maximo')).not.toContain('SAP');
     expect(propias('sap')).not.toContain('Maximo');
     expect(avanceDefiniciones('sap').montos).toContain(
-      'se cuentan en la página de Maximo',
+      'son de la gestión de Maximo y se cuentan en su página (las de contrato, en ninguna)',
     );
     expect(avanceDefiniciones('todas').gestion).toContain('SAP y PR de Maximo');
     expect(avanceDefiniciones('maximo').homologacion).toContain('SAP');
@@ -1094,8 +1131,13 @@ describe('I3: un reporte por sistema, homologados', () => {
     const def = avanceDefiniciones('maximo');
     expect(def.recibida).toContain('primera aprobación de la PR (APPR)');
     expect(def.dias).toContain('de la aprobación de la PR');
-    expect(def.montos).toContain('sin IVA');
+    // O1: con IVA, sin las de contrato y con dólares y euros en pesos
+    expect(def.montos).toContain('con IVA');
+    expect(def.montos).toContain('que no son de contrato (CONTRACTREFNUM');
+    expect(def.montos).toContain('tipo de cambio de Maximo del día');
+    expect(def.montos).toContain('Solo en este reporte');
     expect(def.semana).toContain('hora de México');
+    expect(def.semana).toContain('de sábado a viernes');
     const variante = avanceDefiniciones(
       'maximo',
       opciones({
@@ -1144,12 +1186,333 @@ describe('I3: un reporte por sistema, homologados', () => {
     expect(avanceDefiniciones('todas', habiles).homologacion).toContain(
       'en las dos fuentes: hábiles',
     );
-    // default: naturales, la misma cuenta que el tablero
-    const def = avanceDefiniciones('maximo');
+    // naturales: la misma cuenta que el tablero (el default ya es hábiles)
+    const def = avanceDefiniciones('maximo', K5);
     expect(def.dias).toMatch(/^Días de cierre y de cancelación/);
     expect(def.dias).toContain('la misma cuenta que los días de gestión');
     expect(def.homologacion).toContain(
       'se cuentan igual en las dos páginas: naturales',
+    );
+  });
+});
+
+describe('O1: lo que pidió Jorge (corte el viernes, días hábiles y los montos de Compras)', () => {
+  const ahora = T('2026-10-26T18:00:00Z');
+  const nuevas = (g: Gestion, lunes: string, fuente: 'maximo' | 'sap') =>
+    buildAvancePage(data([g]), D(lunes), fuente, ahora).avance.nuevas_semana;
+
+  it('la semana cierra el viernes 23:59 de México: lo del sábado y el domingo cuenta en la siguiente', () => {
+    expect(AVANCE_REGLAS.corte).toBe('viernes');
+    // viernes 25-sep 23:30 de México = sábado 26-sep 05:30 UTC
+    const viernes = maximo({ recibida: T('2026-09-26T05:30:00Z') });
+    const sabado = maximo({ recibida: T('2026-09-26T16:00:00Z') });
+    const domingo = maximo({ recibida: T('2026-09-27T20:00:00Z') });
+    expect(nuevas(viernes, '2026-09-21', 'maximo')).toBe(1);
+    expect(nuevas(sabado, '2026-09-21', 'maximo')).toBe(0);
+    expect(nuevas(sabado, '2026-09-28', 'maximo')).toBe(1);
+    expect(nuevas(domingo, '2026-09-21', 'maximo')).toBe(0);
+    expect(nuevas(domingo, '2026-09-28', 'maximo')).toBe(1);
+    // SAP, por día calendario: igual
+    expect(
+      nuevas(sap({ recibida: D('2026-09-26') }), '2026-09-21', 'sap'),
+    ).toBe(0);
+    expect(
+      nuevas(sap({ recibida: D('2026-09-27') }), '2026-09-28', 'sap'),
+    ).toBe(1);
+    expect(
+      buildAvancePage(data([]), D('2026-09-21'), 'maximo', ahora).semana,
+    ).toMatchObject({
+      corte: '25 de septiembre de 2026',
+      corte_dia: 'viernes',
+    });
+  });
+
+  it('los días de cierre son hábiles por default: de viernes a martes son 2 (4 naturales)', () => {
+    expect(AVANCE_REGLAS.dias_tipo).toBe('habiles');
+    // aprobada el viernes 18-sep 09:00 de México; OC el martes 22-sep 09:00
+    const g = maximo({
+      recibida: T('2026-09-18T15:00:00Z'),
+      inicio_dias: T('2026-09-18T15:00:00Z'),
+      primera_oc: T('2026-09-22T15:00:00Z'),
+    });
+    const page = buildAvancePage(data([g]), D('2026-09-21'), 'maximo', ahora);
+    expect(page.cierre.unidad).toBe('días hábiles');
+    expect(page.cierre.anio.promedio_dias).toBe(2);
+    expect(
+      buildAvancePage(data([g]), D('2026-09-21'), 'maximo', ahora, K5).cierre
+        .anio.promedio_dias,
+    ).toBe(4);
+  });
+
+  describe('montos de la página de Maximo: con IVA, sin las de contrato y en pesos', () => {
+    const tipos: TiposCambio = {
+      maximo_dia: [
+        { dia: '2026-03-09', mxn_por_usd: 17 },
+        { dia: '2026-03-10', mxn_por_usd: 17.5 },
+      ],
+      sap_mes: { 'USD|2026-03': 18, 'EUR|2026-03': 20, 'USD|2026-02': 19 },
+    };
+    const oc = (
+      fecha: string,
+      moneda: string,
+      monto: number,
+      subtotal: number,
+      extra: Partial<OrdenMonto> = {},
+    ): OrdenMonto => ({
+      sistema: 'maximo',
+      fecha: T(fecha),
+      moneda,
+      monto,
+      subtotal,
+      contada_en_maximo: false,
+      ...extra,
+    });
+    const ordenes = [
+      oc('2026-03-05T18:00:00Z', 'MXN', 1160, 1000),
+      // de contrato: no suma
+      oc('2026-03-06T18:00:00Z', 'MXN', 5800, 5000, { de_contrato: true }),
+      // dólares el 10-mar (17.5) y el 11-mar (sin tipo: el del 10)
+      oc('2026-03-10T18:00:00Z', 'USD', 116, 100, { tc_usd: 1 }),
+      oc('2026-03-11T18:00:00Z', 'USD', 116, 100, { tc_usd: 1 }),
+      // euros con su EXCHANGERATE: 1.2 dólares por euro × 17
+      oc('2026-03-09T18:00:00Z', 'EUR', 100, 86.21, { tc_usd: 1.2 }),
+      // euros sin EXCHANGERATE: el de referencia de SAP (20)
+      oc('2026-03-09T18:00:00Z', 'EUR', 100, 86.21),
+      // antes del primer tipo de Maximo: el de referencia de febrero (19)
+      oc('2026-02-15T18:00:00Z', 'USD', 10, 8.62),
+      // sin ningún tipo de cambio: se queda en dólares
+      oc('2026-01-15T18:00:00Z', 'USD', 10, 8.62),
+      // la página de SAP no convierte
+      {
+        ...oc('2026-03-05T18:00:00Z', 'USD', 50, 43.1),
+        sistema: 'sap' as const,
+      },
+    ];
+    const lunes = D('2026-09-21');
+
+    it('el default es con IVA y el tipo de cambio de Maximo del día', () => {
+      expect(AVANCE_OPCIONES.monto_base).toBe('con_iva');
+      expect(AVANCE_OPCIONES.tipo_cambio).toBe('maximo');
+      const m = montosAdjudicados(
+        ordenes,
+        'maximo',
+        2026,
+        lunes,
+        AVANCE_OPCIONES,
+        tipos,
+      );
+      // 1160 + 2030 + 2030 + 2040 + 2000 + 190
+      expect(m.total).toEqual({ MXN: 9450, USD: 10 });
+      expect(m.meses[0].montos).toEqual({ USD: 10 });
+      expect(m.meses[1].montos).toEqual({ MXN: 190 });
+      expect(m.meses[2].montos).toEqual({ MXN: 9260 });
+      expect(m.ordenes).toBe(7);
+      expect(m.maximo).toEqual({
+        tipo_cambio: 'maximo',
+        contrato: { ordenes: 1, con_iva: { MXN: 5800 } },
+        convertidas: {
+          USD: { ordenes: 3, original: 242, mxn: 4250 },
+          EUR: { ordenes: 2, original: 200, mxn: 4040 },
+        },
+        con_referencia: 2,
+        sin_tipo_cambio: 1,
+      });
+      // el sin IVA va con el mismo tipo de cambio
+      expect(m.otro.total.MXN).toBeCloseTo(
+        1000 + 1750 + 1750 + 86.21 * 20.4 + 86.21 * 20 + 8.62 * 19,
+        1,
+      );
+      expect(m.descripcion).toBe(
+        'OC no canceladas sin las de contrato, con IVA, por mes de la OC; USD y EUR en pesos',
+      );
+    });
+
+    it("con el tipo de referencia de SAP ('sap') todas van con el del mes", () => {
+      const m = montosAdjudicados(
+        ordenes,
+        'maximo',
+        2026,
+        lunes,
+        opciones({ tipo_cambio: 'sap' }),
+        tipos,
+      );
+      // 1160 + 2088 + 2088 + 2000 + 2000 + 190
+      expect(m.total).toEqual({ MXN: 9526, USD: 10 });
+      expect(m.maximo?.con_referencia).toBe(5);
+    });
+
+    it('la página de SAP no quita contratos ni convierte; sin tipos de cambio, nada se convierte', () => {
+      const s = montosAdjudicados(
+        ordenes,
+        'sap',
+        2026,
+        lunes,
+        AVANCE_OPCIONES,
+        tipos,
+      );
+      expect(s.total).toEqual({ USD: 50 });
+      expect(s.maximo).toBeNull();
+      expect(s.descripcion).toBe('OC no canceladas, con IVA, por mes de la OC');
+      const sinTipos = montosAdjudicados(ordenes, 'maximo', 2026, lunes);
+      expect(sinTipos.total).toEqual({ MXN: 1160, USD: 252, EUR: 200 });
+      expect(sinTipos.maximo?.sin_tipo_cambio).toBe(6);
+    });
+
+    it('la nota de la página lo dice (contrato, conversión y referencia) y que solo es en este reporte', () => {
+      const page = buildAvancePage(
+        { ...data([], ordenes), tipos_cambio: tipos },
+        lunes,
+        'maximo',
+        ahora,
+      );
+      const nota = page.notas.find((n) => n.startsWith('Montos'));
+      expect(nota).toBe(
+        'Montos con IVA por mes de creación de la OC; OC no canceladas, sin las de contrato (1 OC); dólares y euros en pesos (5 OC) con el tipo de cambio de Maximo del día; 2 OC con el tipo de referencia de SAP del mes; 1 OC sin tipo de cambio queda en su moneda. Solo en este reporte: Órdenes y el resto de Compras no quitan las OC de contrato ni convierten monedas.',
+      );
+      const sapPage = buildAvancePage(
+        { ...data([], ordenes), tipos_cambio: tipos },
+        lunes,
+        'sap',
+        ahora,
+      );
+      expect(sapPage.notas).toContain(
+        'Montos con IVA por mes de creación de la OC; OC no canceladas; cada moneda aparte, sin convertir.',
+      );
+    });
+
+    it('tipoDeCambio: el del día o el anterior más cercano; en euros, × el de la OC; si no, el de referencia', () => {
+      const de = (
+        fecha: string,
+        moneda: string,
+        tc_usd: number | null = null,
+      ) => tipoDeCambio(oc(fecha, moneda, 1, 1, { tc_usd }), tipos, 'maximo');
+      // 9-mar 23:00 de México = 10-mar 05:00 UTC: todavía es el 9
+      expect(de('2026-03-10T05:00:00Z', 'USD')).toEqual({
+        mxn_por_unidad: 17,
+        fuente: 'maximo',
+      });
+      expect(de('2026-03-20T18:00:00Z', 'USD')?.mxn_por_unidad).toBe(17.5);
+      expect(
+        de('2026-03-10T18:00:00Z', 'EUR', 1.1626)?.mxn_por_unidad,
+      ).toBeCloseTo(17.5 * 1.1626, 6);
+      expect(de('2026-03-10T18:00:00Z', 'EUR')).toEqual({
+        mxn_por_unidad: 20,
+        fuente: 'referencia',
+      });
+      expect(de('2026-03-10T18:00:00Z', 'MXN')).toBeNull();
+      expect(de('2026-01-10T18:00:00Z', 'USD')).toBeNull();
+    });
+
+    it("con 'sap', un euro sin referencia de euros ese mes usa la de dólares × su EXCHANGERATE (los dos tipos convierten las mismas OC)", () => {
+      const soloDolar: TiposCambio = {
+        maximo_dia: [],
+        sap_mes: { 'USD|2026-06': 18 },
+      };
+      const euro = (tc_usd: number | null) =>
+        oc('2026-06-10T18:00:00Z', 'EUR', 100, 86.21, { tc_usd });
+      expect(tipoDeCambio(euro(1.2), soloDolar, 'sap')).toEqual({
+        mxn_por_unidad: 18 * 1.2,
+        fuente: 'referencia',
+      });
+      // con 'maximo' y sin tipo del día, igual
+      expect(tipoDeCambio(euro(1.2), soloDolar, 'maximo')?.mxn_por_unidad).toBe(
+        18 * 1.2,
+      );
+      // sin su EXCHANGERATE no hay cómo
+      expect(tipoDeCambio(euro(null), soloDolar, 'sap')).toBeNull();
+    });
+  });
+
+  it('O1.4: la página de Maximo dice qué cuenta como recibida; las demás no', () => {
+    expect(
+      buildAvancePage(data([]), D('2026-09-21'), 'maximo', ahora).avance
+        .leyenda,
+    ).toBe(
+      'Recibidas = PR aprobadas (aproximación); el reporte de Compras cuenta solicitudes de cotización (RQ).',
+    );
+    expect(
+      buildAvancePage(data([]), D('2026-09-21'), 'sap', ahora).avance.leyenda,
+    ).toBeNull();
+    expect(avanceDefiniciones('maximo').recibida).toContain(
+      'el reporte de Compras cuenta solicitudes de cotización (RQ)',
+    );
+  });
+
+  it('O1.3: el promedio del título es el del año por default; con la constante, el de la semana', () => {
+    // del martes 1-sep al martes 15-sep: 10 días hábiles; de viernes a martes: 2
+    const vieja = maximo({
+      recibida: T('2026-09-01T15:00:00Z'),
+      inicio_dias: T('2026-09-01T15:00:00Z'),
+      primera_oc: T('2026-09-15T15:00:00Z'),
+    });
+    const nueva = maximo({
+      recibida: T('2026-09-18T15:00:00Z'),
+      inicio_dias: T('2026-09-18T15:00:00Z'),
+      primera_oc: T('2026-09-22T15:00:00Z'),
+    });
+    expect(AVANCE_OPCIONES.promedio_titulo).toBe('anio');
+    const anio = buildAvancePage(
+      data([vieja, nueva]),
+      D('2026-09-21'),
+      'maximo',
+      ahora,
+    );
+    expect(anio.cierre.titulo).toEqual({
+      promedio: 'anio',
+      dias: anio.cierre.anio,
+    });
+    expect(anio.cierre.titulo.dias?.promedio_dias).toBe(6);
+    const semana = buildAvancePage(
+      data([vieja, nueva]),
+      D('2026-09-21'),
+      'maximo',
+      ahora,
+      opciones({ promedio_titulo: 'semana' }),
+    );
+    expect(semana.cierre.titulo.promedio).toBe('semana');
+    expect(semana.cierre.titulo.dias?.promedio_dias).toBe(2);
+    expect(semana.cancelacion.titulo.dias).toEqual(
+      semana.cancelacion.semanas[3].dias,
+    );
+  });
+
+  it('O1.5: cohorteAlDia da el estado del año al final de un día que no es viernes', () => {
+    const lunes19 = maximo({ recibida: T('2026-10-19T15:00:00Z') });
+    const miercoles21 = maximo({ recibida: T('2026-10-21T15:00:00Z') });
+    // cancelada el martes 20-oct a las 14:00 de México
+    const cancelada = maximo({
+      recibida: T('2026-10-05T15:00:00Z'),
+      cancelada: T('2026-10-20T20:00:00Z'),
+    });
+    expect(
+      cohorteAlDia(
+        data([lunes19, miercoles21, cancelada]),
+        D('2026-10-20'),
+        'maximo',
+      ),
+    ).toMatchObject({ recibidas: 2, cerradas: 0, canceladas: 1, abiertas: 1 });
+  });
+});
+
+describe('O1: la última semana completa con el corte', () => {
+  it('con corte el viernes, en sábado y domingo ya es la semana en curso; entre semana, la anterior', () => {
+    // viernes 23-oct 23:30 de México = sábado 24-oct 05:30 UTC: todavía no
+    expect(isoDay(lastCompleteWeek(T('2026-10-24T05:30:00Z')))).toBe(
+      '2026-10-12',
+    );
+    // sábado 24-oct 00:30 de México
+    expect(isoDay(lastCompleteWeek(T('2026-10-24T06:30:00Z')))).toBe(
+      '2026-10-19',
+    );
+    expect(isoDay(lastCompleteWeek(T('2026-10-25T20:00:00Z')))).toBe(
+      '2026-10-19',
+    );
+    expect(isoDay(lastCompleteWeek(T('2026-10-28T12:00:00Z')))).toBe(
+      '2026-10-19',
+    );
+    // con corte el domingo, como antes: la semana anterior hasta el lunes
+    expect(isoDay(lastCompleteWeek(T('2026-10-25T20:00:00Z'), 'domingo'))).toBe(
+      '2026-10-12',
     );
   });
 });

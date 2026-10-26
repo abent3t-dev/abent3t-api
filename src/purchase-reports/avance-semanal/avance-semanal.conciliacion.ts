@@ -2,22 +2,29 @@ import {
   type AvanceData,
   type AvancePage,
   buildAvancePage,
+  cohorteAlDia,
   firstMondayOfYear,
   isoDay,
   MESES_TITULO,
+  mondayOf,
   montosAdjudicados,
+  type MontosMaximo,
   parseDay,
 } from './avance-semanal.engine';
 import {
   AVANCE_MONTO_BASE,
   AVANCE_MONTOS_FUENTE_MAXIMO,
+  AVANCE_PROMEDIO_TITULO,
   AVANCE_REGLAS,
+  AVANCE_TIPO_CAMBIO,
   type AvanceCorte,
   type AvanceDiasTipo,
   type AvanceInicio,
   type AvanceMontoBase,
   type AvanceMontosFuente,
   type AvanceOpciones,
+  type AvancePromedioTitulo,
+  type AvanceTipoCambio,
 } from './avance-semanal.reglas';
 import {
   JORGE_ANUAL,
@@ -25,7 +32,9 @@ import {
   JORGE_LATEST,
   JORGE_MONTOS,
   JORGE_MONTOS_TOTAL,
+  JORGE_RQ,
   JORGE_SEMANAS,
+  type JorgeRq,
   type JorgeSemana,
   jorgeSemanas,
 } from './jorge-serie';
@@ -65,6 +74,12 @@ import {
  *    cerradas (`cerradas_de_contrato`, por semana) contra las canceladas del
  *    año de Jorge, con el mismo error que el resumen; H3 (días hábiles) no
  *    lleva cálculo aparte: se corre la variante `dias_tipo=habiles`.
+ *  - O1.5 (2026-10-26): los montos con los dos tipos de cambio (Maximo del
+ *    día y referencia de SAP del mes) contra el total de Jorge, con el más
+ *    cercano; y las cifras de su informe de RQ del 16 y el 20-oct
+ *    (`rq_octubre`) contra nuestra página de Maximo de esos días.
+ *  - Los días de cierre que se comparan son los del título de la página
+ *    (`cierre.titulo`, O1.3): del año o de la semana, según la regla.
  */
 
 export type KpiConciliacion =
@@ -129,9 +144,10 @@ export function nuestraSemana(page: AvancePage): NuestraSemana {
     canceladas_anio: page.estado_anio.canceladas,
     abiertas: page.estado_anio.abiertas,
     cerradas_semana: page.avance.cerradas_semana,
-    dias_cierre_promedio: page.cierre.anio.promedio_dias,
-    dias_cierre_mediana: page.cierre.anio.mediana_dias,
-    dias_cancelacion: page.cancelacion.anio?.promedio_dias ?? null,
+    // O1.3: el número grande de la página (del año o de la semana)
+    dias_cierre_promedio: page.cierre.titulo.dias?.promedio_dias ?? null,
+    dias_cierre_mediana: page.cierre.titulo.dias?.mediana_dias ?? null,
+    dias_cancelacion: page.cancelacion.titulo.dias?.promedio_dias ?? null,
     cerradas_sin_oc_ni_contrato: page.estado_anio.cerradas_sin_oc_ni_contrato,
     cerradas_de_contrato: page.estado_anio.cerradas_de_contrato,
   };
@@ -537,22 +553,48 @@ export function compararSerie(
 
 // ── Montos y anual ──────────────────────────────────────────────────────
 
-export type VarianteMonto =
-  | 'maximo_con_iva'
-  | 'maximo_sin_iva'
-  | 'sap_migradas_con_iva'
-  | 'sap_migradas_sin_iva';
+/**
+ * O1 (2026-10-26): las variantes de los montos de la página de Maximo, todas
+ * sin las OC de contrato y con dólares y euros en pesos:
+ *  - `tc_maximo`: con IVA, tipo de Maximo del día (la regla de O1);
+ *  - `tc_sap`: con IVA, tipo de referencia de SAP del mes;
+ *  - `sin_iva`: sin IVA, con el tipo pedido;
+ *  - `sap_migradas`: con IVA, de las copias en SAP de las OC de Maximo.
+ */
+export type VarianteMonto = 'tc_maximo' | 'tc_sap' | 'sin_iva' | 'sap_migradas';
 
-const VARIANTES: Array<{
+const variantes = (
+  tipo: AvanceTipoCambio,
+): Array<{
   clave: VarianteMonto;
   fuente: AvanceMontosFuente;
   base: AvanceMontoBase;
-}> = [
-  { clave: 'maximo_con_iva', fuente: 'maximo', base: 'con_iva' },
-  { clave: 'maximo_sin_iva', fuente: 'maximo', base: 'sin_iva' },
-  { clave: 'sap_migradas_con_iva', fuente: 'sap_migradas', base: 'con_iva' },
-  { clave: 'sap_migradas_sin_iva', fuente: 'sap_migradas', base: 'sin_iva' },
+  tipo_cambio: AvanceTipoCambio;
+}> => [
+  {
+    clave: 'tc_maximo',
+    fuente: 'maximo',
+    base: 'con_iva',
+    tipo_cambio: 'maximo',
+  },
+  { clave: 'tc_sap', fuente: 'maximo', base: 'con_iva', tipo_cambio: 'sap' },
+  { clave: 'sin_iva', fuente: 'maximo', base: 'sin_iva', tipo_cambio: tipo },
+  {
+    clave: 'sap_migradas',
+    fuente: 'sap_migradas',
+    base: 'con_iva',
+    tipo_cambio: tipo,
+  },
 ];
+
+/** O1: el total de un tipo de cambio contra el de Jorge. */
+export interface TotalContraJorge {
+  total: number | null;
+  /** nuestro − Jorge. */
+  diferencia: number | null;
+  /** (nuestro − Jorge) / Jorge, en %. */
+  diferencia_pct: number | null;
+}
 
 export interface MontosConciliados {
   anio: number;
@@ -579,8 +621,23 @@ export interface MontosConciliados {
   error_pct: Record<VarianteMonto, number | null>;
   /** OC sin subtotal por fuente (no entran a las variantes sin IVA). */
   sin_subtotal: Record<AvanceMontosFuente, number>;
-  /** Otras monedas (sin convertir), por variante. */
+  /** Monedas que quedaron sin convertir (sin tipo de cambio), por variante. */
   otras_monedas: Record<VarianteMonto, Record<string, number>>;
+  /**
+   * O1.5: el total del año (al corte) con cada tipo de cambio contra el que
+   * Jorge escribió (o la suma de sus meses), y cuál queda más cerca. Solo se
+   * decide si los dos convirtieron las mismas OC (`comparable`: lo que quedó
+   * sin convertir es igual); si no, `mas_cercano` es null.
+   */
+  tipo_cambio: {
+    jorge: number;
+    maximo: TotalContraJorge;
+    sap: TotalContraJorge;
+    comparable: boolean;
+    mas_cercano: AvanceTipoCambio | null;
+  };
+  /** O1: las de contrato que no se sumaron y las convertidas (tipo de Maximo). */
+  maximo: MontosMaximo | null;
 }
 
 /** Montos MXN de la página de Maximo de un año contra los de Jorge. */
@@ -591,13 +648,21 @@ export function montosConciliados(
   opciones: AvanceOpciones,
 ): MontosConciliados {
   const jorge = JORGE_MONTOS[anio] ?? [];
-  const porVariante = VARIANTES.map((v) => ({
+  const porVariante = variantes(opciones.tipo_cambio).map((v) => ({
     ...v,
-    montos: montosAdjudicados(data.ordenes, 'maximo', anio, lunes, {
-      ...opciones,
-      monto_base: v.base,
-      montos_fuente_maximo: v.fuente,
-    }),
+    montos: montosAdjudicados(
+      data.ordenes,
+      'maximo',
+      anio,
+      lunes,
+      {
+        ...opciones,
+        monto_base: v.base,
+        montos_fuente_maximo: v.fuente,
+        tipo_cambio: v.tipo_cambio,
+      },
+      data.tipos_cambio,
+    ),
   }));
   const record = <T>(pick: (v: (typeof porVariante)[number]) => T) =>
     Object.fromEntries(porVariante.map((v) => [v.clave, pick(v)])) as Record<
@@ -618,6 +683,38 @@ export function montosConciliados(
     }),
   }));
   const sumaJorge = round2(jorge.reduce((s, v) => s + v, 0));
+  // O1.5: contra el total que Jorge escribió (94.67 M al 25-sep de 2026)
+  const totalJorge = JORGE_MONTOS_TOTAL[anio] ?? sumaJorge;
+  const contraJorge = (clave: VarianteMonto): TotalContraJorge => {
+    const total =
+      porVariante.find((v) => v.clave === clave)?.montos.total.MXN ?? null;
+    if (total === null || totalJorge === 0) {
+      return { total, diferencia: null, diferencia_pct: null };
+    }
+    return {
+      total,
+      diferencia: round2(total - totalJorge),
+      diferencia_pct: round2(((total - totalJorge) / totalJorge) * 100),
+    };
+  };
+  const tcMaximo = contraJorge('tc_maximo');
+  const tcSap = contraJorge('tc_sap');
+  // lo que cada tipo dejó sin convertir: si difiere, no son las mismas OC
+  const sinConvertir = (clave: VarianteMonto) =>
+    JSON.stringify(
+      Object.entries(
+        porVariante.find((v) => v.clave === clave)?.montos.total ?? {},
+      )
+        .filter(([moneda]) => moneda !== 'MXN')
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
+  const comparable = sinConvertir('tc_maximo') === sinConvertir('tc_sap');
+  const masCercano: AvanceTipoCambio | null =
+    !comparable || tcMaximo.diferencia === null || tcSap.diferencia === null
+      ? null
+      : Math.abs(tcMaximo.diferencia) <= Math.abs(tcSap.diferencia)
+        ? 'maximo'
+        : 'sap';
   return {
     anio,
     corte_lunes: isoDay(lunes),
@@ -637,14 +734,103 @@ export function montosConciliados(
     }),
     sin_subtotal: {
       maximo: porVariante[0].montos.sin_subtotal.ordenes,
-      sap_migradas: porVariante[2].montos.sin_subtotal.ordenes,
+      sap_migradas: porVariante[3].montos.sin_subtotal.ordenes,
     },
     otras_monedas: record((v) =>
       Object.fromEntries(
         Object.entries(v.montos.total).filter(([moneda]) => moneda !== 'MXN'),
       ),
     ),
+    tipo_cambio: {
+      jorge: totalJorge,
+      maximo: tcMaximo,
+      sap: tcSap,
+      comparable,
+      mas_cercano: masCercano,
+    },
+    maximo: porVariante[0].montos.maximo,
   };
+}
+
+/** O1.5: una cifra del informe de RQ de Jorge contra nuestra página. */
+export interface RqConciliada {
+  dia: string;
+  /** Lunes de nuestra semana (nuevas y cerradas de la semana). */
+  semana_lunes: string;
+  jorge: JorgeRq;
+  /**
+   * Nuevas y cerradas de la semana solo si el día del informe es el del
+   * corte (el viernes); si no, null: la semana incluiría días posteriores.
+   */
+  nuestro: {
+    recibidas: number;
+    nuevas: number | null;
+    cerradas: number;
+    cerradas_semana: number | null;
+    canceladas: number;
+    abiertas: number;
+  };
+  /** nuestro − Jorge; null donde Jorge no dio la cifra. */
+  diferencia: {
+    recibidas: number;
+    nuevas: number | null;
+    cerradas: number;
+    cerradas_semana: number | null;
+    canceladas: number | null;
+    abiertas: number | null;
+  };
+}
+
+export const RQ_OCTUBRE_NOTA =
+  'Jorge cuenta solicitudes de cotización (RQ) creadas en el año; nuestra página de Maximo cuenta PR aprobadas (llegada a Compras). La diferencia esperada son las PR que no llegan a RQ (p. ej. canceladas para cambiar el alcance) y se cierra con O2.';
+
+/**
+ * O1.5: las cifras del informe de RQ de Jorge del 16 y del 20-oct contra
+ * nuestra página de Maximo: el estado del año al final de ese día y, de su
+ * semana, las nuevas y las cerradas.
+ */
+export function rqOctubre(
+  data: AvanceData,
+  opciones: AvanceOpciones,
+  generado: Date,
+  puntos: JorgeRq[] = JORGE_RQ,
+): RqConciliada[] {
+  const menos = (a: number | null, b: number | null) =>
+    a === null || b === null ? null : a - b;
+  return puntos.map((j) => {
+    const dia = parseDay(j.dia);
+    const cohorte = cohorteAlDia(data, dia, 'maximo', opciones);
+    const lunes = mondayOf(dia);
+    const pagina = buildAvancePage(data, lunes, 'maximo', generado, opciones);
+    // la semana de la página termina en su día de corte
+    const diaDeCorte =
+      pagina.semana.corte_dia === 'viernes'
+        ? pagina.semana.viernes
+        : pagina.semana.domingo;
+    const enCorte = diaDeCorte === j.dia;
+    const nuestro = {
+      recibidas: cohorte.recibidas,
+      nuevas: enCorte ? pagina.avance.nuevas_semana : null,
+      cerradas: cohorte.cerradas,
+      cerradas_semana: enCorte ? pagina.avance.cerradas_semana : null,
+      canceladas: cohorte.canceladas,
+      abiertas: cohorte.abiertas,
+    };
+    return {
+      dia: j.dia,
+      semana_lunes: isoDay(lunes),
+      jorge: j,
+      nuestro,
+      diferencia: {
+        recibidas: nuestro.recibidas - j.recibidas,
+        nuevas: menos(nuestro.nuevas, j.nuevas),
+        cerradas: nuestro.cerradas - j.cerradas,
+        cerradas_semana: menos(nuestro.cerradas_semana, j.cerradas_semana),
+        canceladas: menos(nuestro.canceladas, j.canceladas),
+        abiertas: menos(nuestro.abiertas, j.abiertas),
+      },
+    };
+  });
 }
 
 export interface AnualConciliado {
@@ -683,6 +869,8 @@ export interface ConciliacionAvance {
   /** H2 (contrato cerradas contra canceladas de Jorge) y cómo probar H3. */
   hipotesis: HipotesisConciliacion;
   montos: MontosConciliados[];
+  /** O1.5: su informe de RQ del 16 y del 20-oct contra nuestra página. */
+  rq_octubre: { nota: string; puntos: RqConciliada[] };
   /** Al corte de la p.1; el 2025 de Jorge no cuadra en su origen (nota). */
   anual: AnualConciliado[];
   /** P.39 de Jorge contra nuestra cohorte 2025 al corte de su última semana. */
@@ -707,6 +895,8 @@ export function opcionesConciliacion(p: {
   montos?: AvanceMontosFuente;
   corte?: AvanceCorte;
   dias_tipo?: AvanceDiasTipo;
+  tipo_cambio?: AvanceTipoCambio;
+  promedio_titulo?: AvancePromedioTitulo;
 }): AvanceOpciones {
   return {
     reglas: {
@@ -718,6 +908,8 @@ export function opcionesConciliacion(p: {
     },
     monto_base: AVANCE_MONTO_BASE,
     montos_fuente_maximo: p.montos ?? AVANCE_MONTOS_FUENTE_MAXIMO,
+    tipo_cambio: p.tipo_cambio ?? AVANCE_TIPO_CAMBIO,
+    promedio_titulo: p.promedio_titulo ?? AVANCE_PROMEDIO_TITULO,
   };
 }
 
@@ -803,6 +995,10 @@ export function conciliarAvance(
       montosConciliados(data, ultima.semana.anio, lunesUltima, opciones),
       montosConciliados(data, pagina2025.semana.anio, lunes2025, opciones),
     ],
+    rq_octubre: {
+      nota: RQ_OCTUBRE_NOTA,
+      puntos: rqOctubre(data, opciones, generado),
+    },
     anual,
     cierre_2025: {
       jorge: JORGE_CIERRE_2025,

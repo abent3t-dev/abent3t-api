@@ -31,6 +31,11 @@ import { AvanceSemanalService } from './avance-semanal.service';
  * calcularon con el código de K5.7 (api `98c27e0`), antes de L2. Si algún día
  * se aprueba 'contrato' como default, estas huellas pasan a fijar
  * `grupos='estandar'` (se pide explícito).
+ *
+ * O1 (2026-10-26) cambió el default a propósito (corte el viernes, días
+ * hábiles, montos con IVA sin las OC de contrato, la leyenda de las recibidas
+ * y el promedio del título): las huellas se recalcularon con el código de
+ * O1. Lo que fijan sigue igual: sin el parámetro, la página no trae grupos.
  */
 
 const D = (iso: string) => new Date(`${iso}T00:00:00Z`);
@@ -324,21 +329,21 @@ const maximoContrato = buildAvancePage(
 );
 
 describe('L2: sin el parámetro, la página sale igual que antes (JSON y PDF)', () => {
-  it('el default espera a Jorge/Ingrid: estandar, y AVANCE_REGLAS no se movió', () => {
+  it('el default espera a Jorge/Ingrid: estandar; AVANCE_REGLAS es la de O1 (viernes y hábiles)', () => {
     expect(AVANCE_GRUPOS_MAXIMO).toBe('estandar');
     expect(AVANCE_REGLAS).toEqual({
       recibida: 'aprobacion',
       dias_desde: 'aprobacion',
       cerrada: 'primera_oc_o_close',
       cancelada: 'can_historial',
-      corte: 'domingo',
-      dias_tipo: 'naturales',
+      corte: 'viernes',
+      dias_tipo: 'habiles',
     });
   });
 
   it('JSON: las páginas por defecto de Maximo y SAP son idénticas a las de antes', () => {
-    expect(huella(maximoDefault)).toBe('e1d12fc9b42aa99d');
-    expect(huella(sapDefault)).toBe('baf6745afcba33e9');
+    expect(huella(maximoDefault)).toBe('75bc004edeb725d1');
+    expect(huella(sapDefault)).toBe('922a018d0043e08c');
     // lo mismo, legible: sin la llave `grupos` y con el medidor de siempre
     expect(Object.keys(maximoDefault)).toEqual([
       'semana',
@@ -377,10 +382,11 @@ describe('L2: sin el parámetro, la página sale igual que antes (JSON y PDF)', 
   it('PDF: los textos (con su posición) de las páginas por defecto no cambian', async () => {
     const maximo = await textosDelPdf([maximoDefault]);
     const sap = await textosDelPdf([sapDefault]);
-    expect(maximo).toHaveLength(144);
-    expect(huella(maximo)).toBe('7117683fdd589139');
+    // O1: la leyenda de las recibidas es un texto más en la de Maximo
+    expect(maximo).toHaveLength(145);
+    expect(huella(maximo)).toBe('eacb816715363e81');
     expect(sap).toHaveLength(132);
-    expect(huella(sap)).toBe('54e9194533241944');
+    expect(huella(sap)).toBe('94d58aa38c258a2b');
     // lo mismo, legible: la dona, los medidores y las barras de siempre
     const textos = maximo.map(([texto]) => texto);
     const dona = textos.indexOf('Recibidas 2026 por estado');
@@ -400,9 +406,10 @@ describe('L2: sin el parámetro, la página sale igual que antes (JSON y PDF)', 
     );
     expect(textos).toContain('5 cerradas · 2 canceladas\n2 abiertas');
     expect(textos).toContain('Atendidas');
-    // nada de los grupos nuevos
+    // nada de los grupos nuevos (O1 sí dice "sin las de contrato" en los
+    // montos: no es un grupo)
     expect(textos.join(' ')).not.toMatch(
-      /OC automática|[Dd]e contrato|[Cc]anceladas en Maximo/,
+      /OC automática|Cerradas sin contrato|[Cc]anceladas en Maximo/,
     );
   });
 });
@@ -831,7 +838,9 @@ describe('L2: PDF con grupos', () => {
       AVANCE_OPCIONES,
       'contrato',
     );
-    expect(huella(await textosDelPdf([sapCon]))).toBe('54e9194533241944');
+    expect(huella(await textosDelPdf([sapCon]))).toBe(
+      huella(await textosDelPdf([sapDefault])),
+    );
   });
 
   it('sin recibidas en el año: la dona con grupos sale vacía (sin errores) y dice 0 en cada grupo', async () => {

@@ -12,9 +12,12 @@ import {
   type AvanceMontoBase,
   type AvanceMontosFuente,
   type AvanceOpciones,
+  type AvancePromedioTitulo,
+  type AvanceTipoCambio,
   diasTexto,
   montoBaseTexto,
   otraBase,
+  tipoCambioTexto,
 } from './avance-semanal.reglas';
 
 /**
@@ -67,6 +70,15 @@ import {
  * contrato, de contrato, canceladas en Maximo y abiertas) para la dona, los
  * medidores y las barras. Los KPIs no cambian; sin el parámetro (default
  * AVANCE_GRUPOS_MAXIMO = 'estandar') la página es la de siempre.
+ *
+ * O1 (2026-10-26, Jorge y datos de CIISA): corte el viernes, días hábiles y
+ * montos con IVA por default (avance-semanal.reglas.ts). En la página de
+ * Maximo los montos son los del reporte de Compras: sin las OC de contrato
+ * (CONTRACTREFNUM) y con dólares y euros pasados a pesos (`tipoDeCambio`);
+ * solo aquí, Órdenes y el resto de Compras no cambian. La página de Maximo
+ * lleva la leyenda de las recibidas (PR aprobadas, aproximación de las RQ
+ * hasta O2) y las tarjetas de días un `titulo` con el promedio del año o de
+ * la semana (`opciones.promedio_titulo`).
  */
 
 /** Fuente de UNA página. */
@@ -150,6 +162,30 @@ export interface OrdenMonto {
    * (D1). Ausente = false.
    */
   copia_migrada?: boolean;
+  /**
+   * O1: OC de contrato (CONTRACTREFNUM en su registro de Maximo; en SAP, el
+   * de su OC de Maximo). La página de Maximo no la suma. Ausente = false.
+   */
+  de_contrato?: boolean;
+  /** O1: EXCHANGERATE de la OC de Maximo, contra el dólar. */
+  tc_usd?: number | null;
+}
+
+/** O1: monedas que la página de Maximo pasa a pesos. */
+export const MONEDAS_CONVERTIBLES = ['USD', 'EUR'];
+
+/** O1: tipos de cambio para pasar a pesos las OC de Maximo (avance-semanal.data). */
+export interface TiposCambio {
+  /**
+   * Pesos por dólar de cada día de Maximo ('YYYY-MM-DD', hora de México),
+   * ascendente: 1 / el EXCHANGERATE de sus OC en pesos.
+   */
+  maximo_dia: Array<{ dia: string; mxn_por_usd: number }>;
+  /**
+   * Pesos por unidad de cada moneda por mes ('USD|2026-03'): el de
+   * referencia de SAP (promedio de DocTotal / DocTotalFc de sus OC).
+   */
+  sap_mes: Record<string, number>;
 }
 
 /** PR de Maximo fuera del universo: sin la fecha de inicio de la regla. */
@@ -176,6 +212,8 @@ export interface AvanceData {
    * días hábiles. Ausente o vacío = hábiles solo quita sábados y domingos.
    */
   festivos?: string[];
+  /** O1: tipos de cambio; ausente = ninguna OC se convierte. */
+  tipos_cambio?: TiposCambio;
 }
 
 /** H3: cómo se cuentan los días (tipo y festivos de los hábiles). */
@@ -314,6 +352,35 @@ export interface MontosAnio {
   fuente_maximo: AvanceMontosFuente | null;
   /** I3: OC de SAP del año creadas desde Maximo que esta página no suma. */
   migradas_excluidas: number;
+  /** O1: qué OC suma la tabla, en una frase (subtítulo del PDF y Excel). */
+  descripcion: string;
+  /** O1: lo que se hizo con las OC de Maximo; null en la página de SAP. */
+  maximo: MontosMaximo | null;
+}
+
+/** O1: las OC de Maximo de la página (las de contrato y las convertidas). */
+export interface MontosMaximo {
+  tipo_cambio: AvanceTipoCambio;
+  /** OC de contrato del año (CONTRACTREFNUM): no se suman; con IVA por moneda. */
+  contrato: { ordenes: number; con_iva: Record<string, number> };
+  /**
+   * OC en dólares o euros pasadas a pesos, por moneda: cuántas, su monto con
+   * IVA en su moneda y en pesos.
+   */
+  convertidas: Record<
+    string,
+    { ordenes: number; original: number; mxn: number }
+  >;
+  /** De esas, con el tipo de referencia de SAP del mes (sin tipo de Maximo). */
+  con_referencia: number;
+  /** En dólares o euros sin ningún tipo de cambio: quedan en su moneda. */
+  sin_tipo_cambio: number;
+}
+
+/** O1.3: el promedio grande de una tarjeta de días: del año o de la semana. */
+export interface TituloDias {
+  promedio: AvancePromedioTitulo;
+  dias: DiasStats | null;
 }
 
 export interface ResumenSistema {
@@ -354,6 +421,11 @@ export interface AvancePage {
      * H6: también las aprobadas después); null sin Maximo.
      */
     maximo_no_recibidas: number | null;
+    /**
+     * O1.4: solo la página de Maximo, hasta O2: qué cuenta como recibida y
+     * que el reporte de Compras cuenta RQ. null en las demás.
+     */
+    leyenda: string | null;
   };
   cierre: {
     /** Desde dónde se cuentan los días ("De la solicitud a su primera OC"). */
@@ -361,6 +433,8 @@ export interface AvancePage {
     /** H3: "días" o "días hábiles" (`reglas.dias_tipo`), para los textos. */
     unidad: string;
     anio: DiasStats;
+    /** O1.3: el promedio del título (`opciones.promedio_titulo`). */
+    titulo: TituloDias;
     semanas: Array<{
       lunes: string;
       etiqueta: string;
@@ -375,6 +449,8 @@ export interface AvancePage {
     /** H3: "días" o "días hábiles", como en `cierre`. */
     unidad: string;
     anio: DiasStats | null;
+    /** O1.3: el promedio del título, como en `cierre`. */
+    titulo: TituloDias;
     semanas: Array<{
       lunes: string;
       etiqueta: string;
@@ -450,6 +526,15 @@ export function avanceDefiniciones(
       : 'con IVA';
   const otro = montoBaseTexto(otraBase(opciones.monto_base));
   const sapMigradas = opciones.montos_fuente_maximo === 'sap_migradas';
+  // O1: lo que solo hace la página de Maximo con sus OC
+  const sinContrato =
+    'que no son de contrato (CONTRACTREFNUM en la cabecera o en una línea)';
+  const aPesos =
+    opciones.tipo_cambio === 'maximo'
+      ? 'las de dólares y euros pasadas a pesos con el tipo de cambio de Maximo del día (EXCHANGERATE va contra el dólar: pesos por dólar = 1 / el de las OC en pesos de ese día o del anterior más cercano que lo tenga; en euros, además × el de la OC); sin tipo del día, con el de referencia de SAP del mes (DocTotal / DocTotalFc)'
+      : 'las de dólares y euros pasadas a pesos con el tipo de cambio de referencia de SAP del mes (promedio de DocTotal / DocTotalFc de sus OC)';
+  const soloAqui =
+    'Solo en este reporte: Órdenes, CAPEX/OPEX y el resto de Compras no quitan las OC de contrato ni convierten monedas.';
   const corteViernes = reglas.corte === 'viernes';
   const semanaDe = corteViernes ? 'de sábado a viernes' : 'de lunes a domingo';
   const diaCorte = corteViernes ? 'viernes' : 'domingo';
@@ -472,9 +557,11 @@ export function avanceDefiniciones(
         'Gestión = solicitud de compra: solicitud de pedido de SAP y PR de Maximo.',
     }),
     recibida: por({
-      maximo: aprobacion
-        ? `Recibida = ${recibidaMaximo}. Las PR sin aprobación (en aprobación o canceladas sin aprobar) no cuentan como recibidas y se dicen aparte.`
-        : `Recibida = ${recibidaMaximo}. Entran todas las PR con fecha de emisión, aprobadas o no.`,
+      maximo: `${
+        aprobacion
+          ? `Recibida = ${recibidaMaximo}. Las PR sin aprobación (en aprobación o canceladas sin aprobar) no cuentan como recibidas y se dicen aparte.`
+          : `Recibida = ${recibidaMaximo}. Entran todas las PR con fecha de emisión, aprobadas o no.`
+      } Es una aproximación: el reporte de Compras cuenta solicitudes de cotización (RQ), y una PR solo llega a RQ cuando ya está aprobada.`,
       sap: 'Recibida = fecha de la solicitud de pedido en SAP.',
       todas: `Recibida = fecha de la solicitud de pedido (SAP) o ${recibidaMaximo} (Maximo).${aprobacion ? ' Las PR sin aprobación no cuentan como recibidas.' : ''}`,
     }),
@@ -508,10 +595,10 @@ export function avanceDefiniciones(
     }),
     montos: por({
       maximo: sapMigradas
-        ? `Montos adjudicados = OC de SAP creadas desde Maximo por la integración, no canceladas (estatus actual), ${baseDetalle}, por mes de la OC en SAP y por moneda; USD aparte, sin convertir. El valor ${otro} va aparte.`
-        : `Montos adjudicados = OC de Maximo no canceladas (estatus actual), ${baseDetalle}, por mes de creación de la OC y por moneda; USD aparte, sin convertir. Incluye las que la integración pasó a SAP. El valor ${otro} va aparte.`,
-      sap: `Montos adjudicados = OC de SAP no canceladas (estatus actual), ${baseDetalle}, por mes de creación de la OC y por moneda; USD aparte, sin convertir. Sin las OC que la integración creó desde Maximo: se cuentan en la página de Maximo. El valor ${otro} va aparte.`,
-      todas: `Montos adjudicados = OC no canceladas (estatus actual), ${base}, por mes de creación de la OC y por moneda; USD aparte, sin convertir. Las OC de SAP creadas desde Maximo se cuentan una vez${sapMigradas ? ' (las de Maximo salen de esas OC de SAP)' : ''}. El valor ${otro} va aparte.`,
+        ? `Montos adjudicados = OC de SAP creadas desde Maximo por la integración, no canceladas (estatus actual), ${sinContrato} en Maximo, ${baseDetalle}, por mes de la OC en SAP; ${aPesos}. El valor ${otro} va aparte. ${soloAqui}`
+        : `Montos adjudicados = OC de Maximo no canceladas (estatus actual), ${sinContrato}, ${baseDetalle}, por mes de creación de la OC; ${aPesos}. Incluye las que la integración pasó a SAP. El valor ${otro} va aparte. ${soloAqui}`,
+      sap: `Montos adjudicados = OC de SAP no canceladas (estatus actual), ${baseDetalle}, por mes de creación de la OC y por moneda; USD aparte, sin convertir. Sin las OC que la integración creó desde Maximo: son de la gestión de Maximo y se cuentan en su página (las de contrato, en ninguna). El valor ${otro} va aparte.`,
+      todas: `Montos adjudicados = OC no canceladas (estatus actual), ${base}, por mes de creación de la OC. Las de Maximo, sin las de contrato y con dólares y euros en pesos (${tipoCambioTexto(opciones.tipo_cambio)}); las de SAP, por moneda, sin convertir. Las OC de SAP creadas desde Maximo se cuentan una vez${sapMigradas ? ' (las de Maximo salen de esas OC de SAP)' : ''}. El valor ${otro} va aparte.`,
     }),
     semana: por({
       maximo: `Semana ${semanaDe}, con corte el ${diaCorte} a las 23:59 hora de México (las fechas de Maximo traen hora); la etiqueta va de lunes a viernes, como el reporte de Jorge.`,
@@ -524,6 +611,11 @@ export function avanceDefiniciones(
       todas: `Cada fuente se suma con su propia definición: SAP por la fecha de la solicitud (día calendario) y Maximo por la de la PR (hora de México). ${diasIguales('las dos fuentes')}`,
     }),
   };
+  // O1.3: qué promedio es el número grande de las tarjetas de días
+  definiciones.promedio_titulo =
+    opciones.promedio_titulo === 'semana'
+      ? 'El número grande de las tarjetas de días es el promedio de la semana; el del año sigue en el Excel semanal.'
+      : 'El número grande de las tarjetas de días es el promedio del año; el de cada semana va en la tabla de abajo.';
   // L2: solo la página de Maximo; sin 'contrato' las definiciones no cambian
   if (fuente === 'maximo' && grupos === 'contrato') {
     definiciones.grupos = `Grupos de la dona, los medidores y las barras: ${GRUPOS_ETIQUETA.cerradas_sin_contrato} = PR sin contrato cerradas al corte (con OC o por CLOSE); ${GRUPOS_ETIQUETA.de_contrato} = PR con contrato cerradas al corte (con OC o por CLOSE); ${GRUPOS_ETIQUETA.canceladas} = PR canceladas en Maximo (última CAN de su historial), con o sin contrato; ${GRUPOS_ETIQUETA.abiertas} = sin cerrar ni cancelar al corte. Los cuatro suman las recibidas. Los indicadores no cambian: las cerradas de la tarjeta de avance son ${grupoEnFrase('cerradas_sin_contrato')} + ${grupoEnFrase('de_contrato')}, y las atendidas son cerradas + canceladas.`;
@@ -591,9 +683,20 @@ export function mondayOf(date: Date): Date {
   return new Date(day - offset * DAY_MS);
 }
 
-/** Lunes de la última semana completa (la anterior a la de `now`). */
-export function lastCompleteWeek(now = new Date()): Date {
-  return new Date(mondayOf(now).getTime() - WEEK_MS);
+/**
+ * Lunes de la última semana completa: la anterior a la de `now` o, si ya
+ * pasó su corte (sábado y domingo con corte el viernes), la de `now`.
+ */
+export function lastCompleteWeek(
+  now = new Date(),
+  corte: AvanceCorte = AVANCE_REGLAS.corte,
+): Date {
+  // O1: con corte el viernes, en sábado y domingo la semana en curso ya
+  // cerró (se toma el corte de Maximo, el más tardío de los dos sistemas)
+  const actual = mondayOf(now);
+  return now.getTime() >= ventanaSemana(actual, 'maximo', corte).fin
+    ? actual
+    : new Date(actual.getTime() - WEEK_MS);
 }
 
 /** Lunes de cada semana de [desde, hasta], del más nuevo al más viejo (como Jorge). */
@@ -860,7 +963,35 @@ export function cohortes(
   corte: AvanceCorte = AVANCE_REGLAS.corte,
   dias: CuentaDias = DIAS_NATURALES,
 ): CohorteAnio[] {
-  const fines = finesDeSemana(lunes, corte);
+  return cohortesAl(gestiones, anios, finesDeSemana(lunes, corte), dias);
+}
+
+/**
+ * O1.5: la cohorte del año de `dia` al final de ese día (23:59 hora de
+ * México en Maximo; SAP, ese día calendario), para comparar con un informe
+ * de Jorge que no cae en viernes (p. ej. el de RQ del martes 20-oct).
+ */
+export function cohorteAlDia(
+  data: AvanceData,
+  dia: Date,
+  fuente: AvanceFuente,
+  opciones: AvanceOpciones = AVANCE_OPCIONES,
+): CohorteAnio {
+  const fin = parseDay(isoDay(dia)).getTime() + DAY_MS;
+  return cohortesAl(
+    data.gestiones.filter((g) => enFuente(g.sistema, fuente)),
+    [dia.getUTCFullYear()],
+    { sap: fin, maximo: fin + MX_OFFSET_MS },
+    { tipo: opciones.reglas.dias_tipo, festivos: data.festivos ?? [] },
+  )[0];
+}
+
+function cohortesAl(
+  gestiones: Gestion[],
+  anios: number[],
+  fines: Record<AvanceSistema, number>,
+  dias: CuentaDias,
+): CohorteAnio[] {
   const acc = new Map(
     anios.map((anio) => [
       anio,
@@ -977,6 +1108,16 @@ function ordenMonedas(monedas: Iterable<string>): string[] {
   );
 }
 
+/** I3/D1: la OC es del lado de Maximo de los montos (sus OC o, con `sap_migradas`, sus copias en SAP). */
+function deLaGestionDeMaximo(
+  o: OrdenMonto,
+  montosFuente: AvanceMontosFuente,
+): boolean {
+  return montosFuente === 'sap_migradas'
+    ? o.sistema === 'sap' && o.contada_en_maximo && o.copia_migrada !== true
+    : o.sistema === 'maximo';
+}
+
 /**
  * OC que suma la página. I3/D1: la OC de SAP creada desde Maximo es de la
  * gestión de Maximo (nunca en la de SAP). Con `sap_migradas`, Maximo toma
@@ -987,10 +1128,7 @@ function ordenDeLaPagina(
   fuente: AvanceFuente,
   montosFuente: AvanceMontosFuente,
 ): boolean {
-  const deMaximo =
-    montosFuente === 'sap_migradas'
-      ? o.sistema === 'sap' && o.contada_en_maximo && o.copia_migrada !== true
-      : o.sistema === 'maximo';
+  const deMaximo = deLaGestionDeMaximo(o, montosFuente);
   const deSap = o.sistema === 'sap' && !o.contada_en_maximo;
   if (fuente === 'maximo') return deMaximo;
   if (fuente === 'sap') return deSap;
@@ -1001,11 +1139,73 @@ const sumar = (acc: Record<string, number>, moneda: string, valor: number) => {
   acc[moneda] = round2((acc[moneda] ?? 0) + valor);
 };
 
+/** O1: pesos por dólar del día, o del día anterior más cercano que lo tenga. */
+function mxnPorUsdAl(tipos: TiposCambio, dia: string): number | null {
+  const lista = tipos.maximo_dia;
+  let lo = 0;
+  let hi = lista.length - 1;
+  let found: number | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lista[mid].dia <= dia) {
+      found = lista[mid].mxn_por_usd;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return found;
+}
+
+/**
+ * O1 (2026-10-26): pesos por unidad de la moneda de una OC en dólares o
+ * euros, el día de la OC (hora de México en Maximo; SAP, su día):
+ *  - 'maximo': USD = pesos por dólar del día (1 / EXCHANGERATE de las OC en
+ *    pesos de ese día o del anterior más cercano); EUR = eso × el
+ *    EXCHANGERATE de la OC (dólares por euro). Sin eso, el de referencia;
+ *  - 'sap' (o sin tipo de Maximo): el de referencia de SAP del mes de esa
+ *    moneda; un euro sin referencia de euros ese mes, el de dólares × su
+ *    EXCHANGERATE (así los dos tipos convierten las mismas OC).
+ * null = la moneda no se convierte o no hay ningún tipo de cambio.
+ */
+export function tipoDeCambio(
+  o: OrdenMonto,
+  tipos: TiposCambio | undefined,
+  tipo: AvanceTipoCambio,
+): { mxn_por_unidad: number; fuente: 'maximo' | 'referencia' } | null {
+  if (!tipos || !o.moneda || !MONEDAS_CONVERTIBLES.includes(o.moneda)) {
+    return null;
+  }
+  const dia = isoDay(new Date(o.fecha.getTime() - desfase(o.sistema)));
+  if (tipo === 'maximo') {
+    const usd = mxnPorUsdAl(tipos, dia);
+    if (usd !== null && o.moneda === 'USD') {
+      return { mxn_por_unidad: usd, fuente: 'maximo' };
+    }
+    if (usd !== null && o.tc_usd && o.tc_usd > 0) {
+      return { mxn_por_unidad: usd * o.tc_usd, fuente: 'maximo' };
+    }
+  }
+  const mes = dia.slice(0, 7);
+  const referencia = tipos.sap_mes[`${o.moneda}|${mes}`];
+  if (referencia) return { mxn_por_unidad: referencia, fuente: 'referencia' };
+  const dolar = tipos.sap_mes[`USD|${mes}`];
+  if (o.moneda === 'EUR' && dolar && o.tc_usd && o.tc_usd > 0) {
+    return { mxn_por_unidad: dolar * o.tc_usd, fuente: 'referencia' };
+  }
+  return null;
+}
+
 /**
  * OC del año por mes de creación y por moneda, hasta el corte de la semana
  * del `lunes`, en la base de `opciones.monto_base` (K5/K6). El otro valor
  * va por moneda en `otro`; las OC sin subtotal se cuentan en `sin_subtotal`
  * y no se estiman (con base sin IVA no se suman).
+ *
+ * O1 (2026-10-26): las OC del lado de Maximo (página de Maximo y `todas`)
+ * no suman si son de contrato y, en dólares o euros, pasan a pesos con
+ * `tipoDeCambio` (los dos valores, con y sin IVA); sin tipo de cambio se
+ * quedan en su moneda. Lo que se hizo va en `maximo`.
  */
 export function montosAdjudicados(
   ordenes: OrdenMonto[],
@@ -1013,6 +1213,7 @@ export function montosAdjudicados(
   anio: number,
   lunes: Date,
   opciones: AvanceOpciones = AVANCE_OPCIONES,
+  tiposCambio?: TiposCambio,
 ): MontosAnio {
   const base = opciones.monto_base;
   const fines = finesDeSemana(lunes, opciones.reglas.corte);
@@ -1032,6 +1233,17 @@ export function montosAdjudicados(
   const sinSubtotal = { ordenes: 0, con_iva: {} as Record<string, number> };
   let count = 0;
   let migradas = 0;
+  // O1: las OC de Maximo de la página (sin la de SAP)
+  const maximo: MontosMaximo | null =
+    fuente === 'sap'
+      ? null
+      : {
+          tipo_cambio: opciones.tipo_cambio,
+          contrato: { ordenes: 0, con_iva: {} },
+          convertidas: {},
+          con_referencia: 0,
+          sin_tipo_cambio: 0,
+        };
   for (const o of ordenes) {
     if (
       anioDe(o.fecha, o.sistema) !== anio ||
@@ -1047,12 +1259,45 @@ export function montosAdjudicados(
     }
     const mes = meses[mesDe(o.fecha, o.sistema)];
     if (!mes) continue;
-    const moneda = o.moneda ?? SIN_MONEDA;
-    const valor = base === 'sin_iva' ? o.subtotal : o.monto;
-    const otro = base === 'sin_iva' ? o.monto : o.subtotal;
+    let moneda = o.moneda ?? SIN_MONEDA;
+    let factor = 1;
+    if (
+      maximo !== null &&
+      deLaGestionDeMaximo(o, opciones.montos_fuente_maximo)
+    ) {
+      // O1: la OC de contrato no pasa por RQ y no es del reporte de Compras
+      if (o.de_contrato) {
+        maximo.contrato.ordenes += 1;
+        sumar(maximo.contrato.con_iva, moneda, o.monto);
+        continue;
+      }
+      if (MONEDAS_CONVERTIBLES.includes(moneda)) {
+        const tc = tipoDeCambio(o, tiposCambio, opciones.tipo_cambio);
+        if (tc) {
+          factor = tc.mxn_por_unidad;
+          const c = maximo.convertidas[moneda] ?? {
+            ordenes: 0,
+            original: 0,
+            mxn: 0,
+          };
+          maximo.convertidas[moneda] = {
+            ordenes: c.ordenes + 1,
+            original: round2(c.original + o.monto),
+            mxn: round2(c.mxn + o.monto * factor),
+          };
+          if (tc.fuente === 'referencia') maximo.con_referencia += 1;
+          moneda = 'MXN';
+        } else {
+          maximo.sin_tipo_cambio += 1;
+        }
+      }
+    }
+    const enPesos = (v: number | null) => (v === null ? null : v * factor);
+    const valor = enPesos(base === 'sin_iva' ? o.subtotal : o.monto);
+    const otro = enPesos(base === 'sin_iva' ? o.monto : o.subtotal);
     if (o.subtotal === null) {
       sinSubtotal.ordenes += 1;
-      sumar(sinSubtotal.con_iva, moneda, o.monto);
+      sumar(sinSubtotal.con_iva, moneda, o.monto * factor);
       sumar(mes.sin_subtotal, moneda, 1);
     }
     if (valor !== null) {
@@ -1063,6 +1308,7 @@ export function montosAdjudicados(
     }
     if (otro !== null) sumar(otroTotal, moneda, otro);
   }
+  const deSapMigradas = opciones.montos_fuente_maximo === 'sap_migradas';
   return {
     anio,
     base,
@@ -1074,6 +1320,13 @@ export function montosAdjudicados(
     sin_subtotal: sinSubtotal,
     fuente_maximo: fuente === 'sap' ? null : opciones.montos_fuente_maximo,
     migradas_excluidas: migradas,
+    descripcion:
+      fuente === 'sap'
+        ? `OC no canceladas, ${montoBaseTexto(base)}, por mes de la OC`
+        : fuente === 'todas'
+          ? `OC no canceladas, ${montoBaseTexto(base)}, por mes de la OC; las de Maximo sin las de contrato y con USD y EUR en pesos; las de SAP por moneda, sin convertir`
+          : `${deSapMigradas ? 'OC de SAP creadas desde Maximo' : 'OC'} no canceladas sin las de contrato, ${montoBaseTexto(base)}, por mes de la OC; USD y EUR en pesos`,
+    maximo,
   };
 }
 
@@ -1119,6 +1372,45 @@ function notaCerradasSinOcPorGrupo(total: number, sinContrato: number): string {
   }
   const [a, b] = destinos;
   return `${inicio}: ${fmtCount(a.n)} ${a.n === 1 ? 'va' : 'van'} en ${a.grupo} y ${fmtCount(b.n)} en ${b.grupo}.`;
+}
+
+/**
+ * O1: la nota de los montos. En la página de SAP, como siempre (cada moneda
+ * aparte). Con OC de Maximo: sin las de contrato, cuántas se pasaron a pesos
+ * y con qué tipo de cambio (el de referencia de SAP se dice), y que esto
+ * solo pasa en el avance.
+ */
+function notaMontos(
+  m: MontosAnio,
+  fuente: AvanceFuente,
+  opciones: AvanceOpciones,
+): string {
+  const base = `Montos ${montoBaseTexto(opciones.monto_base)}${opciones.monto_base === 'sin_iva' ? ' (suma de las líneas de la OC)' : ''} por mes de creación de la OC; OC no canceladas`;
+  if (m.maximo === null) return `${base}; cada moneda aparte, sin convertir.`;
+  const mx = m.maximo;
+  // corta: las cifras (contrato y lo convertido) van en la tarjeta de montos,
+  // el JSON y el Excel; el pie del PDF tiene tope de alto
+  const contrato =
+    mx.contrato.ordenes > 0
+      ? `sin las de contrato (${plural(mx.contrato.ordenes, 'OC', 'OC')})`
+      : 'sin las de contrato';
+  const convertidas = Object.values(mx.convertidas).reduce(
+    (n, c) => n + c.ordenes,
+    0,
+  );
+  const pesos = `dólares y euros en pesos${convertidas > 0 ? ` (${plural(convertidas, 'OC', 'OC')})` : ''} con ${tipoCambioTexto(mx.tipo_cambio)}`;
+  const referencia =
+    mx.tipo_cambio === 'maximo' && mx.con_referencia > 0
+      ? `; ${plural(mx.con_referencia, 'OC', 'OC')} con el tipo de referencia de SAP del mes`
+      : '';
+  const sinTc =
+    mx.sin_tipo_cambio > 0
+      ? `; ${plural(mx.sin_tipo_cambio, 'OC sin tipo de cambio queda', 'OC sin tipo de cambio quedan')} en su moneda`
+      : '';
+  const maximo = `${contrato}; ${pesos}${referencia}${sinTc}`;
+  return fuente === 'todas'
+    ? `${base}. Las de Maximo, ${maximo}; las de SAP, cada moneda aparte, sin convertir. Solo en este reporte: Órdenes y el resto de Compras no quitan las OC de contrato ni convierten monedas.`
+    : `${base}, ${maximo}. Solo en este reporte: Órdenes y el resto de Compras no quitan las OC de contrato ni convierten monedas.`;
 }
 
 /**
@@ -1206,6 +1498,7 @@ export function buildAvancePage(
     anio,
     semanaInicio,
     opciones,
+    data.tipos_cambio,
   );
 
   const notas: string[] = [];
@@ -1223,9 +1516,7 @@ export function buildAvancePage(
         : 'Días de cierre y de cancelación en días hábiles: de lunes a viernes (no hay días festivos registrados).',
     );
   }
-  notas.push(
-    `Montos ${montoBaseTexto(opciones.monto_base)}${opciones.monto_base === 'sin_iva' ? ' (suma de las líneas de la OC)' : ''} por mes de creación de la OC; OC no canceladas; cada moneda aparte, sin convertir.`,
-  );
+  notas.push(notaMontos(montos, fuente, opciones));
   if (conMaximo && montos.fuente_maximo === 'sap_migradas') {
     notas.push(
       'Los montos de Maximo salen de las OC de SAP que la integración creó desde Maximo (fecha de la OC en SAP).',
@@ -1244,16 +1535,16 @@ export function buildAvancePage(
   }
   if (fuente === 'todas') {
     notas.push(
-      'Las OC de SAP creadas desde Maximo se cuentan una vez (en Maximo), igual que en el tablero.',
+      'Las OC de SAP creadas desde Maximo se cuentan una vez, del lado de Maximo; las de contrato no se suman.',
     );
   }
   if (montos.migradas_excluidas === 1) {
     notas.push(
-      `1 OC de SAP creada desde Maximo en ${anio} no se suma aquí: es de la gestión de Maximo y se cuenta en su página.`,
+      `1 OC de SAP creada desde Maximo en ${anio} no se suma aquí: es de la gestión de Maximo y se cuenta en su página, salvo si es de contrato.`,
     );
   } else if (montos.migradas_excluidas > 1) {
     notas.push(
-      `${fmtCount(montos.migradas_excluidas)} OC de SAP creadas desde Maximo en ${anio} no se suman aquí: son de la gestión de Maximo y se cuentan en su página.`,
+      `${fmtCount(montos.migradas_excluidas)} OC de SAP creadas desde Maximo en ${anio} no se suman aquí: son de la gestión de Maximo y se cuentan en su página, salvo las de contrato.`,
     );
   }
   if (actual.cerradas_sin_oc > 0) {
@@ -1307,6 +1598,11 @@ export function buildAvancePage(
 
   const domingo = addDays(semanaInicio, 6);
   const diaCorte = addDays(semanaInicio, DIAS_AL_CORTE[corte] - 1);
+  // O1.3: el promedio grande de las tarjetas de días
+  const titulo = (anioStats: DiasStats | null, semanaStats: DiasStats) => ({
+    promedio: opciones.promedio_titulo,
+    dias: opciones.promedio_titulo === 'semana' ? semanaStats : anioStats,
+  });
   return {
     semana: {
       lunes: isoDay(semanaInicio),
@@ -1330,11 +1626,17 @@ export function buildAvancePage(
           ? { anio: anio - 1, abiertas: previo.abiertas }
           : null,
       maximo_no_recibidas: noRecibidas,
+      // O1.4: hasta O2 (RQ de CIISA), la recibida de Maximo es una aproximación
+      leyenda:
+        fuente === 'maximo'
+          ? `Recibidas = PR ${opciones.reglas.recibida === 'aprobacion' ? 'aprobadas' : 'emitidas'} (aproximación); el reporte de Compras cuenta solicitudes de cotización (RQ).`
+          : null,
     },
     cierre: {
       nota: dias.cierre,
       unidad,
       anio: actual.dias_cierre,
+      titulo: titulo(actual.dias_cierre, semana.dias_cierre),
       semanas: ultimas.map((s) => ({
         lunes: s.lunes,
         etiqueta: s.etiqueta,
@@ -1347,6 +1649,7 @@ export function buildAvancePage(
       nota: dias.cancelacion,
       unidad,
       anio: actual.dias_cancelacion,
+      titulo: titulo(actual.dias_cancelacion, semana.dias_cancelacion),
       semanas: ultimas.map((s) => ({
         lunes: s.lunes,
         etiqueta: s.etiqueta,

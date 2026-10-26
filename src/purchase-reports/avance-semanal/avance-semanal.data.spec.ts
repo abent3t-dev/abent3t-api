@@ -3,6 +3,7 @@ import {
   type AvanceRows,
   buildAvanceData,
   loadAvanceRows,
+  tiposDeCambio,
 } from './avance-semanal.data';
 import { AVANCE_REGLAS } from './avance-semanal.reglas';
 
@@ -25,6 +26,8 @@ const empty = (): AvanceRows => ({
   maximoFirstPo: [],
   maximoOrders: [],
   festivos: [],
+  maximoTcDia: [],
+  sapTcMes: [],
 });
 
 type PrRow = AvanceRows['maximoPrs'][number];
@@ -230,6 +233,7 @@ describe('buildAvanceData', () => {
         subtotal: '9.05',
         contada_en_maximo: true,
         copia_migrada: false,
+        de_contrato: true,
       },
       {
         fecha: D('2026-01-03'),
@@ -238,6 +242,7 @@ describe('buildAvanceData', () => {
         subtotal: null,
         contada_en_maximo: false,
         copia_migrada: false,
+        de_contrato: false,
       },
       // D1: copia extra de la misma PO de Maximo (no la de menor DocNum)
       {
@@ -247,10 +252,27 @@ describe('buildAvanceData', () => {
         subtotal: '9.05',
         contada_en_maximo: true,
         copia_migrada: true,
+        de_contrato: null,
       },
     ];
     rows.maximoOrders = [
-      { fecha: D('2026-01-04'), moneda: 'MXN', monto: 7, subtotal: null },
+      {
+        fecha: D('2026-01-04'),
+        moneda: 'MXN',
+        monto: 7,
+        subtotal: null,
+        de_contrato: false,
+        tc_usd: '0.0580848',
+      },
+      // O1: de contrato y en dólares (su EXCHANGERATE, 1)
+      {
+        fecha: D('2026-01-05'),
+        moneda: 'USD',
+        monto: 116,
+        subtotal: 100,
+        de_contrato: true,
+        tc_usd: 1,
+      },
     ];
     const data = buildAvanceData(rows);
     expect(data.ordenes).toEqual([
@@ -262,6 +284,7 @@ describe('buildAvanceData', () => {
         subtotal: 9.05,
         contada_en_maximo: true,
         copia_migrada: false,
+        de_contrato: true,
       },
       {
         sistema: 'sap',
@@ -271,6 +294,7 @@ describe('buildAvanceData', () => {
         subtotal: 9.05,
         contada_en_maximo: true,
         copia_migrada: true,
+        de_contrato: false,
       },
       {
         sistema: 'maximo',
@@ -279,8 +303,50 @@ describe('buildAvanceData', () => {
         monto: 7,
         subtotal: null,
         contada_en_maximo: false,
+        de_contrato: false,
+        tc_usd: 0.0580848,
+      },
+      {
+        sistema: 'maximo',
+        fecha: D('2026-01-05'),
+        moneda: 'USD',
+        monto: 116,
+        subtotal: 100,
+        contada_en_maximo: false,
+        de_contrato: true,
+        tc_usd: 1,
       },
     ]);
+  });
+
+  it('O1: tipos de cambio: pesos por dólar del día = 1 / el EXCHANGERATE de las OC en pesos; el de SAP por moneda y mes', () => {
+    const tipos = tiposDeCambio(
+      [
+        { dia: '2026-03-10', tc: '0.0571429' },
+        { dia: '2026-03-09', tc: 0.0588235 },
+        // sin dato: no entra
+        { dia: '2026-03-11', tc: null },
+      ],
+      [
+        { moneda: 'USD', mes: '2026-03', tc: '17.45' },
+        { moneda: 'EUR', mes: '2026-03', tc: 20.1 },
+      ],
+    );
+    expect(tipos.maximo_dia.map((d) => d.dia)).toEqual([
+      '2026-03-09',
+      '2026-03-10',
+    ]);
+    expect(tipos.maximo_dia[0].mxn_por_usd).toBeCloseTo(17, 4);
+    expect(tipos.maximo_dia[1].mxn_por_usd).toBeCloseTo(17.5, 4);
+    expect(tipos.sap_mes).toEqual({
+      'USD|2026-03': 17.45,
+      'EUR|2026-03': 20.1,
+    });
+    // dev (sin datos de Maximo): vacíos, y los datos los traen
+    expect(buildAvanceData(empty()).tipos_cambio).toEqual({
+      maximo_dia: [],
+      sap_mes: {},
+    });
   });
 });
 
@@ -296,9 +362,14 @@ describe('loadAvanceRows', () => {
     await loadAvanceRows(
       prisma as unknown as Parameters<typeof loadAvanceRows>[0],
     );
-    // H3: la séptima trae los festivos activos
-    expect(queries).toHaveLength(7);
+    // H3: la séptima trae los festivos activos; O1: los tipos de cambio
+    expect(queries).toHaveLength(9);
     const sql = queries.map((q) => q.sql).join(' ');
+    // O1: la marca de contrato y el EXCHANGERATE salen del raw
+    expect(sql).toContain('CONTRACTREFNUM');
+    expect(sql).toContain('EXCHANGERATE');
+    expect(sql).toContain("p.currency = 'MXN'");
+    expect(sql).toContain("s.raw::jsonb ->> 'DocTotalFc'");
     expect(sql).toContain('bool_or(has_contract) OVER (PARTITION BY prnum)');
     expect(sql).toContain('p.pr_approved_at');
     expect(sql).toContain('p.pr_cancelled_at');

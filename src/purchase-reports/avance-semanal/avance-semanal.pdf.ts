@@ -34,6 +34,12 @@ import {
  * `grupos=contrato`), la dona, los medidores y las barras muestran "De
  * contrato (OC automática)" y "Canceladas en Maximo" aparte de las cerradas y
  * las abiertas. Sin `grupos`, la página se dibuja igual que antes.
+ *
+ * O1 (2026-10-26): la página de Maximo lleva en el encabezado la leyenda de
+ * las recibidas (`avance.leyenda`); el número grande de las tarjetas de días es
+ * el promedio del título (`cierre.titulo`, del año o de la semana); los
+ * montos dicen qué OC suman (`montos.descripcion`) y, en Maximo, las de
+ * contrato que no suman y las monedas pasadas a pesos.
  */
 
 type Doc = PDFKit.PDFDocument;
@@ -246,6 +252,16 @@ function header(doc: Doc, page: AvancePage) {
     size: 12.5,
     color: C.blanco,
   });
+  // O1.4: en Maximo, qué cuenta como recibida (hasta O2), en un renglón
+  // debajo de la semana: en la tarjeta de avance no cabe sin encimarse
+  if (page.avance.leyenda) {
+    text(doc, page.avance.leyenda, M, 63, {
+      size: 6.8,
+      color: C.blanco,
+      width: W - 2 * M - 160,
+      height: 11,
+    });
+  }
   const boxW = 150;
   const boxX = W - M - boxW;
   doc.roundedRect(boxX, 11, boxW, 52, 8).fill(C.blanco);
@@ -430,7 +446,9 @@ function diasCard(
   opts: {
     title: string;
     subtitle: string | null;
+    /** O1.3: el promedio del título (del año o de la semana). */
     anio: DiasStats | null;
+    /** "2026" o "la semana": el periodo de ese promedio. */
     anioLabel: string;
     eventLabel: string;
     /** Qué cuenta la N del promedio ("cerradas con OC de 2026"). */
@@ -799,23 +817,44 @@ function montosCard(
   const m = page.montos;
   const deSapMigradas =
     page.fuente.clave === 'maximo' && m.fuente_maximo === 'sap_migradas';
-  const top = card(
-    doc,
-    x,
-    y,
-    w,
-    h,
-    `Montos adjudicados ${m.anio}`,
-    `${deSapMigradas ? 'OC de SAP creadas desde Maximo' : 'OC'} no canceladas, ${montoBaseTexto(m.base)}, por mes de la OC`,
-  );
+  // O1: en un renglón (la tabla y el pie necesitan el alto); la frase
+  // completa va en `montos.descripcion` (JSON y Excel)
+  const base = montoBaseTexto(m.base);
+  const subtitulo =
+    m.maximo === null || m.maximo === undefined
+      ? `OC no canceladas, ${base}, por mes de la OC`
+      : page.fuente.clave === 'todas'
+        ? `${base.charAt(0).toUpperCase()}${base.slice(1)}, por mes; Maximo sin contrato y en pesos`
+        : deSapMigradas
+          ? 'OC de SAP desde Maximo, sin contrato, en pesos'
+          : `OC no canceladas ni de contrato, ${base}, en pesos`;
+  const top = card(doc, x, y, w, h, `Montos adjudicados ${m.anio}`, subtitulo);
   // K5: el otro valor (por moneda) y las OC sin subtotal, en una línea chica
   const otroTexto = m.monedas
     .filter((c) => m.otro.total[c] !== undefined)
     .map((c) => `${c} ${fmtMoney(m.otro.total[c])}`)
     .join(' · ');
+  // O1: en Maximo, lo convertido a pesos y las OC de contrato que no suman
+  const mx = m.maximo ?? null;
+  const convertidas = mx ? Object.entries(mx.convertidas) : [];
+  const contrato = mx?.contrato;
   const pie = [
     otroTexto
       ? `${m.otro.base === 'con_iva' ? 'Con IVA' : 'Sin IVA'}: ${otroTexto}`
+      : null,
+    // corto: el pie tiene tope de alto; los montos de contrato van en el
+    // JSON y en el Excel
+    convertidas.length > 0
+      ? `En pesos: ${convertidas
+          .map(([moneda, c]) => `${moneda} ${fmtMoney(c.original)}`)
+          .join(' · ')} (${
+          mx?.tipo_cambio === 'sap'
+            ? 'tipo de referencia de SAP del mes'
+            : `tipo de Maximo del día${mx && mx.con_referencia > 0 ? `; ${fmtInt(mx.con_referencia)} OC con el de referencia de SAP` : ''}`
+        })`
+      : null,
+    contrato && contrato.ordenes > 0
+      ? `Sin ${fmtInt(contrato.ordenes)} OC de contrato`
       : null,
     m.sin_subtotal.ordenes > 0
       ? `${fmtInt(m.sin_subtotal.ordenes)} OC sin subtotal (no se estiman)`
@@ -1090,13 +1129,17 @@ function drawPage(doc: Doc, page: AvancePage, index: number, total: number) {
     (_, i) => M + widths.slice(0, i).reduce((s, v) => s + v, 0) + i * 10,
   );
   avanceCard(doc, page, xs[0], upperY, widths[0], upperH);
+  // O1.3: el número grande es el promedio del año o el de la semana
+  const deLaSemana = page.cierre.titulo?.promedio === 'semana';
   diasCard(doc, xs[1], upperY, widths[1], upperH, {
     title: 'Tiempo de cierre de gestiones',
     subtitle: page.cierre.nota,
-    anio: page.cierre.anio,
-    anioLabel: String(page.semana.anio),
+    anio: page.cierre.titulo?.dias ?? page.cierre.anio,
+    anioLabel: deLaSemana ? 'la semana' : String(page.semana.anio),
     eventLabel: 'Cerradas',
-    nLabel: `cerradas con OC de ${page.semana.anio}`,
+    nLabel: deLaSemana
+      ? 'cerradas con OC en la semana'
+      : `cerradas con OC de ${page.semana.anio}`,
     unidad: page.cierre.unidad,
     semanas: page.cierre.semanas.map((s) => ({
       lunes: s.lunes,
@@ -1107,10 +1150,12 @@ function drawPage(doc: Doc, page: AvancePage, index: number, total: number) {
   diasCard(doc, xs[2], upperY, widths[2], upperH, {
     title: 'Tiempo de cancelación',
     subtitle: page.cancelacion.nota,
-    anio: page.cancelacion.anio,
-    anioLabel: String(page.semana.anio),
+    anio: page.cancelacion.titulo?.dias ?? page.cancelacion.anio,
+    anioLabel: deLaSemana ? 'la semana' : String(page.semana.anio),
     eventLabel: 'Canceladas',
-    nLabel: `canceladas de ${page.semana.anio}`,
+    nLabel: deLaSemana
+      ? 'canceladas en la semana'
+      : `canceladas de ${page.semana.anio}`,
     unidad: page.cancelacion.unidad,
     semanas: page.cancelacion.semanas.map((s) => ({
       lunes: s.lunes,

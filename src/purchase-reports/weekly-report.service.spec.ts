@@ -509,24 +509,25 @@ describe('WeeklyReportService', () => {
     expect(maximo.get('Gestiones recibidas en 2026')).toBe(2);
     expect(maximo.get('Canceladas de las recibidas en 2026')).toBe(1);
     expect(maximo.get('Abiertas de las recibidas en 2026')).toBe(1);
-    expect(maximo.get('Días de cancelación 2026 (promedio)')).toBe(7.3);
+    // O1: días hábiles (7.3 naturales: del viernes 21-ago 03:10 al viernes
+    // 28-ago 10:40 de México)
+    expect(maximo.get('Días hábiles de cancelación 2026 (promedio)')).toBe(5.3);
     expect(sapBlock.get('Fuente')).toBe('SAP');
     expect(sapBlock.get('Gestiones recibidas en 2026')).toBe(1);
     expect(sapBlock.get('Cerradas en la semana')).toBe(1);
-    expect(sapBlock.get('Días de cierre 2026 (promedio)')).toBe(4);
+    expect(sapBlock.get('Días hábiles de cierre 2026 (promedio)')).toBe(4);
     expect(sapBlock.get('Canceladas de las recibidas en 2026')).toBe(0);
     expect(sapBlock.has('Abiertas de las recibidas en 2026')).toBe(true);
     for (const b of [maximo, sapBlock]) {
       expect(b.has('Sin OC de las recibidas en 2026')).toBe(false);
       expect([...b.values()]).not.toContain('No disponible');
     }
-    // K5.6: montos en la base de AVANCE_MONTO_BASE (sin IVA) y el otro valor
-    expect(sapBlock.get('Monto adjudicado Septiembre 2026 (MXN)')).toBe(
+    // K5.6: montos en la base de AVANCE_MONTO_BASE (O1: con IVA) y el otro
+    // valor
+    expect(sapBlock.get('Monto adjudicado Septiembre 2026 (MXN)')).toBe(1500.5);
+    expect(sapBlock.get('Monto adjudicado total 2026 (MXN)')).toBe(1500.5);
+    expect(sapBlock.get('Monto adjudicado total 2026 (MXN), sin IVA')).toBe(
       1293.53,
-    );
-    expect(sapBlock.get('Monto adjudicado total 2026 (MXN)')).toBe(1293.53);
-    expect(sapBlock.get('Monto adjudicado total 2026 (MXN), con IVA')).toBe(
-      1500.5,
     );
   });
 
@@ -543,7 +544,7 @@ describe('WeeklyReportService', () => {
       subtotal,
       contada_en_maximo: false,
     });
-    const { service } = makeService([
+    const ordenes = [
       oc('2026-07-10', 116, 100),
       // agosto: solo OC sin subtotal (sin líneas o alguna sin importe)
       oc('2026-08-10', 58, null),
@@ -551,13 +552,14 @@ describe('WeeklyReportService', () => {
       // septiembre: una con subtotal y otra sin él
       oc('2026-09-15', 232, 200),
       oc('2026-09-16', 11.6, null),
-    ]);
+    ];
+    const { service } = makeService(ordenes);
     const { buffer } = await service.buildWorkbook({
       from: '2026-09-14',
       to: '2026-09-20',
     });
     const book = await readBook(buffer);
-    const filas = new Map<string, { valor: unknown; nota: unknown }>();
+    const libro = new Map<string, { valor: unknown; nota: unknown }>();
     let enSap = false;
     book.getWorksheet('Avance semanal')!.eachRow((row, n) => {
       if (n === 1) return;
@@ -570,9 +572,40 @@ describe('WeeklyReportService', () => {
         return;
       }
       if (enSap) {
-        filas.set(String(values[1]), { valor: values[2], nota: values[3] });
+        libro.set(String(values[1]), { valor: values[2], nota: values[3] });
       }
     });
+    // O1: el default es con IVA: todos los meses con OC tienen monto
+    expect(libro.get('Monto adjudicado Agosto 2026 (MXN)')?.valor).toBe(87);
+    expect(libro.get('Monto adjudicado total 2026 (MXN)')?.valor).toBe(446.6);
+    expect(libro.get('Monto adjudicado total 2026 (MXN), sin IVA')?.valor).toBe(
+      300,
+    );
+    // H9 con la base sin IVA (la página con esa opción)
+    const filas = new Map(
+      (
+        service as unknown as {
+          avanceRows: (
+            p: AvancePage,
+          ) => Array<{ indicador: string; valor: unknown; nota?: string }>;
+        }
+      )
+        .avanceRows(
+          buildAvancePage(
+            {
+              gestiones: [],
+              ordenes,
+              maximo_no_recibidas: [],
+              sap_desde: null,
+            },
+            new Date('2026-09-14T00:00:00Z'),
+            'sap',
+            new Date('2026-09-30T18:00:00Z'),
+            { ...AVANCE_OPCIONES, monto_base: 'sin_iva' },
+          ),
+        )
+        .map((r) => [r.indicador, { valor: r.valor, nota: r.nota }]),
+    );
     expect(filas.get('Monto adjudicado Julio 2026 (MXN)')?.valor).toBe(100);
     expect(filas.get('Monto adjudicado Agosto 2026 (MXN)')).toEqual({
       valor: 'No disponible',
@@ -617,10 +650,75 @@ describe('WeeklyReportService', () => {
     );
     expect(habiles).toContain('Días hábiles de cancelación 2026 (promedio)');
     expect(habiles).not.toContain('Días de cierre 2026 (promedio)');
-    // default: naturales, como siempre
-    const naturales = filas(buildAvancePage(data, lunes, 'maximo', now));
+    // O1: el default ya es hábiles; con naturales, "Días"
+    expect(filas(buildAvancePage(data, lunes, 'maximo', now))).toContain(
+      'Días hábiles de cierre 2026 (promedio)',
+    );
+    const naturales = filas(
+      buildAvancePage(data, lunes, 'maximo', now, {
+        ...AVANCE_OPCIONES,
+        reglas: { ...AVANCE_REGLAS, dias_tipo: 'naturales' },
+      }),
+    );
     expect(naturales).toContain('Días de cierre 2026 (promedio)');
     expect(naturales).toContain('Días de cancelación 2026 (promedio)');
+  });
+
+  it('O1: en el bloque de Maximo, las OC de contrato que no suman y las monedas pasadas a pesos', () => {
+    const { service } = makeService();
+    type Fila = { indicador: string; valor: unknown; nota?: string };
+    const filas = (page: AvancePage) =>
+      new Map(
+        (service as unknown as { avanceRows: (p: AvancePage) => Fila[] })
+          .avanceRows(page)
+          .map((r) => [r.indicador, r]),
+      );
+    const oc = (
+      fecha: string,
+      moneda: string,
+      monto: number,
+      extra: Partial<AvanceData['ordenes'][number]> = {},
+    ): AvanceData['ordenes'][number] => ({
+      sistema: 'maximo',
+      fecha: new Date(fecha),
+      moneda,
+      monto,
+      subtotal: Math.round((monto / 1.16) * 100) / 100,
+      contada_en_maximo: false,
+      ...extra,
+    });
+    const data: AvanceData = {
+      gestiones: [],
+      ordenes: [
+        oc('2026-09-10T18:00:00Z', 'MXN', 1160),
+        oc('2026-09-10T18:00:00Z', 'MXN', 5800, { de_contrato: true }),
+        oc('2026-09-10T18:00:00Z', 'USD', 116, { tc_usd: 1 }),
+      ],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+      tipos_cambio: {
+        maximo_dia: [{ dia: '2026-09-10', mxn_por_usd: 17.5 }],
+        sap_mes: {},
+      },
+    };
+    const lunes = new Date('2026-09-21T00:00:00Z');
+    const now = new Date('2026-09-30T18:00:00Z');
+    const maximo = filas(buildAvancePage(data, lunes, 'maximo', now));
+    expect(maximo.get('Monto adjudicado total 2026 (MXN)')).toMatchObject({
+      valor: 3190,
+      nota: 'OC no canceladas sin las de contrato, con IVA, por mes de la OC; USD y EUR en pesos',
+    });
+    expect(maximo.get('OC de contrato 2026 (no suman)')).toMatchObject({
+      valor: 1,
+      nota: 'MXN 5,800.00 con IVA; CONTRACTREFNUM en su registro de Maximo (no pasan por RQ)',
+    });
+    expect(maximo.get('OC en USD pasadas a pesos 2026')).toMatchObject({
+      valor: 1,
+      nota: 'USD 116.00 con IVA = MXN 2,030.00 (tipo de Maximo del día; sin él, el de referencia de SAP del mes)',
+    });
+    // la página de SAP no lleva esos renglones
+    const sapPage = filas(buildAvancePage(data, lunes, 'sap', now));
+    expect(sapPage.has('OC de contrato 2026 (no suman)')).toBe(false);
   });
 
   it('L2: con el default el Excel no cambia; si la página trae grupos (la constante pasa a contrato), "Atendidas de {año}" los usa con sus nombres', () => {

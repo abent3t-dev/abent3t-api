@@ -251,7 +251,12 @@ describe('PDF: tarjeta de montos (H9, H18)', () => {
       maximo_no_recibidas: [],
       sap_desde: null,
     };
-    const page = buildAvancePage(data, D('2026-09-21'), 'maximo', NOW);
+    // la presentación sin IVA (H9/H18); O1: el default ya es con IVA y, sin
+    // tipos de cambio, el dólar y el euro se quedan en su moneda
+    const page = buildAvancePage(data, D('2026-09-21'), 'maximo', NOW, {
+      ...AVANCE_OPCIONES,
+      monto_base: 'sin_iva',
+    });
     expect(page.montos.monedas).toEqual(['MXN', 'USD', 'EUR']);
     expect(page.montos.sin_subtotal.ordenes).toBe(5);
 
@@ -415,9 +420,21 @@ describe('K5.7: conciliación contra la serie de Jorge', () => {
       meta,
     )) as AvanceConciliacionDto;
     expect(naturales.dias_tipo).toBe('naturales');
-    // sin el parámetro: default (naturales)
+    // sin el parámetro: default (O1: hábiles)
     const vacio = (await pipe.transform({}, meta)) as AvanceConciliacionDto;
-    expect(opcionesConciliacion(vacio).reglas.dias_tipo).toBe('naturales');
+    expect(opcionesConciliacion(vacio).reglas.dias_tipo).toBe('habiles');
+    // O1: tipo de cambio y promedio del título pasan el whitelist
+    const o1 = (await pipe.transform(
+      { tipo_cambio: 'sap', promedio_titulo: 'semana' },
+      meta,
+    )) as AvanceConciliacionDto;
+    expect(opcionesConciliacion(o1)).toMatchObject({
+      tipo_cambio: 'sap',
+      promedio_titulo: 'semana',
+    });
+    await expect(
+      pipe.transform({ tipo_cambio: 'banxico' }, meta),
+    ).rejects.toThrow(BadRequestException);
     for (const malo of ['laborales', 'HABILES', '']) {
       await expect(pipe.transform({ dias_tipo: malo }, meta)).rejects.toThrow(
         BadRequestException,
@@ -456,8 +473,14 @@ describe('K5.7: conciliación contra la serie de Jorge', () => {
       2022, 2023, 2024, 2025, 2026,
     ]);
     expect(conc.duracion_ms).toBeGreaterThanOrEqual(0);
-    // una sola carga de datos (7 consultas, H3: con los festivos)
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(7);
+    // una sola carga de datos (9 consultas: H3 los festivos y O1 los tipos
+    // de cambio)
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(9);
+    // O1.5: el informe de RQ de octubre, aun sin datos
+    expect(conc.rq_octubre.puntos.map((p) => p.dia)).toEqual([
+      '2026-10-16',
+      '2026-10-20',
+    ]);
   });
 });
 
@@ -512,9 +535,11 @@ describe('H4: reglas vigentes del avance (tarjeta de Reportes)', () => {
       ...AVANCE_OPCIONES,
       monto_base: 'sin_iva',
     });
-    // el texto que la tarjeta tenía escrito a mano
+    // el texto que la tarjeta tenía escrito a mano, y (O1) lo de Maximo
     expect(sinIva.monto_base_nota).toBe(
-      'Montos sin IVA (suma de las líneas de la OC; las OC sin subtotal no se suman ni se estiman); el valor con IVA va en una línea chica.',
+      'Montos sin IVA (suma de las líneas de la OC; las OC sin subtotal no se suman ni se estiman); el valor con IVA va en una línea chica. En Maximo, sin las OC de contrato y con dólares y euros en pesos (el tipo de cambio de Maximo del día), como el reporte de Compras; solo en este reporte.',
     );
+    expect(sinIva.tipo_cambio).toBe('maximo');
+    expect(sinIva.promedio_titulo).toBe('anio');
   });
 });

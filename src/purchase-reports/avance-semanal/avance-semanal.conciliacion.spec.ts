@@ -6,13 +6,17 @@ import {
   MOTIVO_COPIA,
   type NuestraSemana,
   opcionesConciliacion,
+  RQ_OCTUBRE_NOTA,
+  rqOctubre,
   validezPagina,
 } from './avance-semanal.conciliacion';
 import type { AvanceData, Gestion } from './avance-semanal.engine';
 import {
   AVANCE_MONTO_BASE,
   AVANCE_MONTOS_FUENTE_MAXIMO,
+  AVANCE_PROMEDIO_TITULO,
   AVANCE_REGLAS,
+  AVANCE_TIPO_CAMBIO,
 } from './avance-semanal.reglas';
 import {
   JORGE,
@@ -383,17 +387,19 @@ describe('conciliarAvance', () => {
     // una semana antes, todavía no cerraban
     expect(kpi(conc.semanas[1], 'cerradas_anio').nuestro).toBe(0);
     const [m2026, m2025] = conc.montos;
+    // O1: las variantes van sin contrato y en pesos (aquí todo es MXN)
     expect(m2026.meses[2].nuestro).toEqual({
-      maximo_con_iva: 116,
-      maximo_sin_iva: 100,
-      sap_migradas_con_iva: 232,
-      sap_migradas_sin_iva: 200,
+      tc_maximo: 116,
+      tc_sap: 116,
+      sin_iva: 100,
+      sap_migradas: 232,
     });
     expect(m2026.total.jorge).toBeCloseTo(94_670_099.15, 2);
     expect(m2026.total.jorge_escrito).toBe(94_670_099.15);
     expect(m2025.meses).toHaveLength(12);
     expect(m2025.sin_subtotal.maximo).toBe(1);
-    expect(m2025.otras_monedas.maximo_con_iva).toEqual({ USD: 11.6 });
+    // sin tipos de cambio, el dólar se queda en su moneda
+    expect(m2025.otras_monedas.tc_maximo).toEqual({ USD: 11.6 });
     expect(conc.anual.find((a) => a.anio === 2026)).toMatchObject({
       jorge: { recibidas: 582, atendidas: 541 },
       nuestro: { recibidas: 2, atendidas: 2 },
@@ -407,26 +413,37 @@ describe('conciliarAvance', () => {
   });
 
   it('opciones: lo que no viene toma el default', () => {
-    expect(opcionesConciliacion({})).toEqual({
-      reglas: AVANCE_REGLAS,
+    const defaults = {
       monto_base: AVANCE_MONTO_BASE,
       montos_fuente_maximo: AVANCE_MONTOS_FUENTE_MAXIMO,
+      tipo_cambio: AVANCE_TIPO_CAMBIO,
+      promedio_titulo: AVANCE_PROMEDIO_TITULO,
+    };
+    expect(opcionesConciliacion({})).toEqual({
+      reglas: AVANCE_REGLAS,
+      ...defaults,
     });
     expect(
       opcionesConciliacion({ dias_desde: 'emision', montos: 'sap_migradas' }),
     ).toEqual({
       reglas: { ...AVANCE_REGLAS, dias_desde: 'emision' },
-      monto_base: AVANCE_MONTO_BASE,
+      ...defaults,
       montos_fuente_maximo: 'sap_migradas',
     });
+    // O1: tipo de cambio y promedio del título
+    expect(
+      opcionesConciliacion({ tipo_cambio: 'sap', promedio_titulo: 'semana' }),
+    ).toMatchObject({ tipo_cambio: 'sap', promedio_titulo: 'semana' });
   });
 
-  it('H3: dias_tipo respeta lo pedido y por default son días naturales', () => {
-    expect(opcionesConciliacion({}).reglas.dias_tipo).toBe('naturales');
-    expect(opcionesConciliacion({ dias_tipo: 'habiles' })).toEqual({
-      reglas: { ...AVANCE_REGLAS, dias_tipo: 'habiles' },
+  it('H3: dias_tipo respeta lo pedido; O1: por default son días hábiles', () => {
+    expect(opcionesConciliacion({}).reglas.dias_tipo).toBe('habiles');
+    expect(opcionesConciliacion({ dias_tipo: 'naturales' })).toEqual({
+      reglas: { ...AVANCE_REGLAS, dias_tipo: 'naturales' },
       monto_base: AVANCE_MONTO_BASE,
       montos_fuente_maximo: AVANCE_MONTOS_FUENTE_MAXIMO,
+      tipo_cambio: AVANCE_TIPO_CAMBIO,
+      promedio_titulo: AVANCE_PROMEDIO_TITULO,
     });
   });
 
@@ -475,12 +492,12 @@ describe('conciliarAvance', () => {
 
   it('H3: con dias_tipo=habiles los días de cierre salen en hábiles y la respuesta lo reporta', () => {
     const generado = new Date('2026-10-05T18:00:00Z');
-    const naturales = conciliarAvance(data, opcionesConciliacion({}), generado);
-    const habiles = conciliarAvance(
+    const naturales = conciliarAvance(
       data,
-      opcionesConciliacion({ dias_tipo: 'habiles' }),
+      opcionesConciliacion({ dias_tipo: 'naturales' }),
       generado,
     );
+    const habiles = conciliarAvance(data, opcionesConciliacion({}), generado);
     expect(habiles.opciones.reglas.dias_tipo).toBe('habiles');
     expect(naturales.opciones.reglas.dias_tipo).toBe('naturales');
     // martes 15-sep 09:00 a jueves 24-sep 10:00 de México: 9 días y 1 h
@@ -492,5 +509,201 @@ describe('conciliarAvance', () => {
     expect(kpi(habiles.semanas[0], 'recibidas').nuestro).toBe(
       kpi(naturales.semanas[0], 'recibidas').nuestro,
     );
+  });
+});
+
+describe('O1.5: montos con los dos tipos de cambio y el informe de RQ de octubre', () => {
+  const gestion = (overrides: Partial<Gestion>): Gestion => ({
+    sistema: 'maximo',
+    folio: 'PR1',
+    recibida: new Date('2026-09-15T15:00:00Z'),
+    fecha_origen: 'aprobacion',
+    inicio_dias: new Date('2026-09-15T15:00:00Z'),
+    primera_oc: null,
+    cierre_sin_oc: null,
+    cancelada: null,
+    de_contrato: false,
+    ...overrides,
+  });
+  const generado = new Date('2026-10-26T18:00:00Z');
+
+  it('compara el total del año con el tipo de Maximo y con el de SAP contra el de Jorge y dice cuál queda más cerca', () => {
+    const data: AvanceData = {
+      gestiones: [],
+      ordenes: [
+        {
+          sistema: 'maximo',
+          fecha: new Date('2026-03-10T18:00:00Z'),
+          moneda: 'MXN',
+          monto: 116,
+          subtotal: 100,
+          contada_en_maximo: false,
+        },
+        // de contrato: fuera de las cuatro variantes
+        {
+          sistema: 'maximo',
+          fecha: new Date('2026-03-11T18:00:00Z'),
+          moneda: 'MXN',
+          monto: 1000,
+          subtotal: 862.07,
+          contada_en_maximo: false,
+          de_contrato: true,
+        },
+        {
+          sistema: 'maximo',
+          fecha: new Date('2026-03-10T18:00:00Z'),
+          moneda: 'USD',
+          monto: 5_000_000,
+          subtotal: 4_310_344.83,
+          contada_en_maximo: false,
+          tc_usd: 1,
+        },
+      ],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+      tipos_cambio: {
+        maximo_dia: [{ dia: '2026-03-10', mxn_por_usd: 19 }],
+        sap_mes: { 'USD|2026-03': 17 },
+      },
+    };
+    const [m2026] = conciliarAvance(
+      data,
+      opcionesConciliacion({}),
+      generado,
+    ).montos;
+    expect(m2026.total.nuestro.tc_maximo).toBe(95_000_116);
+    expect(m2026.total.nuestro.tc_sap).toBe(85_000_116);
+    expect(m2026.tipo_cambio).toEqual({
+      jorge: 94_670_099.15,
+      maximo: {
+        total: 95_000_116,
+        diferencia: 330_016.85,
+        diferencia_pct: 0.35,
+      },
+      sap: {
+        total: 85_000_116,
+        diferencia: -9_669_983.15,
+        diferencia_pct: -10.21,
+      },
+      comparable: true,
+      mas_cercano: 'maximo',
+    });
+    expect(m2026.maximo).toMatchObject({
+      contrato: { ordenes: 1, con_iva: { MXN: 1000 } },
+      convertidas: {
+        USD: { ordenes: 1, original: 5_000_000, mxn: 95_000_000 },
+      },
+    });
+    expect(m2026.otras_monedas.tc_maximo).toEqual({});
+  });
+
+  it('el informe de RQ del 16-oct (viernes) y del 20-oct (martes) contra nuestra página de esos días', () => {
+    const data: AvanceData = {
+      gestiones: [
+        gestion({ primera_oc: new Date('2026-09-24T16:00:00Z') }),
+        // nueva el miércoles 14-oct y cerrada el viernes 16-oct
+        gestion({
+          folio: 'PR10',
+          recibida: new Date('2026-10-14T15:00:00Z'),
+          primera_oc: new Date('2026-10-16T15:00:00Z'),
+        }),
+        // llega el lunes 19-oct: abierta el 20
+        gestion({ folio: 'PR11', recibida: new Date('2026-10-19T15:00:00Z') }),
+        // cancelada el martes 20-oct a las 14:00 de México
+        gestion({
+          folio: 'PR12',
+          recibida: new Date('2026-10-01T15:00:00Z'),
+          cancelada: new Date('2026-10-20T20:00:00Z'),
+        }),
+      ],
+      ordenes: [],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+    };
+    const [dia16, dia20] = rqOctubre(data, opcionesConciliacion({}), generado);
+    expect(dia16).toMatchObject({
+      dia: '2026-10-16',
+      semana_lunes: '2026-10-12',
+      nuestro: {
+        recibidas: 3,
+        nuevas: 1,
+        cerradas: 2,
+        cerradas_semana: 1,
+        canceladas: 0,
+        abiertas: 1,
+      },
+      diferencia: {
+        recibidas: 3 - 618,
+        nuevas: 1 - 21,
+        cerradas: 2 - 443,
+        cerradas_semana: 1 - 13,
+        canceladas: null,
+        abiertas: null,
+      },
+    });
+    expect(dia20).toMatchObject({
+      dia: '2026-10-20',
+      semana_lunes: '2026-10-19',
+      // martes: su semana terminaría el viernes 23, después del informe
+      nuestro: {
+        recibidas: 4,
+        nuevas: null,
+        cerradas: 2,
+        cerradas_semana: null,
+        canceladas: 1,
+        abiertas: 1,
+      },
+      diferencia: {
+        recibidas: 4 - 626,
+        nuevas: null,
+        cerradas: 2 - 448,
+        cerradas_semana: null,
+        canceladas: 1 - 143,
+        abiertas: 1 - 35,
+      },
+    });
+    const conc = conciliarAvance(data, opcionesConciliacion({}), generado);
+    expect(conc.rq_octubre).toEqual({
+      nota: RQ_OCTUBRE_NOTA,
+      puntos: [dia16, dia20],
+    });
+    expect(RQ_OCTUBRE_NOTA).toContain('PR que no llegan a RQ');
+  });
+});
+
+describe('O1.5: los dos tipos de cambio solo se comparan sobre las mismas OC', () => {
+  it('si un tipo deja OC sin convertir y el otro no, no hay "más cercano"', () => {
+    const data: AvanceData = {
+      gestiones: [],
+      ordenes: [
+        {
+          sistema: 'maximo',
+          fecha: new Date('2026-03-10T18:00:00Z'),
+          moneda: 'USD',
+          monto: 1_000,
+          subtotal: 862.07,
+          contada_en_maximo: false,
+          tc_usd: 1,
+        },
+      ],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+      // hay tipo de Maximo del día, pero no referencia de SAP del mes
+      tipos_cambio: {
+        maximo_dia: [{ dia: '2026-03-10', mxn_por_usd: 17 }],
+        sap_mes: {},
+      },
+    };
+    const [m2026] = conciliarAvance(
+      data,
+      opcionesConciliacion({}),
+      new Date('2026-10-26T18:00:00Z'),
+    ).montos;
+    expect(m2026.otras_monedas.tc_sap).toEqual({ USD: 1_000 });
+    expect(m2026.otras_monedas.tc_maximo).toEqual({});
+    expect(m2026.tipo_cambio).toMatchObject({
+      comparable: false,
+      mas_cercano: null,
+    });
   });
 });

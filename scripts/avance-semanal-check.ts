@@ -11,7 +11,9 @@
  *   npm run avance:check -- --semana=2026-09-21   (KPI de una semana por fuente vs Jorge)
  *   npm run avance:check -- --serie               (las 38 semanas: Jorge vs nuestra página de Maximo)
  *   npm run avance:check -- --recibida=emision --dias_desde=emision --montos=sap_migradas --corte=viernes
- *   npm run avance:check -- --dias-tipo=habiles   (H3: días hábiles, lunes a viernes sin festivos)
+ *   npm run avance:check -- --dias-tipo=naturales (H3; O1: el default ya es hábiles)
+ *   npm run avance:check -- --tipo_cambio=sap     (O1: tipo de referencia de SAP; default, el de Maximo del día)
+ *   npm run avance:check -- --promedio=semana     (O1.3: el promedio del título, del año o de la semana)
  *   npm run avance:check -- --json=conciliacion.json  (la respuesta completa, como el endpoint)
  *   npm run avance:check -- --pdf=avance.pdf      (guarda el PDF de la semana)
  *   npm run avance:check -- --acumulado=acum.pdf  (PDF del año y cuánto tarda)
@@ -21,6 +23,8 @@
  * Maximo y luego SAP), `maximo`, `sap` o `todas`.
  * L2 (2026-10-08, vista previa): `--grupos=contrato|estandar` para los PDF
  * (default AVANCE_GRUPOS_MAXIMO), como el parámetro `grupos` del endpoint.
+ * O1.5 (2026-10-26): los montos con los dos tipos de cambio contra el total
+ * de Jorge y su informe de RQ del 16 y del 20-oct.
  */
 import { writeFileSync } from 'fs';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -55,12 +59,16 @@ import {
   AVANCE_GRUPOS_MAXIMO,
   AVANCE_INICIOS,
   AVANCE_MONTOS_FUENTES,
+  AVANCE_PROMEDIOS_TITULO,
+  AVANCE_TIPOS_CAMBIO,
   type AvanceCorte,
   type AvanceDiasTipo,
   type AvanceGrupos,
   type AvanceInicio,
   type AvanceMontosFuente,
   type AvanceOpciones,
+  type AvancePromedioTitulo,
+  type AvanceTipoCambio,
   montoBaseTexto,
 } from '../src/purchase-reports/avance-semanal/avance-semanal.reglas';
 import { jorgeFor } from '../src/purchase-reports/avance-semanal/jorge-serie';
@@ -203,6 +211,12 @@ async function main(): Promise<void> {
     dias_tipo:
       choice<AvanceDiasTipo>('dias-tipo', AVANCE_DIAS_TIPOS) ??
       choice<AvanceDiasTipo>('dias_tipo', AVANCE_DIAS_TIPOS),
+    // O1: tipo de cambio y promedio del título
+    tipo_cambio: choice<AvanceTipoCambio>('tipo_cambio', AVANCE_TIPOS_CAMBIO),
+    promedio_titulo: choice<AvancePromedioTitulo>(
+      'promedio',
+      AVANCE_PROMEDIOS_TITULO,
+    ),
   });
   // L2: grupos de la página de Maximo en los PDF (default: la constante)
   const grupos =
@@ -257,6 +271,25 @@ async function main(): Promise<void> {
           `  ${variante.padEnd(22)}${cell(total === null ? '—' : total.toLocaleString('es-MX'), 18)}  error por mes ${pct(m.error_pct[variante as keyof typeof m.error_pct])}`,
         );
       }
+      // O1.5: los dos tipos de cambio contra el total de Jorge
+      const tc = m.tipo_cambio;
+      console.log(
+        `  Tipo de cambio contra ${tc.jorge.toLocaleString('es-MX')}: Maximo ${tc.maximo.total?.toLocaleString('es-MX') ?? '—'} (${tc.maximo.diferencia_pct ?? '—'}%) · SAP ${tc.sap.total?.toLocaleString('es-MX') ?? '—'} (${tc.sap.diferencia_pct ?? '—'}%) → más cerca: ${tc.comparable ? (tc.mas_cercano ?? '—') : 'no se comparan (no convirtieron las mismas OC)'}`,
+      );
+      if (m.maximo) {
+        console.log(
+          `  Contrato fuera: ${m.maximo.contrato.ordenes} OC ${JSON.stringify(m.maximo.contrato.con_iva)} · convertidas ${JSON.stringify(m.maximo.convertidas)} · con referencia ${m.maximo.con_referencia} · sin tipo ${m.maximo.sin_tipo_cambio}`,
+        );
+      }
+    }
+    // O1.5: el informe de RQ de Jorge de octubre
+    console.log(`\nInforme de RQ de Jorge (${conc.rq_octubre.nota})`);
+    for (const p of conc.rq_octubre.puntos) {
+      const par = (k: keyof typeof p.nuestro) =>
+        `${k} ${p.jorge[k] ?? '—'}→${p.nuestro[k] ?? '—'}`;
+      console.log(
+        `  ${p.dia} (semana del ${p.semana_lunes}): ${(['recibidas', 'nuevas', 'cerradas', 'cerradas_semana', 'canceladas', 'abiertas'] as const).map(par).join(' · ')}`,
+      );
     }
     console.log(
       '\nAnual (al corte de la p.1): Jorge vs nuestro, recibidas / atendidas',

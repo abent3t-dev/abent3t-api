@@ -197,3 +197,42 @@ export const JORGE_ANUAL: JorgeAnio[] = [
     nota: 'No cuadra en su origen: 480 + 153 = 633 (no 634) y la p.39 dice 600 cerradas. Se muestra, fuera del criterio.',
   },
 ];
+
+/**
+ * O1.5 (sesión con Jorge del 20-oct): cifras de su informe de RQ de Maximo
+ * (solicitudes de cotización creadas en 2026), que ya no salen del PDF sino
+ * de lo que dijo. Al 16-oct (viernes) y al 20-oct (martes); null = no lo dio.
+ * Nuestra página de Maximo cuenta PR aprobadas: la diferencia esperada son
+ * las PR que no llegan a RQ (hasta O2).
+ */
+export interface JorgeRq {
+  /** Día del informe ('YYYY-MM-DD'). */
+  dia: string;
+  recibidas: number;
+  nuevas: number | null;
+  cerradas: number;
+  cerradas_semana: number | null;
+  canceladas: number | null;
+  abiertas: number | null;
+}
+
+export const JORGE_RQ: JorgeRq[] = [
+  {
+    dia: '2026-10-16',
+    recibidas: 618,
+    nuevas: 21,
+    cerradas: 443,
+    cerradas_semana: 13,
+    canceladas: null,
+    abiertas: null,
+  },
+  {
+    dia: '2026-10-20',
+    recibidas: 626,
+    nuevas: null,
+    cerradas: 448,
+    cerradas_semana: null,
+    canceladas: 143,
+    abiertas: 35,
+  },
+];

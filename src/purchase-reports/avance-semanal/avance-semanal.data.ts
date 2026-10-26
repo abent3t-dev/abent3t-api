@@ -2,6 +2,8 @@ import { Prisma } from '@prisma/client';
 import {
   CURRENT_MAXIMO_POS,
   CURRENT_MAXIMO_PRS,
+  maximoPoDeContrato,
+  maximoPoExchangeRate,
   sapPoDuplicatedInMaximo,
 } from '../../common/sql/erp-views.sql';
 import type {
@@ -9,6 +11,7 @@ import type {
   Gestion,
   MaximoNoRecibida,
   OrdenMonto,
+  TiposCambio,
 } from './avance-semanal.engine';
 import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
 
@@ -32,6 +35,12 @@ import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
  *    vez, como 'YYYY-MM-DD'. El motor los usa solo con
  *    `reglas.dias_tipo='habiles'`; sin festivos, hábiles solo quita sábados
  *    y domingos.
+ *  - O1 (2026-10-26): de cada OC de Maximo, si es de contrato
+ *    (CONTRACTREFNUM) y su EXCHANGERATE (contra el dólar), leídos del `raw`
+ *    (erp-views); de la copia en SAP de una OC de Maximo, si esa OC es de
+ *    contrato. Tipos de cambio: pesos por dólar de cada día de Maximo (1 /
+ *    el EXCHANGERATE promedio de sus OC en pesos de ese día) y el de
+ *    referencia de SAP por moneda y mes (promedio de DocTotal / DocTotalFc).
  */
 
 type Queryable = {
@@ -60,6 +69,8 @@ export interface AvanceRows {
      * de menor DocNum entre las no canceladas).
      */
     copia_migrada: boolean;
+    /** O1: su OC de Maximo es de contrato (para `sap_migradas`). */
+    de_contrato: boolean | null;
   }>;
   /** Una fila por PR (vista por PR, sin obsoletas). */
   maximoPrs: Array<{
@@ -78,10 +89,28 @@ export interface AvanceRows {
     moneda: string | null;
     monto: unknown;
     subtotal: unknown;
+    /** O1: CONTRACTREFNUM en la cabecera o en una línea. */
+    de_contrato: boolean | null;
+    /** O1: EXCHANGERATE de la OC, contra el dólar. */
+    tc_usd: unknown;
   }>;
   /** H3: festivos activos de la tabla `holidays` ('YYYY-MM-DD'). */
   festivos: Array<{ dia: string }>;
+  /**
+   * O1: EXCHANGERATE promedio de las OC de Maximo en pesos de cada día
+   * (hora de México, 'YYYY-MM-DD'): dólares por peso.
+   */
+  maximoTcDia: Array<{ dia: string; tc: unknown }>;
+  /** O1: pesos por unidad de USD o EUR por mes ('YYYY-MM'), de SAP. */
+  sapTcMes: Array<{ moneda: string; mes: string; tc: unknown }>;
 }
+
+/**
+ * O1: un EXCHANGERATE de una OC en pesos fuera de este rango (de 2 a 100
+ * pesos por dólar) es un error de captura y no entra al tipo del día.
+ */
+const TC_PESO_MIN = 0.01;
+const TC_PESO_MAX = 0.5;
 
 export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
   const [
@@ -92,6 +121,8 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
     maximoFirstPo,
     maximoOrders,
     festivos,
+    maximoTcDia,
+    sapTcMes,
   ] = await Promise.all([
     prisma.$queryRaw<AvanceRows['sapRequests']>(Prisma.sql`
       SELECT doc_entry, doc_num, doc_date, document_status, cancelled,
@@ -105,14 +136,24 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
       GROUP BY e`),
     // D1: la integración crea a veces varias OC no canceladas con el mismo
     // NumAtCard (PO103374: 9 copias del mismo total y fecha); se queda la de
-    // menor DocNum (regla de Expeditación y de oc_sap) y las demás se marcan
+    // menor DocNum (regla de Expeditación y de oc_sap) y las demás se marcan.
+    // O1: si su OC de Maximo es de contrato (para `sap_migradas`)
     prisma.$queryRaw<AvanceRows['sapOrders']>(Prisma.sql`
       SELECT s.doc_date AS fecha, s.currency AS moneda, s.doc_total AS monto,
              s.subtotal,
              ${sapPoDuplicatedInMaximo('s')} AS contada_en_maximo,
              (s.maximo_ponum IS NOT NULL AND row_number() OVER (
                 PARTITION BY s.maximo_ponum
-                ORDER BY s.doc_num NULLS LAST, s.doc_entry) > 1) AS copia_migrada
+                ORDER BY s.doc_num NULLS LAST, s.doc_entry) > 1) AS copia_migrada,
+             (s.maximo_ponum IS NOT NULL AND EXISTS (
+                SELECT 1 FROM (
+                  -- la revisión vigente de su OC, como CURRENT_MAXIMO_POS
+                  SELECT DISTINCT ON (coalesce(v.siteid, '')) v.raw
+                  FROM maximo_purchase_orders v
+                  WHERE v.ponum = s.maximo_ponum
+                  ORDER BY coalesce(v.siteid, ''), coalesce(v.revisionnum, 0) DESC
+                ) m
+                WHERE ${maximoPoDeContrato('m')})) AS de_contrato
       FROM sap_purchase_orders s
       WHERE s.cancelled IS DISTINCT FROM true
         AND s.doc_date IS NOT NULL AND s.doc_total IS NOT NULL`),
@@ -128,7 +169,9 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
       GROUP BY f.prnum`),
     prisma.$queryRaw<AvanceRows['maximoOrders']>(Prisma.sql`
       SELECT p.created_at_source AS fecha, p.currency AS moneda,
-             p.total_cost AS monto, p.subtotal
+             p.total_cost AS monto, p.subtotal,
+             ${maximoPoDeContrato('p')} AS de_contrato,
+             ${maximoPoExchangeRate('p')} AS tc_usd
       FROM (${CURRENT_MAXIMO_POS}) p
       WHERE coalesce(p.status, '') NOT IN ('CAN', 'CANCEL')
         AND p.created_at_source IS NOT NULL AND p.total_cost IS NOT NULL`),
@@ -139,6 +182,32 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
       FROM holidays h
       WHERE h.is_active = true
       ORDER BY h.holiday_date`),
+    // O1: el tipo del día sale de TODAS las OC en pesos con EXCHANGERATE
+    // (también las canceladas y las de contrato: es un dato del día), por
+    // día de México (UTC−6, como el corte del motor)
+    prisma.$queryRaw<AvanceRows['maximoTcDia']>(Prisma.sql`
+      SELECT to_char((p.created_at_source AT TIME ZONE 'UTC') - interval '6 hours',
+                     'YYYY-MM-DD') AS dia,
+             avg(t.tc)::float8 AS tc
+      FROM (${CURRENT_MAXIMO_POS}) p
+      CROSS JOIN LATERAL (SELECT ${maximoPoExchangeRate('p')} AS tc) t
+      WHERE p.currency = 'MXN' AND p.created_at_source IS NOT NULL
+        AND t.tc > ${TC_PESO_MIN} AND t.tc < ${TC_PESO_MAX}
+      GROUP BY 1
+      ORDER BY 1`),
+    // O1: el de referencia de SAP, como en el diagnóstico del 20-oct:
+    // promedio de DocTotal (pesos) / DocTotalFc (moneda de la OC) del mes
+    prisma.$queryRaw<AvanceRows['sapTcMes']>(Prisma.sql`
+      SELECT s.currency AS moneda,
+             to_char(s.doc_date AT TIME ZONE 'UTC', 'YYYY-MM') AS mes,
+             avg(t.total / t.fc)::float8 AS tc
+      FROM sap_purchase_orders s
+      CROSS JOIN LATERAL (
+        SELECT NULLIF(s.raw::jsonb ->> 'DocTotal', '')::numeric AS total,
+               NULLIF(s.raw::jsonb ->> 'DocTotalFc', '')::numeric AS fc) t
+      WHERE s.currency IN ('USD', 'EUR') AND s.doc_date IS NOT NULL
+        AND t.fc > 0 AND t.total > 0
+      GROUP BY 1, 2`),
   ]);
   return {
     sapRequests,
@@ -148,11 +217,35 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
     maximoFirstPo,
     maximoOrders,
     festivos,
+    maximoTcDia,
+    sapTcMes,
   };
 }
 
 const toNumber = (value: unknown) =>
   value === null || value === undefined ? null : Number(value);
+
+/**
+ * O1: los tipos de cambio del motor. Pesos por dólar del día = 1 / el
+ * EXCHANGERATE promedio de las OC en pesos (dólares por peso); el de SAP ya
+ * viene en pesos por unidad. Sin filas (dev, o antes del 26-oct) → vacíos.
+ */
+export function tiposDeCambio(
+  maximoTcDia: AvanceRows['maximoTcDia'] = [],
+  sapTcMes: AvanceRows['sapTcMes'] = [],
+): TiposCambio {
+  const maximo_dia = maximoTcDia
+    .map((r) => ({ dia: r.dia, tc: toNumber(r.tc) }))
+    .filter((r): r is { dia: string; tc: number } => !!r.tc && r.tc > 0)
+    .map((r) => ({ dia: r.dia, mxn_por_usd: 1 / r.tc }))
+    .sort((a, b) => a.dia.localeCompare(b.dia));
+  const sap_mes: Record<string, number> = {};
+  for (const r of sapTcMes) {
+    const tc = toNumber(r.tc);
+    if (tc && tc > 0) sap_mes[`${r.moneda}|${r.mes}`] = tc;
+  }
+  return { maximo_dia, sap_mes };
+}
 
 /**
  * Filas → gestiones y OC del motor (pura, para probarla con fixtures). Con
@@ -240,6 +333,7 @@ export function buildAvanceData(
       subtotal: toNumber(o.subtotal),
       contada_en_maximo: o.contada_en_maximo === true,
       copia_migrada: o.copia_migrada === true,
+      de_contrato: o.de_contrato === true,
     });
   }
   for (const o of rows.maximoOrders) {
@@ -252,6 +346,8 @@ export function buildAvanceData(
       monto,
       subtotal: toNumber(o.subtotal),
       contada_en_maximo: false,
+      de_contrato: o.de_contrato === true,
+      tc_usd: toNumber(o.tc_usd),
     });
   }
 
@@ -261,5 +357,6 @@ export function buildAvanceData(
     maximo_no_recibidas: noRecibidas,
     sap_desde: sapDesde,
     festivos: rows.festivos.map((f) => f.dia),
+    tipos_cambio: tiposDeCambio(rows.maximoTcDia, rows.sapTcMes),
   };
 }

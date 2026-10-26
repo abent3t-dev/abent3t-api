@@ -9,11 +9,15 @@ import {
   AVANCE_GRUPOS,
   AVANCE_INICIOS,
   AVANCE_MONTOS_FUENTES,
+  AVANCE_PROMEDIOS_TITULO,
+  AVANCE_TIPOS_CAMBIO,
   type AvanceCorte,
   type AvanceDiasTipo,
   type AvanceGrupos,
   type AvanceInicio,
   type AvanceMontosFuente,
+  type AvancePromedioTitulo,
+  type AvanceTipoCambio,
 } from '../avance-semanal/avance-semanal.reglas';
 
 /**
@@ -88,4 +92,18 @@ export class AvanceConciliacionDto {
   @IsIn(AVANCE_DIAS_TIPOS)
   @IsOptional()
   dias_tipo?: AvanceDiasTipo;
+
+  /**
+   * O1: tipo de cambio de las OC de Maximo en dólares y euros: el de Maximo
+   * del día o el de referencia de SAP del mes (los montos de la
+   * conciliación traen los dos de todos modos).
+   */
+  @IsIn(AVANCE_TIPOS_CAMBIO)
+  @IsOptional()
+  tipo_cambio?: AvanceTipoCambio;
+
+  /** O1.3: el promedio de días que se compara: el del año o el de la semana. */
+  @IsIn(AVANCE_PROMEDIOS_TITULO)
+  @IsOptional()
+  promedio_titulo?: AvancePromedioTitulo;
 }

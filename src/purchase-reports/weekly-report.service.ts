@@ -814,6 +814,8 @@ export class WeeklyReportService {
           noRecibidas && p.opciones.reglas.recibida === 'aprobacion'
             ? `${noRecibidas} ${noRecibidas === 1 ? 'PR de Maximo emitida sin aprobar va' : 'PR de Maximo emitidas sin aprobar van'} aparte`
             : undefined,
+          // O1.4: en Maximo, que la recibida es una aproximación de las RQ
+          p.avance.leyenda ?? undefined,
         ),
       },
       {
@@ -922,7 +924,8 @@ export class WeeklyReportService {
         {
           indicador: `Monto adjudicado total ${m.anio} (${moneda})`,
           valor: m.total[moneda] ?? 'Sin datos',
-          nota: `OC no canceladas, ${base}, por mes de la OC`,
+          // O1: en Maximo, sin las de contrato y con USD y EUR en pesos
+          nota: m.descripcion ?? `OC no canceladas, ${base}, por mes de la OC`,
           money: m.total[moneda] !== undefined,
         },
         {
@@ -941,6 +944,29 @@ export class WeeklyReportService {
         indicador: `OC sin subtotal ${m.anio}`,
         valor: m.sin_subtotal.ordenes,
         nota: 'Sin líneas o con alguna sin importe: no entran a los montos sin IVA (no se estiman)',
+      });
+    }
+    // O1: lo que la página de Maximo no suma o pasó a pesos
+    const mx = m.maximo;
+    if (mx && mx.contrato.ordenes > 0) {
+      rows.push({
+        indicador: `OC de contrato ${m.anio} (no suman)`,
+        valor: mx.contrato.ordenes,
+        nota: `${Object.entries(mx.contrato.con_iva)
+          .map(
+            ([moneda, v]) =>
+              `${moneda} ${v.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+          )
+          .join(
+            ' · ',
+          )} con IVA; CONTRACTREFNUM en su registro de Maximo (no pasan por RQ)`,
+      });
+    }
+    for (const [moneda, c] of Object.entries(mx?.convertidas ?? {})) {
+      rows.push({
+        indicador: `OC en ${moneda} pasadas a pesos ${m.anio}`,
+        valor: c.ordenes,
+        nota: `${moneda} ${c.original.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} con IVA = MXN ${c.mxn.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${mx?.tipo_cambio === 'sap' ? 'tipo de referencia de SAP del mes' : 'tipo de Maximo del día; sin él, el de referencia de SAP del mes'})`,
       });
     }
     return rows;
