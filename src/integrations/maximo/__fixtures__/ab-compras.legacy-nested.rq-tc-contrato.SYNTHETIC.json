@@ -1,7 +1,7 @@
 {
   "QueryAB_COMPRASResponse": {
     "rsStart": 0,
-    "rsCount": 5,
+    "rsCount": 6,
     "AB_COMPRASSet": {
       "PO": [
         {
@@ -779,6 +779,200 @@
                   },
                   "POSTATUSID": {
                     "content": 990250,
+                    "resourceid": true
+                  },
+                  "STATUS": {
+                    "content": "WAPPR"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "990206001",
+          "Attributes": {
+            "CURRENCYCODE": {
+              "content": "MXN"
+            },
+            "DESCRIPTION": {
+              "content": "OC demo PO990106"
+            },
+            "EXCHANGERATE": {
+              "content": 0.0586761
+            },
+            "ORDERDATE": {
+              "content": "2026-10-19T16:00:00+00:00"
+            },
+            "PO5": {
+              "content": "PROCESADO"
+            },
+            "PONUM": {
+              "content": "PO990106"
+            },
+            "RECEIPTS": {
+              "content": "NONE"
+            },
+            "REVISIONNUM": {
+              "content": 0
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "APPR"
+            },
+            "TOTALCOST": {
+              "content": 1160.0
+            }
+          },
+          "RelatedMbos": {
+            "POLINE": [
+              {
+                "rowstamp": "990206101",
+                "Attributes": {
+                  "DESCRIPTION": {
+                    "content": "Material demo"
+                  },
+                  "ENTERDATE": {
+                    "content": "2026-10-19T16:00:00+00:00"
+                  },
+                  "LINECOST": {
+                    "content": 1000.0
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "PRNUM": {
+                    "content": "PR990106"
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "990206301",
+                "Attributes": {
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990106"
+                  }
+                },
+                "RelatedMbos": {
+                  "RFQSTATUS": [
+                    {
+                      "rowstamp": "990206311",
+                      "Attributes": {
+                        "CHANGEBY": {
+                          "content": "USR045"
+                        },
+                        "RFQNUM": {
+                          "content": "RQ990106"
+                        },
+                        "RFQSTATUSSEQ": {
+                          "content": 52300
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PERSON": [
+                          {
+                            "rowstamp": "990206312",
+                            "Attributes": {
+                              "DEPARTMENT": {
+                                "content": "Compras"
+                              },
+                              "DISPLAYNAME": {
+                                "content": "Persona Demo 45"
+                              },
+                              "PERSONID": {
+                                "content": "USR045"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "rowstamp": "990206401",
+                "Attributes": {
+                  "RFQLINENUM": {
+                    "content": 2
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990106"
+                  }
+                },
+                "RelatedMbos": {
+                  "RFQSTATUS": [
+                    {
+                      "rowstamp": "990206411",
+                      "Attributes": {
+                        "CHANGEBY": {
+                          "content": "USR046"
+                        },
+                        "RFQNUM": {
+                          "content": "RQ990106"
+                        },
+                        "RFQSTATUSSEQ": {
+                          "content": 52250
+                        }
+                      },
+                      "RelatedMbos": {
+                        "PERSON": [
+                          {
+                            "rowstamp": "990206412",
+                            "Attributes": {
+                              "DEPARTMENT": {
+                                "content": "Compras"
+                              },
+                              "DISPLAYNAME": {
+                                "content": "Persona Demo 46"
+                              },
+                              "PERSONID": {
+                                "content": "USR046"
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "COMPANIES": [
+              {
+                "rowstamp": "990201906",
+                "Attributes": {
+                  "COMPANY": {
+                    "content": "0009990001"
+                  },
+                  "NAME": {
+                    "content": "Proveedor Demo SL"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  }
+                }
+              }
+            ],
+            "POSTATUS": [
+              {
+                "rowstamp": "990206201",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR035"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-19T16:00:00+00:00"
+                  },
+                  "POSTATUSID": {
+                    "content": 990260,
                     "resourceid": true
                   },
                   "STATUS": {

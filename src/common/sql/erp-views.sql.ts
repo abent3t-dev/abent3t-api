@@ -177,8 +177,9 @@ export function andBetween(
  * (legacy anidado `Attributes`/`RelatedMbos`, compacto y OSLC en
  * minúsculas), con la MISMA regla que el mapper (`contractRefNumOf`,
  * `rfqBuyerOf` y `exchangeRate` en maximo.mapper.ts). Solo se mira la
- * cabecera y las líneas (POLINE): recorrer todo el JSON con `.**` costaba
- * ~14 veces más (2.5 s contra 0.18 s por cada 5,000 OC).
+ * cabecera y las líneas (POLINE), y para RFQSTATUS también las líneas de RQ
+ * (RFQLINE): recorrer todo el JSON con `.**` costaba ~14 veces más (2.5 s
+ * contra 0.18 s por cada 5,000 OC).
  */
 
 /**
@@ -229,6 +230,22 @@ function rawHeaderAndLines(alias: string): string {
 }
 
 /**
+ * O3: los nodos donde se busca RFQSTATUS: la cabecera, sus líneas (POLINE) y
+ * sus líneas de RQ (RFQLINE, hija de la cabecera). En prod CIISA lo manda
+ * debajo de RFQLINE (diagnóstico del 26-oct: las 3,843 OC que lo traen); la
+ * cabecera y POLINE se quedan por si lo mueve. Una fila por nodo, columnas
+ * `n`, `nivel` (0 la cabecera, 1 POLINE, 2 RFQLINE) y `nodo_ord` (su orden
+ * dentro del nivel). El mismo orden que `rfqNodes` del mapper.
+ */
+function rawRfqNodes(alias: string): string {
+  return `SELECT ${alias}.raw AS n, 0 AS nivel, 0::bigint AS nodo_ord
+    UNION ALL SELECT l.value, 1, l.ord
+    FROM jsonb_array_elements(${rawChildren(`${alias}.raw`, 'POLINE')}) WITH ORDINALITY AS l(value, ord)
+    UNION ALL SELECT q.value, 2, q.ord
+    FROM jsonb_array_elements(${rawChildren(`${alias}.raw`, 'RFQLINE')}) WITH ORDINALITY AS q(value, ord)`;
+}
+
+/**
  * O1/O3: la OC de Maximo (`alias`, con `raw`) es de contrato = trae
  * CONTRACTREFNUM con valor en la cabecera o en una línea (mapper:
  * `contractRefNumOf`). Es la marca de "OC de contrato" de los montos del
@@ -252,10 +269,11 @@ export function maximoPoExchangeRate(alias: string): Prisma.Sql {
  * O3: comprador de la RQ de la OC (`alias`) como `LEFT JOIN LATERAL` con
  * alias `as`: columnas `rq_buyer` (CHANGEBY), `rq_buyer_name`
  * (PERSON.DISPLAYNAME de esa fila, salvo que su PERSONID sea otro) y
- * `rq_num` (RFQNUM). Es la fila de RFQSTATUS de la cabecera o de una línea
- * con CHANGEBY y el RFQSTATUSSEQ más alto (sin número al final; empate, el
- * usuario menor y luego la primera que llega), con el nombre de su primera
- * PERSON. Mapper: `rfqBuyerOf`. Sin RQ, las tres en NULL.
+ * `rq_num` (RFQNUM). Es la fila de RFQSTATUS (de la cabecera, de una línea o
+ * de una línea de RQ: `rawRfqNodes`) con CHANGEBY y el RFQSTATUSSEQ más alto
+ * (sin número al final; empate, el usuario menor y luego la primera que
+ * llega), con el nombre de su primera PERSON. Mapper: `rfqBuyerOf`. Sin RQ,
+ * las tres en NULL.
  */
 export function maximoRqBuyerJoin(alias: string, as = 'rq'): Prisma.Sql {
   return Prisma.raw(`LEFT JOIN LATERAL (
@@ -269,8 +287,8 @@ export function maximoRqBuyerJoin(alias: string, as = 'rq'): Prisma.Sql {
              ${rawText('r.value', 'RFQNUM')} AS rfqnum,
              ${rawText('p.person', 'DISPLAYNAME')} AS displayname,
              ${rawText('p.person', 'PERSONID')} AS personid,
-             nodos.nodo_ord, r.ord AS fila_ord
-      FROM (${rawHeaderAndLines(alias)}) AS nodos
+             nodos.nivel, nodos.nodo_ord, r.ord AS fila_ord
+      FROM (${rawRfqNodes(alias)}) AS nodos
       CROSS JOIN LATERAL jsonb_array_elements(${rawChildren('nodos.n', 'RFQSTATUS')})
         WITH ORDINALITY AS r(value, ord)
       LEFT JOIN LATERAL (
@@ -282,7 +300,7 @@ export function maximoRqBuyerJoin(alias: string, as = 'rq'): Prisma.Sql {
       ) AS p ON true
     ) f
     WHERE f.changeby IS NOT NULL
-    ORDER BY f.seq DESC NULLS LAST, f.changeby COLLATE "C", f.nodo_ord, f.fila_ord
+    ORDER BY f.seq DESC NULLS LAST, f.changeby COLLATE "C", f.nivel, f.nodo_ord, f.fila_ord
     LIMIT 1
   ) ${as} ON true`);
 }

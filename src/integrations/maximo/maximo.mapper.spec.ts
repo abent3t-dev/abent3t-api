@@ -124,8 +124,8 @@ describe('canonicalize (common, K3.7)', () => {
 });
 
 describe('versión del mapper', () => {
-  it('2026.10.26-1: comprador de la RQ (O3), tipo de cambio y referencia de contrato (O1)', () => {
-    expect(MAXIMO_MAPPER_VERSION).toBe('2026.10.26-1');
+  it('2026.10.26-2: RFQSTATUS también debajo de RFQLINE (O3; 10.26-1: comprador de la RQ, tipo de cambio y referencia de contrato)', () => {
+    expect(MAXIMO_MAPPER_VERSION).toBe('2026.10.26-2');
   });
 });
 
@@ -1401,6 +1401,50 @@ describe('comprador de la RQ, tipo de cambio y contrato (O, 2026-10-26)', () => 
     });
     expect(po.currencyCode).toBe('USD');
     expect(po.exchangeRate).toBe(1);
+  });
+
+  it('RFQSTATUS debajo de RFQLINE (donde lo manda CIISA en prod) también cuenta', () => {
+    const po = rqPos().get('PO990106')!;
+    // dos líneas de la misma RQ: gana la fila con el RFQSTATUSSEQ más alto
+    expect(po.rfqBuyer).toEqual({
+      rfqNum: 'RQ990106',
+      changedBy: 'USR045',
+      displayName: 'Persona Demo 45',
+      seq: 52300,
+    });
+    expect(po.rfqNums).toEqual(['RQ990106']);
+    expect(po.contractRefNum).toBeNull();
+    expect(po.exchangeRate).toBe(0.0586761);
+  });
+
+  it('con RFQSTATUS en varios niveles gana el RFQSTATUSSEQ más alto; empate completo, la cabecera, luego las líneas y al final las líneas de RQ', () => {
+    const row = (changeby: string, seq: number, rfqnum: string) => ({
+      CHANGEBY: changeby,
+      RFQSTATUSSEQ: seq,
+      RFQNUM: rfqnum,
+    });
+    const po = (extra: Record<string, unknown>) =>
+      toPurchaseOrder({ PONUM: 'PO-N', ...extra });
+    expect(
+      po({
+        RFQSTATUS: [row('USR001', 5, 'RQA')],
+        RFQLINE: [{ RFQSTATUS: [row('USR002', 9, 'RQB')] }],
+      }).rfqBuyer?.changedBy,
+    ).toBe('USR002');
+    expect(
+      po({
+        RFQLINE: [{ RFQSTATUS: [row('USR001', 5, 'RQB')] }],
+        POLINE: [{ RFQSTATUS: [row('USR001', 5, 'RQA')] }],
+      }).rfqBuyer?.rfqNum,
+    ).toBe('RQA');
+    const dosLineas = po({
+      RFQLINE: [
+        { RFQSTATUS: [row('USR001', 5, 'RQC')] },
+        { RFQSTATUS: [row('USR001', 5, 'RQB')] },
+      ],
+    });
+    expect(dosLineas.rfqBuyer?.rfqNum).toBe('RQC');
+    expect(dosLineas.rfqNums).toEqual(['RQB', 'RQC']);
   });
 
   it('OC de contrato = CONTRACTREFNUM con valor en la cabecera o en una línea', () => {

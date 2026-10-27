@@ -43,7 +43,7 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * SQL, erp-views), que el sync ya guarda completo. La versión sube para que
  * el primer full los marque 'remapped' y no 'updated'.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.10.26-1'; // 10.26-1: rfqBuyer/rfqNums (RFQSTATUS, O3) + exchangeRate + contractRefNum (O1); 10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas; 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
+export const MAXIMO_MAPPER_VERSION = '2026.10.26-2'; // 10.26-2: RFQSTATUS también debajo de RFQLINE (donde lo manda CIISA en prod, O3); 10.26-1: rfqBuyer/rfqNums (RFQSTATUS, O3) + exchangeRate + contractRefNum (O1); 10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas; 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -118,13 +118,23 @@ function hasKey(rec: MaximoCanonicalRecord | null, key: string): boolean {
 
 /**
  * O (2026-10-26): la cabecera de la OC y sus líneas (POLINE), en ese orden.
- * Ahí se buscan CONTRACTREFNUM (viene en la cabecera y puede venir en las
- * líneas) y RFQSTATUS (CIISA no dijo en qué nivel lo puso). Solo esos dos
- * niveles, igual que en SQL (erp-views): recorrer todo el JSON en cada
- * consulta costaba ~14 veces más.
+ * Ahí se busca CONTRACTREFNUM (viene en la cabecera y puede venir en las
+ * líneas). Solo esos dos niveles, igual que en SQL (erp-views): recorrer todo
+ * el JSON en cada consulta costaba ~14 veces más.
  */
 function headerAndLines(r: MaximoCanonicalRecord): MaximoCanonicalRecord[] {
   return [r, ...children(r, 'POLINE')];
+}
+
+/**
+ * O3: los nodos donde se busca RFQSTATUS: la cabecera, sus líneas (POLINE) y
+ * sus líneas de RQ (RFQLINE, hija de la cabecera), en ese orden. En prod
+ * CIISA lo manda debajo de RFQLINE (diagnóstico del 26-oct: las 3,843 OC que
+ * lo traen); la cabecera y POLINE se quedan por si lo mueve. Mismo orden que
+ * `rawRfqNodes` (erp-views).
+ */
+function rfqNodes(r: MaximoCanonicalRecord): MaximoCanonicalRecord[] {
+  return [...headerAndLines(r), ...children(r, 'RFQLINE')];
 }
 
 /** Espacios que recorta el SQL (`btrim` con estos caracteres en erp-views). */
@@ -177,9 +187,10 @@ export function exchangeRateOf(r: MaximoCanonicalRecord): number | null {
 }
 
 /**
- * O3 (2026-10-26): comprador de la RQ = la fila de RFQSTATUS (de la cabecera
- * o de una línea) con CHANGEBY y el RFQSTATUSSEQ más alto (sin número al
- * final; empate, el CHANGEBY menor y luego la primera que llega). Su nombre
+ * O3 (2026-10-26): comprador de la RQ = la fila de RFQSTATUS (de la
+ * cabecera, de una línea o de una línea de RQ: `rfqNodes`) con CHANGEBY y el
+ * RFQSTATUSSEQ más alto (sin número al final; empate, el CHANGEBY menor y
+ * luego la primera que llega). Su nombre
  * es el PERSON.DISPLAYNAME de la fila (su primera PERSON), salvo que esa
  * PERSON sea otra persona (PERSONID distinto). Misma regla en SQL:
  * `maximoRqBuyerJoin` (erp-views).
@@ -188,7 +199,7 @@ export function rfqBuyerOf(r: MaximoCanonicalRecord): {
   buyer: MaximoRfqBuyerDto | null;
   rfqNums: string[];
 } {
-  const rows = headerAndLines(r).flatMap((node) => children(node, 'RFQSTATUS'));
+  const rows = rfqNodes(r).flatMap((node) => children(node, 'RFQSTATUS'));
   const rfqNums = [
     ...new Set(
       rows
