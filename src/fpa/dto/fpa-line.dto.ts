@@ -1,3 +1,4 @@
+import { PickType } from '@nestjs/mapped-types';
 import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -185,4 +186,21 @@ export class FpaLineInputDto {
   @ValidateIf((o: FpaLineInputDto) => o.spend_type !== null)
   @IsIn(['recurrente', 'extraordinario', 'inversion'])
   spend_type?: 'recurrente' | 'extraordinario' | 'inversion' | null;
+}
+
+/**
+ * POST /fpa/calcular (B1): solo lo que usa el cálculo, para enseñar los meses,
+ * el total y el desglose del viaje mientras se captura, sin guardar nada. El
+ * presupuesto da la versión (sus parámetros) y el alcance.
+ */
+export class FpaCalcInputDto extends PickType(FpaLineInputDto, [
+  'calc_method',
+  'currency',
+  'price_index',
+  'unit_price',
+  'trip',
+  'months',
+] as const) {
+  @IsUUID()
+  budget_id: string;
 }

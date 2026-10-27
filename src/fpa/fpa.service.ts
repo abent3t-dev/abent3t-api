@@ -26,7 +26,13 @@ import {
   type CalcVersion,
 } from './fpa-calc';
 import { FPA_ADMIN, FPA_MODULE_ROLES, FPA_SEE_ALL } from './fpa-roles';
-import type { FpaLineInputDto } from './dto/fpa-line.dto';
+import type { FpaCalcInputDto, FpaLineInputDto } from './dto/fpa-line.dto';
+
+/** Lo que usa el cálculo de una línea (alta, cambio o POST /fpa/calcular). */
+type CalcFields = Pick<
+  FpaLineInputDto,
+  'calc_method' | 'currency' | 'price_index' | 'unit_price' | 'trip' | 'months'
+>;
 
 /**
  * FP&A (A3, lunes 26-oct) — presupuesto por área. Diseño:
@@ -111,6 +117,9 @@ interface Scope {
 
 const decText = (v: Decimal | null | undefined): string | null =>
   v === null || v === undefined ? null : v.toString();
+
+const isNegative = (v: string | null | undefined) =>
+  v !== null && v !== undefined && new Prisma.Decimal(v).isNegative();
 
 @Injectable()
 export class FpaService {
@@ -384,6 +393,45 @@ export class FpaService {
     };
   }
 
+  /** Lo calculado de una línea, con montos en texto (2 decimales; null = "No disponible"). */
+  private calcDto(calc: CalcLineResult) {
+    const trip = calc.trip_breakdown;
+    return {
+      months: calc.months.map((m) => ({
+        month: m.month,
+        amount_currency: money(m.amount_currency),
+        amount_mxn: money(m.amount_mxn),
+      })),
+      total_currency: money(calc.total_currency),
+      total_mxn: money(calc.total_mxn),
+      unavailable_reason: calc.unavailable_reason,
+      trip_breakdown: trip
+        ? {
+            trip_type: trip.trip_type,
+            nights: trip.nights,
+            days: trip.days,
+            travelers: trip.travelers.map((t) => ({
+              traveler_type: t.traveler_type,
+              count: t.count,
+              flight_per_person: money(t.flight_per_person),
+              hotel_per_night: money(t.hotel_per_night),
+              meals_per_day: money(t.meals_per_day),
+              flight: money(t.flight),
+              hotel: money(t.hotel),
+              meals: money(t.meals),
+            })),
+            transport: {
+              traveler_type: trip.transport.traveler_type,
+              per_day: money(trip.transport.per_day),
+              amount: money(trip.transport.amount),
+            },
+            per_trip: money(trip.per_trip),
+            trips: trip.trips,
+          }
+        : null,
+    };
+  }
+
   private lineDto(line: LineWithRefs, calc: CalcLineResult) {
     const category = line.fpa_classifications.fpa_categories;
     return {
@@ -423,14 +471,7 @@ export class FpaService {
         amount: decText(m.amount),
         trips: m.trips,
       })),
-      months: calc.months.map((m) => ({
-        month: m.month,
-        amount_currency: money(m.amount_currency),
-        amount_mxn: money(m.amount_mxn),
-      })),
-      total_currency: money(calc.total_currency),
-      total_mxn: money(calc.total_mxn),
-      unavailable_reason: calc.unavailable_reason,
+      ...this.calcDto(calc),
       contract_label: line.contract_label,
       project_tag: line.project_tag,
       outside_ebitda: line.outside_ebitda,
@@ -616,27 +657,16 @@ export class FpaService {
   }
 
   /**
-   * Valida la línea contra la versión y el catálogo y regresa los datos a
-   * guardar. Lo que la base ya cuida con CHECK se valida aquí también, para
-   * responder con un mensaje claro.
+   * Lo que se valida del cálculo (forma, moneda, índice, precio, viaje y
+   * meses) contra los parámetros de la versión. Lo usan el alta y el cambio
+   * de una línea (prepareLine) y la vista previa (calculate): los dos dicen lo
+   * mismo.
    */
-  private async prepareLine(dto: FpaLineInputDto, version: VersionWithParams) {
+  private calcInputErrors(
+    dto: CalcFields,
+    version: VersionWithParams,
+  ): string[] {
     const errors: string[] = [];
-    const [department, classification] = await Promise.all([
-      this.prisma.fpa_departments.findFirst({
-        where: { id: dto.department_id, is_active: true },
-        select: { id: true },
-      }),
-      this.prisma.fpa_classifications.findFirst({
-        where: { id: dto.classification_id, is_active: true },
-        select: { id: true, name: true, allows_negative: true },
-      }),
-    ]);
-    if (!department)
-      errors.push('El departamento no existe o está dado de baja');
-    if (!classification)
-      errors.push('La clasificación no existe o está dada de baja');
-
     const isTrip = dto.calc_method === 'viaje';
     const months = dto.months ?? [];
 
@@ -660,12 +690,8 @@ export class FpaService {
           'Un viaje va con precio acordado: las tarifas ya son de la versión',
         );
       }
-    } else {
-      if (dto.trip)
-        errors.push('Los datos de viaje solo van en la forma Viaje');
-      if (!dto.supplier_id && !dto.supplier_name) {
-        errors.push('Falta el proveedor (del catálogo u OTROS)');
-      }
+    } else if (dto.trip) {
+      errors.push('Los datos de viaje solo van en la forma Viaje');
     }
     if (
       dto.currency !== 'MXN' &&
@@ -697,17 +723,46 @@ export class FpaService {
         version.cutoff_month,
       ),
     );
-
-    const negative = (v: string | null | undefined) =>
-      v !== null && v !== undefined && new Prisma.Decimal(v).isNegative();
-    if (months.some((m) => negative(m.quantity))) {
+    if (months.some((m) => isNegative(m.quantity))) {
       errors.push('Las veces no pueden ser negativas');
+    }
+    return errors;
+  }
+
+  /**
+   * Valida la línea contra la versión y el catálogo y regresa los datos a
+   * guardar. Lo que la base ya cuida con CHECK se valida aquí también, para
+   * responder con un mensaje claro.
+   */
+  private async prepareLine(dto: FpaLineInputDto, version: VersionWithParams) {
+    const errors: string[] = [];
+    const [department, classification] = await Promise.all([
+      this.prisma.fpa_departments.findFirst({
+        where: { id: dto.department_id, is_active: true },
+        select: { id: true },
+      }),
+      this.prisma.fpa_classifications.findFirst({
+        where: { id: dto.classification_id, is_active: true },
+        select: { id: true, name: true, allows_negative: true },
+      }),
+    ]);
+    if (!department)
+      errors.push('El departamento no existe o está dado de baja');
+    if (!classification)
+      errors.push('La clasificación no existe o está dada de baja');
+
+    const isTrip = dto.calc_method === 'viaje';
+    const months = dto.months ?? [];
+
+    errors.push(...this.calcInputErrors(dto, version));
+    if (!isTrip && !dto.supplier_id && !dto.supplier_name) {
+      errors.push('Falta el proveedor (del catálogo u OTROS)');
     }
     if (
       classification &&
       !classification.allows_negative &&
-      (negative(dto.unit_price) ||
-        months.some((m) => negative(m.amount) || negative(m.unit_price)))
+      (isNegative(dto.unit_price) ||
+        months.some((m) => isNegative(m.amount) || isNegative(m.unit_price)))
     ) {
       errors.push(
         `La clasificación ${classification.name} no acepta montos negativos`,
@@ -825,6 +880,51 @@ export class FpaService {
       }
     });
     return this.lineResponse(lineId, version);
+  }
+
+  /**
+   * POST /fpa/calcular (B1): calcula una línea sin guardarla, con los
+   * parámetros de la versión del presupuesto, para que el modal enseñe los
+   * meses, el total y el desglose del viaje mientras se captura. Basta poder
+   * ver el presupuesto. `errors` trae lo mismo que diría el alta sobre el
+   * cálculo; si hay, la pantalla no enseña los montos.
+   */
+  async calculate(user: AuthUser, dto: FpaCalcInputDto) {
+    const budget = await this.prisma.fpa_budgets.findFirst({
+      where: { id: dto.budget_id, is_active: true },
+      select: { id: true, area_id: true, version_id: true },
+    });
+    if (!budget) throw new NotFoundException('Presupuesto no encontrado');
+    const version = await this.loadVersion(user, budget.version_id);
+    const scope = await this.scope(user);
+    if (!scope.all && !scope.areaIds.has(budget.area_id)) {
+      throw new ForbiddenException(
+        'No tienes acceso al presupuesto de esta área',
+      );
+    }
+    const errors = this.calcInputErrors(dto, version);
+    const trip = dto.calc_method === 'viaje' ? dto.trip : null;
+    const calc = calcLine(
+      {
+        calc_method: dto.calc_method,
+        currency: dto.currency,
+        price_index: dto.price_index,
+        unit_price: dto.unit_price ?? null,
+        trip_type: trip?.trip_type ?? null,
+        travelers_colaborador: trip?.travelers_colaborador ?? null,
+        travelers_director: trip?.travelers_director ?? null,
+        nights: trip?.nights ?? null,
+        months: (dto.months ?? []).map((m) => ({
+          month: m.month,
+          quantity: m.quantity ?? null,
+          unit_price: m.unit_price ?? null,
+          amount: m.amount ?? null,
+          trips: m.trips ?? null,
+        })),
+      },
+      this.calcVersion(version),
+    );
+    return { ...this.calcDto(calc), errors };
   }
 
   async deactivateLine(user: AuthUser, lineId: string) {

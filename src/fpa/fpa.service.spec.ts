@@ -8,7 +8,7 @@ import { Prisma } from '@prisma/client';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { FpaService } from './fpa.service';
-import type { FpaLineInputDto } from './dto/fpa-line.dto';
+import type { FpaCalcInputDto, FpaLineInputDto } from './dto/fpa-line.dto';
 
 /**
  * FP&A (A3) — alcance por área y validación de líneas, con Prisma EN MEMORIA
@@ -464,6 +464,123 @@ describe('FpaService — quién ve qué', () => {
     await expect(service.getBudget(PLAN, 'bud-a-prep')).resolves.toMatchObject({
       id: 'bud-a-prep',
     });
+  });
+});
+
+describe('FpaService — vista previa del cálculo (B1)', () => {
+  let prisma: ReturnType<typeof fakePrisma>;
+  let service: FpaService;
+
+  beforeEach(() => {
+    prisma = fakePrisma();
+    service = new FpaService(prisma as unknown as PrismaService);
+  });
+
+  const CIERRE_PARO = {
+    budget_id: 'bud-a',
+    calc_method: 'viaje',
+    currency: 'MXN',
+    price_index: 'precio_acordado',
+    unit_price: null,
+    trip: {
+      trip_type: 'nacional',
+      travelers_colaborador: 2,
+      travelers_director: 0,
+      nights: 2,
+      car_rental: false,
+    },
+    months: [{ month: 3, trips: 1 }],
+  } as FpaCalcInputDto;
+
+  it('calcula el viaje con su desglose y no guarda nada (Cierre paro 2026 = $25,500)', async () => {
+    const r = await service.calculate(CAP_A, CIERRE_PARO);
+    expect(r.errors).toEqual([]);
+    expect(r.total_mxn).toBe('25500.00');
+    expect(r.months[2].amount_mxn).toBe('25500.00');
+    expect(r.trip_breakdown).toMatchObject({
+      nights: 2,
+      days: 3,
+      per_trip: '25500.00',
+      trips: 1,
+      transport: { traveler_type: 'colaborador', amount: '1500.00' },
+      travelers: [
+        {
+          traveler_type: 'colaborador',
+          count: 2,
+          flight: '8000.00',
+          hotel: '10000.00',
+          meals: '6000.00',
+        },
+      ],
+    });
+    expect(prisma.fpa_budget_lines.create).not.toHaveBeenCalled();
+    expect(prisma.fpa_budget_line_months.createMany).not.toHaveBeenCalled();
+  });
+
+  it('precio × veces: los meses y el total en pesos, sin desglose de viaje', async () => {
+    const r = await service.calculate(CAP_A, {
+      budget_id: 'bud-a',
+      calc_method: 'precio_veces',
+      currency: 'USD',
+      price_index: 'inflacion',
+      unit_price: '1000',
+      months: [{ month: 1, quantity: '1' }],
+    } as FpaCalcInputDto);
+    expect(r.total_currency).toBe('1040.00');
+    expect(r.total_mxn).toBe('20800.00');
+    expect(r.trip_breakdown).toBeNull();
+  });
+
+  it('lo que el alta rechazaría viene en errors (un viaje en dólares)', async () => {
+    const r = await service.calculate(CAP_A, {
+      ...CIERRE_PARO,
+      currency: 'USD',
+    } as FpaCalcInputDto);
+    expect(r.errors.join('. ')).toMatch(/Un viaje va en pesos/);
+  });
+
+  it('sin tarifa para un director, la línea sale "No disponible" con el motivo', async () => {
+    const r = await service.calculate(CAP_A, {
+      ...CIERRE_PARO,
+      trip: { ...CIERRE_PARO.trip!, travelers_director: 1 },
+    } as FpaCalcInputDto);
+    expect(r.total_mxn).toBeNull();
+    expect(r.unavailable_reason).toMatch(/director/);
+    expect(r.trip_breakdown).toBeNull();
+  });
+
+  it('respeta el alcance: otra área no (403), su aprobador sí, y una versión en preparación no la ve un área (404)', async () => {
+    await expect(service.calculate(CAP_B, CIERRE_PARO)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+    await expect(service.calculate(APR_A, CIERRE_PARO)).resolves.toMatchObject({
+      total_mxn: '25500.00',
+    });
+    await expect(
+      service.calculate(CAP_A, {
+        ...CIERRE_PARO,
+        budget_id: 'bud-a-prep',
+      } as FpaCalcInputDto),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.calculate(CAP_A, {
+        ...CIERRE_PARO,
+        budget_id: 'no-existe',
+      } as FpaCalcInputDto),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('el detalle de una línea guardada trae su desglose', async () => {
+    const line = await service.createLine(CAP_A, 'bud-a', {
+      ...ELVA,
+      calc_method: 'viaje',
+      unit_price: null,
+      supplier_name: null,
+      trip: CIERRE_PARO.trip,
+      months: CIERRE_PARO.months,
+    } as FpaLineInputDto);
+    expect(line.total_mxn).toBe('25500.00');
+    expect(line.trip_breakdown?.per_trip).toBe('25500.00');
   });
 });
 

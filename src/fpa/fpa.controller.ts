@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   ParseUUIDPipe,
   Post,
@@ -9,6 +10,7 @@ import {
   Query,
   Res,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { Roles } from '../common/decorators/roles.decorator';
 import {
@@ -16,7 +18,7 @@ import {
   type AuthUser,
 } from '../common/decorators/current-user.decorator';
 import { sendExcel } from '../common/utils/excel-export.util';
-import { FpaLineInputDto } from './dto/fpa-line.dto';
+import { FpaCalcInputDto, FpaLineInputDto } from './dto/fpa-line.dto';
 import {
   FpaAssignDto,
   FpaConsolidatedQueryDto,
@@ -88,6 +90,21 @@ export class FpaController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.updateLine(user, id, dto);
+  }
+
+  /**
+   * Vista previa del cálculo de una línea, sin guardar (B1). Es de quien
+   * captura: el CFO no abre el formulario (y ningún POST es suyo). El modal
+   * la pide al dejar de teclear; detrás de Nginx todos comparten la IP del
+   * límite global (100 por minuto por ruta), así que esta ruta barata lleva
+   * uno más alto.
+   */
+  @Roles(...FPA_EDITORS)
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
+  @Post('calcular')
+  @HttpCode(200)
+  calculate(@Body() dto: FpaCalcInputDto, @CurrentUser() user: AuthUser) {
+    return this.service.calculate(user, dto);
   }
 
   @Roles(...FPA_EDITORS)

@@ -52,7 +52,7 @@ const ADMIN_ROUTES = [
 describe('FP&A — modelo de acceso del controller', () => {
   const routes = collectRoutes();
 
-  it('encuentra los endpoints del lunes', () => {
+  it('encuentra los endpoints del lunes y la vista previa del cálculo', () => {
     const keys = routes.map((r) => `${r.method} ${r.route}`).sort();
     expect(keys).toEqual(
       [
@@ -64,6 +64,7 @@ describe('FP&A — modelo de acceso del controller', () => {
         'POST /fpa/presupuestos/:id/lineas',
         'PUT /fpa/lineas/:id',
         'POST /fpa/lineas/:id/baja',
+        'POST /fpa/calcular',
         'GET /fpa/consolidado',
         'GET /fpa/consolidado/export',
         'GET /fpa/areas',
@@ -86,6 +87,11 @@ describe('FP&A — modelo de acceso del controller', () => {
     for (const r of reads) {
       expect([...(r.roles ?? [])].sort()).toEqual([...FPA_ROLES].sort());
     }
+  });
+
+  it('la vista previa del cálculo es de quien captura (B1)', () => {
+    const calc = routes.find((r) => r.route === '/fpa/calcular');
+    expect([...(calc?.roles ?? [])].sort()).toEqual([...FPA_EDITORS].sort());
   });
 
   it('el CFO nunca escribe y las líneas las escriben fpa_area y planeación', () => {

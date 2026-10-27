@@ -8,7 +8,9 @@ import {
   round2,
   splitTotal,
   sumMonths,
+  tripBreakdown,
   tripCost,
+  type TripBreakdown,
 } from './fpa-calc';
 import { Prisma } from '@prisma/client';
 
@@ -304,6 +306,135 @@ describe('fpa-calc — viajes con las tarifas de la versión', () => {
       results.map((r) => r.months.map((m) => m.amount_mxn)),
     );
     expect(money(total.total)).toBe('2659000.00');
+  });
+});
+
+describe('fpa-calc — desglose del viaje (B1, reunión del 26-oct)', () => {
+  const sumParts = (b: TripBreakdown) =>
+    b.travelers.reduce(
+      (acc, t) => acc.plus(t.flight).plus(t.hotel).plus(t.meals),
+      new Prisma.Decimal(b.transport.amount),
+    );
+
+  it('el viaje de la demo: 2 colaboradores y 1 director, nacional, 2 noches = $45,500 por viaje', () => {
+    const { breakdown, reason } = tripBreakdown(
+      {
+        trip_type: 'nacional',
+        travelers_colaborador: 2,
+        travelers_director: 1,
+        nights: 2,
+      },
+      TARIFAS_B26,
+    );
+    expect(reason).toBeNull();
+    const b = breakdown as TripBreakdown;
+    expect([b.nights, b.days]).toEqual([2, 3]);
+    expect(
+      b.travelers.map((t) => [
+        t.traveler_type,
+        t.count,
+        money(t.flight),
+        money(t.hotel),
+        money(t.meals),
+      ]),
+    ).toEqual([
+      ['colaborador', 2, '8000.00', '10000.00', '6000.00'],
+      ['director', 1, '9000.00', '5000.00', '6000.00'],
+    ]);
+    expect([
+      b.transport.traveler_type,
+      money(b.transport.per_day),
+      money(b.transport.amount),
+    ]).toEqual(['director', '500.00', '1500.00']);
+    expect(money(b.per_trip)).toBe('45500.00');
+  });
+
+  it('en la línea: un viaje en febrero y otro en mayo = $91,000, y el desglose dice cuántos viajes', () => {
+    const r = calcLine(viaje(2, 1, 2, { 2: 1, 5: 1 }), B26);
+    expect(mxn(r)).toBe('91000.00');
+    expect(r.trip_breakdown?.trips).toBe(2);
+    expect(money(r.trip_breakdown?.per_trip ?? null)).toBe('45500.00');
+  });
+
+  it('la suma del desglose es el costo del viaje en todos los casos', () => {
+    const cases: Array<[number, number, number, string]> = [
+      [1, 0, 1, 'nacional'], // 9,500
+      [1, 0, 4, 'nacional'], // 21,500
+      [2, 0, 2, 'nacional'], // 25,500
+      [2, 1, 1, 'nacional'], // Visita a CFE, 33,500
+      [0, 1, 0, 'nacional'], // director de ida y vuelta, 11,500
+      [3, 2, 5, 'internacional'],
+      [0, 2, 3, 'internacional'],
+    ];
+    for (const [c, d, n, t] of cases) {
+      const line = {
+        trip_type: t,
+        travelers_colaborador: c,
+        travelers_director: d,
+        nights: n,
+      };
+      const b = tripBreakdown(line, TARIFAS_B26).breakdown as TripBreakdown;
+      expect(money(sumParts(b))).toBe(money(b.per_trip));
+      expect(money(b.per_trip)).toBe(money(tripCost(line, TARIFAS_B26).cost));
+    }
+    expect(
+      money(
+        tripCost(
+          {
+            trip_type: 'nacional',
+            travelers_colaborador: 0,
+            travelers_director: 1,
+            nights: 0,
+          },
+          TARIFAS_B26,
+        ).cost,
+      ),
+    ).toBe('11500.00');
+  });
+
+  it('solo colaboradores: el transporte va con su tarifa (internacional, 1 persona, 2 noches = $34,500)', () => {
+    const b = tripBreakdown(
+      {
+        trip_type: 'internacional',
+        travelers_colaborador: 1,
+        travelers_director: 0,
+        nights: 2,
+      },
+      TARIFAS_B26,
+    ).breakdown as TripBreakdown;
+    expect(b.travelers).toHaveLength(1);
+    expect(b.transport.traveler_type).toBe('colaborador');
+    expect(money(b.transport.amount)).toBe('3000.00');
+    expect(money(b.per_trip)).toBe('34500.00');
+  });
+
+  it('sin tarifa para un tipo de viajero no hay desglose y la línea sale "No disponible"', () => {
+    const sinDirector = TARIFAS_B26.filter(
+      (t) => t.traveler_type !== 'director',
+    );
+    const r = tripBreakdown(
+      {
+        trip_type: 'nacional',
+        travelers_colaborador: 1,
+        travelers_director: 1,
+        nights: 1,
+      },
+      sinDirector,
+    );
+    expect(r.breakdown).toBeNull();
+    expect(r.reason).toMatch(/director/);
+    const line = calcLine(viaje(1, 1, 1, { 3: 1 }), {
+      ...B26,
+      travel_rates: sinDirector,
+    });
+    expect(line.trip_breakdown).toBeNull();
+    expect(line.total_mxn).toBeNull();
+  });
+
+  it('las otras formas de cálculo no traen desglose', () => {
+    expect(
+      calcLine(precioVeces(7500, { 2: 1 }), B26).trip_breakdown,
+    ).toBeNull();
   });
 });
 

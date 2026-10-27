@@ -76,6 +76,38 @@ export interface CalcMonthResult {
   amount_mxn: Decimal | null;
 }
 
+/** Lo que cuesta UN viaje para un tipo de viajero, con las tarifas de la versión. */
+export interface TripTravelerCost {
+  traveler_type: TravelerType;
+  count: number;
+  flight_per_person: Decimal;
+  hotel_per_night: Decimal;
+  meals_per_day: Decimal;
+  /** vuelo × personas */
+  flight: Decimal;
+  /** noches × hotel × personas */
+  hotel: Decimal;
+  /** días × alimentos × personas */
+  meals: Decimal;
+}
+
+/**
+ * Desglose de UN viaje en pesos (B1, reunión del 26-oct, 34:38): lo que pidió
+ * Laura ver en la pantalla. Su suma es `per_trip`, el mismo costo que usa el
+ * cálculo de la línea.
+ */
+export interface TripBreakdown {
+  trip_type: string;
+  nights: number;
+  /** noches + 1 */
+  days: number;
+  /** Solo los tipos de viajero que van (colaborador y luego director). */
+  travelers: TripTravelerCost[];
+  /** Una vez por viaje, sin personas: tarifa de director si va al menos uno. */
+  transport: { traveler_type: TravelerType; per_day: Decimal; amount: Decimal };
+  per_trip: Decimal;
+}
+
 export interface CalcLineResult {
   /** Siempre 12 meses (1..12). */
   months: CalcMonthResult[];
@@ -83,6 +115,11 @@ export interface CalcLineResult {
   total_mxn: Decimal | null;
   /** Por qué la línea sale "No disponible"; null si se pudo calcular. */
   unavailable_reason: string | null;
+  /**
+   * Viaje: el desglose de un viaje y cuántos viajes hay en el año (total =
+   * per_trip × trips). null en las otras formas o si la línea no se calculó.
+   */
+  trip_breakdown: (TripBreakdown & { trips: number }) | null;
 }
 
 const ZERO = new D(0);
@@ -134,22 +171,25 @@ export function exchangeRate(
   return { rate: dec(rate), reason: null };
 }
 
+type TripFields = Pick<
+  CalcLineInput,
+  'trip_type' | 'travelers_colaborador' | 'travelers_director' | 'nights'
+>;
+
 /**
- * Costo de UN viaje, en pesos, con las tarifas de la versión: por cada tipo
- * de viajero que va, vuelo × personas + noches × hotel × personas +
+ * Desglose de UN viaje, en pesos, con las tarifas de la versión: por cada tipo
+ * de viajero que va, vuelo × personas, noches × hotel × personas y
  * (noches + 1) × alimentos × personas; más (noches + 1) × transporte, una vez
  * por viaje y sin personas, con la tarifa de director si va al menos un
  * director y si no, la de colaborador.
  */
-export function tripCost(
-  line: Pick<
-    CalcLineInput,
-    'trip_type' | 'travelers_colaborador' | 'travelers_director' | 'nights'
-  >,
+export function tripBreakdown(
+  line: TripFields,
   travelRates: CalcTravelRate[],
-): { cost: Decimal | null; reason: string | null } {
+): { breakdown: TripBreakdown | null; reason: string | null } {
   const tripType = line.trip_type ?? '';
-  const nights = new D(line.nights ?? 0);
+  const nightsCount = line.nights ?? 0;
+  const nights = new D(nightsCount);
   const days = nights.plus(1);
   const counts: Array<[TravelerType, number]> = [
     ['colaborador', line.travelers_colaborador ?? 0],
@@ -160,32 +200,69 @@ export function tripCost(
       (r) => r.trip_type === tripType && r.traveler_type === traveler,
     );
 
-  let cost = ZERO;
+  const travelers: TripTravelerCost[] = [];
   for (const [traveler, count] of counts) {
     if (count <= 0) continue;
     const rate = rateFor(traveler);
     if (!rate) {
       return {
-        cost: null,
+        breakdown: null,
         reason: `La versión no tiene tarifa de viaje ${tripType} para ${traveler}`,
       };
     }
-    const perPerson = dec(rate.flight_per_person)
-      .plus(nights.mul(dec(rate.hotel_per_night)))
-      .plus(days.mul(dec(rate.meals_per_day)));
-    cost = cost.plus(perPerson.mul(count));
+    const flightRate = dec(rate.flight_per_person);
+    const hotelRate = dec(rate.hotel_per_night);
+    const mealsRate = dec(rate.meals_per_day);
+    travelers.push({
+      traveler_type: traveler,
+      count,
+      flight_per_person: flightRate,
+      hotel_per_night: hotelRate,
+      meals_per_day: mealsRate,
+      flight: flightRate.mul(count),
+      hotel: nights.mul(hotelRate).mul(count),
+      meals: days.mul(mealsRate).mul(count),
+    });
   }
-  const transportRate = rateFor(
-    (line.travelers_director ?? 0) > 0 ? 'director' : 'colaborador',
-  );
+  const transportType: TravelerType =
+    (line.travelers_director ?? 0) > 0 ? 'director' : 'colaborador';
+  const transportRate = rateFor(transportType);
   if (!transportRate) {
     return {
-      cost: null,
+      breakdown: null,
       reason: `La versión no tiene tarifa de viaje ${tripType}`,
     };
   }
-  cost = cost.plus(days.mul(dec(transportRate.transport_per_day)));
-  return { cost, reason: null };
+  const perDay = dec(transportRate.transport_per_day);
+  const transport = {
+    traveler_type: transportType,
+    per_day: perDay,
+    amount: days.mul(perDay),
+  };
+  const perTrip = travelers.reduce(
+    (acc, t) => acc.plus(t.flight).plus(t.hotel).plus(t.meals),
+    transport.amount,
+  );
+  return {
+    breakdown: {
+      trip_type: tripType,
+      nights: nightsCount,
+      days: nightsCount + 1,
+      travelers,
+      transport,
+      per_trip: perTrip,
+    },
+    reason: null,
+  };
+}
+
+/** Costo de UN viaje, en pesos: la suma del desglose de `tripBreakdown`. */
+export function tripCost(
+  line: TripFields,
+  travelRates: CalcTravelRate[],
+): { cost: Decimal | null; reason: string | null } {
+  const { breakdown, reason } = tripBreakdown(line, travelRates);
+  return { cost: breakdown?.per_trip ?? null, reason };
 }
 
 /**
@@ -253,6 +330,7 @@ export function calcLine(
     total_currency: null,
     total_mxn: null,
     unavailable_reason: reason,
+    trip_breakdown: null,
   });
 
   const errors = lineDataErrors(line, version.cutoff_month);
@@ -262,10 +340,13 @@ export function calcLine(
   let factor: Decimal;
   let rate: Decimal;
   let perTrip: Decimal | null = null;
+  let breakdown: TripBreakdown | null = null;
   if (line.calc_method === 'viaje') {
-    const trip = tripCost(line, version.travel_rates);
-    if (trip.cost === null) return unavailable(trip.reason ?? 'Sin tarifa');
-    perTrip = trip.cost;
+    const trip = tripBreakdown(line, version.travel_rates);
+    if (trip.breakdown === null)
+      return unavailable(trip.reason ?? 'Sin tarifa');
+    breakdown = trip.breakdown;
+    perTrip = trip.breakdown.per_trip;
     factor = new D(1);
     rate = new D(1);
   } else {
@@ -308,6 +389,12 @@ export function calcLine(
       ZERO,
     ),
     unavailable_reason: null,
+    trip_breakdown: breakdown
+      ? {
+          ...breakdown,
+          trips: line.months.reduce((acc, m) => acc + (m.trips ?? 0), 0),
+        }
+      : null,
   };
 }
 
