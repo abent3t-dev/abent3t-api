@@ -12,7 +12,9 @@
  *   - el B-26 completo de Compras (8 líneas = $2,659,000, Resumen!H11), PI
  *     System e INTER LAB de Planta, y Gympass y una capacitación de RH;
  *   - usuarios de prueba con login local, uno por papel: captura y aprobación
- *     de Compras (fpa_area), planeación (fpa_planeacion) y CFO (fpa_cfo).
+ *     de Compras (fpa_area), planeación (fpa_planeacion), el firmante de
+ *     planeación (fpa_planeacion, el "David" que da el visto bueno; B2) y el
+ *     CFO (fpa_cfo, también firmante del CFO).
  *
  * Todo menos los usuarios de prueba vive en fpa-datos-base.ts, que comparte
  * con fpa-arranque (el primer acceso en prod): dev y prod cargan lo mismo.
@@ -82,11 +84,19 @@ const TEST_USERS = [
     area: null,
   },
   {
+    key: 'firmante',
+    email: 'fpa.firmante.planeacion@abent3t.com',
+    name: 'Firmante de planeación (prueba FP&A)',
+    role: 'fpa_planeacion',
+    duty: 'planeacion',
+    area: null,
+  },
+  {
     key: 'cfo',
     email: 'fpa.cfo@abent3t.com',
     name: 'CFO (prueba FP&A)',
     role: 'fpa_cfo',
-    duty: null,
+    duty: 'cfo',
     area: null,
   },
 ] as const;
@@ -167,9 +177,37 @@ async function seed(tx: Tx, password: string) {
     counts[k] = (counts[k] ?? 0) + n;
   }
 
-  // Responsabilidades de los usuarios de prueba en Compras
+  // Responsabilidades de los usuarios de prueba: captura y aprobación de
+  // Compras, y los firmantes generales de planeación y del CFO (B2)
   for (const u of TEST_USERS) {
-    if (!u.duty || !u.area) continue;
+    if (!u.duty) continue;
+    if (!u.area) {
+      const mine = await tx.fpa_assignments.findFirst({
+        where: {
+          area_id: null,
+          duty: u.duty,
+          profile_id: people[u.key],
+          is_active: true,
+        },
+      });
+      const titular = await tx.fpa_assignments.findFirst({
+        where: {
+          area_id: null,
+          duty: u.duty,
+          is_active: true,
+          is_alternate: false,
+        },
+      });
+      if (!mine && !titular) {
+        bump('firmantes');
+        await tx.fpa_assignments.create({
+          data: { area_id: null, duty: u.duty, profile_id: people[u.key] },
+        });
+      } else if (!mine && titular) {
+        log(`  (ya hay titular de ${u.duty}: no se toca)`);
+      }
+      continue;
+    }
     const areaId = base.areaIds.get(u.area) as string;
     const exists = await tx.fpa_assignments.findFirst({
       where: {
@@ -266,7 +304,7 @@ async function main() {
     for (const n of r.notes) log(`  · ${n}`);
     for (const u of TEST_USERS)
       log(
-        `  · ${u.email} — ${u.role}${u.duty ? ` (${u.duty} de ${u.area})` : ''}`,
+        `  · ${u.email} — ${u.role}${u.duty ? (u.area ? ` (${u.duty} de ${u.area})` : ` (firmante de ${u.duty})`) : ''}`,
       );
     if (COMMIT && r.counts['contraseñas fijadas']) {
       log(

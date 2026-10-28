@@ -169,12 +169,17 @@ const CLASSIFICATIONS: Record<
   },
 };
 
-/** Prisma en memoria: solo lo que usa el service en estos casos. */
-function fakePrisma() {
+/**
+ * Prisma en memoria: solo lo que usa el service en estos casos.
+ * `lockedStatus`: el estado que encuentra el candado dentro de la transacción,
+ * para simular que alguien envió el presupuesto entre la revisión y el guardado.
+ */
+function fakePrisma(opts: { lockedStatus?: string } = {}) {
   const created: {
     line?: Record<string, unknown>;
     months: Record<string, unknown>[];
-  } = { months: [] };
+    budgets: Record<string, unknown>[];
+  } = { months: [], budgets: [] };
   const lineFor = (id: string) => {
     const data = created.line ?? {};
     const cls = CLASSIFICATIONS[(data.classification_id as string) ?? 'cls-sp'];
@@ -231,6 +236,10 @@ function fakePrisma() {
       ),
     },
     fpa_budgets: {
+      create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+        created.budgets.push(data);
+        return Promise.resolve({ id: `bud-${created.budgets.length}` });
+      }),
       findFirst: jest.fn(({ where }: { where: { id: string } }) => {
         const b = BUDGETS[where.id];
         if (!b) return Promise.resolve(null);
@@ -265,8 +274,34 @@ function fakePrisma() {
     },
     fpa_areas: {
       findFirst: jest.fn(() => Promise.resolve(null)),
+      aggregate: jest.fn(() => Promise.resolve({ _max: { sort_order: 2 } })),
+      create: jest.fn(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ id: 'area-new', ...data }),
+      ),
+      update: jest.fn(() => Promise.resolve({ id: 'area-new' })),
+      findMany: jest.fn(() =>
+        Promise.resolve(
+          [
+            ...Object.values(AREAS),
+            {
+              id: 'area-new',
+              name: 'Seguros',
+              department_id: 'dep-new',
+              is_active: true,
+              sort_order: 3,
+            },
+          ].map((a) => ({
+            ...a,
+            fpa_departments_fpa_areas_department_idTofpa_departments: {
+              id: a.department_id,
+              name: a.name,
+            },
+          })),
+        ),
+      ),
     },
     fpa_departments: {
+      create: jest.fn(() => Promise.resolve({ id: 'dep-new' })),
       findFirst: jest.fn(
         ({ where }: { where: { id?: string; name?: { equals: string } } }) => {
           if (where.name) {
@@ -335,8 +370,37 @@ function fakePrisma() {
       }),
     },
   };
+  // Los SELECT … FOR SHARE de las escrituras (candados dentro de la transacción)
+  const $queryRaw = jest.fn(
+    (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('?');
+      if (sql.includes('FROM fpa_budgets b JOIN fpa_versions v')) {
+        const b = BUDGETS[values[0] as string];
+        if (!b) return Promise.resolve([]);
+        const v = VERSIONS[b.version_id];
+        return Promise.resolve([
+          {
+            status: opts.lockedStatus ?? b.status,
+            is_active: b.is_active,
+            version_status: v.status,
+            code: v.code,
+          },
+        ]);
+      }
+      if (sql.includes('FROM fpa_versions')) {
+        return Promise.resolve(
+          Object.values(VERSIONS)
+            .filter((v) => ['preparacion', 'captura'].includes(v.status))
+            .map((v) => ({ id: v.id, status: v.status })),
+        );
+      }
+      return Promise.resolve([]);
+    },
+  );
   // La transacción corre el callback con el mismo Prisma en memoria
   return Object.assign(prisma, {
+    $queryRaw,
+    created,
     $transaction: jest.fn((fn: (tx: typeof prisma) => Promise<unknown>) =>
       fn(prisma),
     ),
@@ -406,6 +470,35 @@ describe('FpaService — quién edita qué', () => {
     await expect(
       service.createLine(PLAN, 'bud-a-closed', ELVA),
     ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('editar y dar de baja guardan quién la cambió por última vez (B4)', async () => {
+    await service.updateLine(CAP_A, 'line-1', ELVA);
+    expect(prisma.fpa_budget_lines.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ updated_by: 'cap-a' }) as unknown,
+      }),
+    );
+    await service.deactivateLine(PLAN, 'line-1');
+    expect(prisma.fpa_budget_lines.update).toHaveBeenLastCalledWith({
+      where: { id: 'line-1' },
+      data: { is_active: false, updated_by: 'laura' },
+    });
+  });
+
+  it('guardar vuelve a revisar el estado con candado: si lo enviaron entre tanto, 409 y no guarda', async () => {
+    const racing = fakePrisma({ lockedStatus: 'enviado' });
+    const svc = new FpaService(racing as unknown as PrismaService);
+    await expect(svc.createLine(CAP_A, 'bud-a', ELVA)).rejects.toThrow(
+      /está enviado: no se puede editar/,
+    );
+    expect(racing.fpa_budget_lines.create).not.toHaveBeenCalled();
+    await expect(svc.deactivateLine(CAP_A, 'line-1')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(racing.fpa_budget_lines.update).not.toHaveBeenCalled();
+    const sql = racing.$queryRaw.mock.calls[0][0].join('?');
+    expect(sql).toContain('FOR SHARE OF b, v');
   });
 
   it('editar y dar de baja pasan por las mismas reglas', async () => {
@@ -706,6 +799,19 @@ describe('FpaService — la lista y el consolidado respetan el alcance', () => {
 });
 
 describe('FpaService — alta de área', () => {
+  it('un área nueva recibe presupuesto en las versiones abiertas, leídas con candado', async () => {
+    const prisma = fakePrisma();
+    const service = new FpaService(prisma as unknown as PrismaService);
+    const row = await service.createArea(PLAN, 'Seguros');
+    expect(row).toMatchObject({ id: 'area-new', name: 'Seguros' });
+    // Solo la B-26 está en captura: la de preparación no recibe presupuesto
+    expect(prisma.created.budgets).toEqual([
+      { version_id: 'b-26', area_id: 'area-new', created_by: 'laura' },
+    ]);
+    const sql = prisma.$queryRaw.mock.calls[0][0].join('?');
+    expect(sql).toContain('FOR SHARE');
+  });
+
   it('un área con el nombre de un departamento de otra área responde 409, no 500', async () => {
     const service = new FpaService(fakePrisma() as unknown as PrismaService);
     await expect(service.createArea(PLAN, 'IT')).rejects.toThrow(

@@ -5,7 +5,10 @@
  *  1) ningún handler queda sin @Roles;
  *  2) las lecturas son de los cuatro roles que entran al módulo;
  *  3) el CFO nunca escribe; las líneas las escriben fpa_area y planeación;
- *  4) áreas y responsables son solo de planeación (y super_admin).
+ *  4) áreas y responsables son solo de planeación (y super_admin);
+ *  5) B2: el detalle de una versión lo ve quien ve todo (planeación y CFO) y
+ *     la cambia solo planeación (alta, parámetros, visto bueno, abrir,
+ *     regresar, cerrar y reabrir); los firmantes son de planeación.
  * El alcance por área (qué presupuesto ve o edita cada quien) lo cubre
  * fpa.service.spec.ts.
  */
@@ -14,7 +17,7 @@ import { RequestMethod } from '@nestjs/common';
 import { PATH_METADATA, METHOD_METADATA } from '@nestjs/common/constants';
 import { ROLES_KEY } from '../common/decorators/roles.decorator';
 import { FpaController } from './fpa.controller';
-import { FPA_ADMIN, FPA_EDITORS, FPA_ROLES } from './fpa-roles';
+import { FPA_ADMIN, FPA_EDITORS, FPA_ROLES, FPA_SEE_ALL } from './fpa-roles';
 
 interface RouteInfo {
   method: string;
@@ -47,7 +50,10 @@ const ADMIN_ROUTES = [
   '/fpa/areas',
   '/fpa/responsables',
   '/fpa/usuarios/directorio',
+  '/fpa/firmantes',
 ];
+
+const VERSION_DETAIL = '/fpa/versiones/:id';
 
 describe('FP&A — modelo de acceso del controller', () => {
   const routes = collectRoutes();
@@ -71,6 +77,17 @@ describe('FP&A — modelo de acceso del controller', () => {
         'POST /fpa/areas',
         'POST /fpa/responsables',
         'GET /fpa/usuarios/directorio',
+        'GET /fpa/firmantes',
+        'POST /fpa/firmantes',
+        'GET /fpa/versiones/:id',
+        'POST /fpa/versiones',
+        'PUT /fpa/versiones/:id',
+        'PUT /fpa/versiones/:id/parametros',
+        'POST /fpa/versiones/:id/visto-bueno',
+        'POST /fpa/versiones/:id/abrir',
+        'POST /fpa/versiones/:id/regresar',
+        'POST /fpa/versiones/:id/cerrar',
+        'POST /fpa/versiones/:id/reabrir',
       ].sort(),
     );
   });
@@ -82,7 +99,10 @@ describe('FP&A — modelo de acceso del controller', () => {
 
   it('las lecturas del módulo son de los cuatro roles que entran', () => {
     const reads = routes.filter(
-      (r) => r.method === 'GET' && !ADMIN_ROUTES.includes(r.route),
+      (r) =>
+        r.method === 'GET' &&
+        !ADMIN_ROUTES.includes(r.route) &&
+        r.route !== VERSION_DETAIL,
     );
     for (const r of reads) {
       expect([...(r.roles ?? [])].sort()).toEqual([...FPA_ROLES].sort());
@@ -106,9 +126,23 @@ describe('FP&A — modelo de acceso del controller', () => {
     }
   });
 
-  it('áreas, responsables y directorio son solo de planeación y super_admin', () => {
+  it('el detalle de una versión es de quien ve todo; cambiarla, de planeación (B2)', () => {
+    const detail = routes.find(
+      (r) => r.method === 'GET' && r.route === VERSION_DETAIL,
+    );
+    expect([...(detail?.roles ?? [])].sort()).toEqual([...FPA_SEE_ALL].sort());
+    const writes = routes.filter(
+      (r) => r.method !== 'GET' && r.route.startsWith('/fpa/versiones'),
+    );
+    expect(writes).toHaveLength(8);
+    for (const r of writes) {
+      expect([...(r.roles ?? [])].sort()).toEqual([...FPA_ADMIN].sort());
+    }
+  });
+
+  it('áreas, responsables, firmantes y directorio son solo de planeación y super_admin', () => {
     const admin = routes.filter((r) => ADMIN_ROUTES.includes(r.route));
-    expect(admin).toHaveLength(4);
+    expect(admin).toHaveLength(6);
     for (const r of admin) {
       expect([...(r.roles ?? [])].sort()).toEqual([...FPA_ADMIN].sort());
     }

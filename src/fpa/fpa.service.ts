@@ -83,6 +83,9 @@ const VERSION_INCLUDE = {
     orderBy: { currency: 'asc' },
   },
   fpa_travel_rates: { where: { is_active: true } },
+  profiles_fpa_versions_params_approved_byToprofiles: {
+    select: { id: true, full_name: true, email: true },
+  },
 } satisfies Prisma.fpa_versionsInclude;
 
 type VersionWithParams = Prisma.fpa_versionsGetPayload<{
@@ -227,6 +230,18 @@ export class FpaService {
         currency: r.currency,
         rate_mxn: r.rate_mxn.toFixed(6),
       })),
+      // B2: de dónde salen los parámetros y quién les dio el visto bueno
+      params_source: version.params_source,
+      params_approved: this.approvalDto(version),
+    };
+  }
+
+  private approvalDto(version: VersionWithParams) {
+    const by = version.profiles_fpa_versions_params_approved_byToprofiles;
+    if (!version.params_approved_at || !by) return null;
+    return {
+      by: { id: by.id, full_name: by.full_name ?? by.email },
+      at: version.params_approved_at.toISOString(),
     };
   }
 
@@ -657,6 +672,42 @@ export class FpaService {
   }
 
   /**
+   * Dentro de la transacción de una escritura de líneas: bloquea el
+   * presupuesto y su versión (FOR SHARE) y vuelve a revisar que sigan
+   * editables. Así una línea no se guarda después de que el presupuesto se
+   * envió (quedaría fuera de la foto) ni después de cerrar la versión o
+   * regresarla a preparación: esos pasos esperan a que termine, o ella a
+   * ellos y entonces responde 409.
+   */
+  private async lockForEdit(tx: Prisma.TransactionClient, budgetId: string) {
+    const rows = await tx.$queryRaw<
+      Array<{
+        status: string;
+        is_active: boolean;
+        version_status: string;
+        code: string;
+      }>
+    >`SELECT b.status, b.is_active, v.status AS version_status, v.code
+      FROM fpa_budgets b JOIN fpa_versions v ON v.id = b.version_id
+      WHERE b.id = ${budgetId}::uuid
+      FOR SHARE OF b, v`;
+    const row = rows[0];
+    if (!row?.is_active) {
+      throw new NotFoundException('Presupuesto no encontrado');
+    }
+    if (!EDITABLE_BUDGET.includes(row.status)) {
+      throw new ConflictException(
+        `El presupuesto está ${BUDGET_STATUS_LABEL[row.status] ?? row.status}: no se puede editar`,
+      );
+    }
+    if (row.version_status !== 'captura') {
+      throw new ConflictException(
+        `La versión ${row.code} no está abierta a captura`,
+      );
+    }
+  }
+
+  /**
    * Lo que se valida del cálculo (forma, moneda, índice, precio, viaje y
    * meses) contra los parámetros de la versión. Lo usan el alta y el cambio
    * de una línea (prepareLine) y la vista previa (calculate): los dos dicen lo
@@ -832,6 +883,7 @@ export class FpaService {
     const { budget, version } = await this.loadForEdit(user, budgetId);
     const { data, monthRows } = await this.prepareLine(dto, version);
     const lineId = await this.prisma.$transaction(async (tx) => {
+      await this.lockForEdit(tx, budget.id);
       const key = await tx.fpa_line_keys.create({
         data: { origin: 'captura', created_by: user.id },
       });
@@ -868,7 +920,11 @@ export class FpaService {
     const { version } = await this.loadForEdit(user, current.budget_id);
     const { data, monthRows } = await this.prepareLine(dto, version);
     await this.prisma.$transaction(async (tx) => {
-      await tx.fpa_budget_lines.update({ where: { id: lineId }, data });
+      await this.lockForEdit(tx, current.budget_id);
+      await tx.fpa_budget_lines.update({
+        where: { id: lineId },
+        data: { ...data, updated_by: user.id },
+      });
       // Los meses se reescriben con su línea (por eso es la única tabla con DELETE)
       await tx.fpa_budget_line_months.deleteMany({
         where: { line_id: lineId },
@@ -934,9 +990,12 @@ export class FpaService {
     });
     if (!current) throw new NotFoundException('Línea no encontrada');
     await this.loadForEdit(user, current.budget_id);
-    await this.prisma.fpa_budget_lines.update({
-      where: { id: lineId },
-      data: { is_active: false },
+    await this.prisma.$transaction(async (tx) => {
+      await this.lockForEdit(tx, current.budget_id);
+      await tx.fpa_budget_lines.update({
+        where: { id: lineId },
+        data: { is_active: false, updated_by: user.id },
+      });
     });
     return { ok: true };
   }
@@ -1188,16 +1247,18 @@ export class FpaService {
     const last = await this.prisma.fpa_areas.aggregate({
       _max: { sort_order: true },
     });
-    const openVersions = await this.prisma.fpa_versions.findMany({
-      where: {
-        is_active: true,
-        status: 'captura',
-        kind: { in: ['presupuesto', 'forecast'] },
-      },
-      select: { id: true },
-    });
     try {
       const areaId = await this.prisma.$transaction(async (tx) => {
+        // Las versiones vivas se leen bloqueadas (FOR SHARE): si alguien abre
+        // una a captura al mismo tiempo, abrirla espera a que el área exista
+        // (y le crea su presupuesto), o el área espera y la ve ya abierta
+        const versions = await tx.$queryRaw<
+          Array<{ id: string; status: string }>
+        >`SELECT id, status FROM fpa_versions
+          WHERE is_active AND kind IN ('presupuesto', 'forecast')
+            AND status IN ('preparacion', 'captura')
+          FOR SHARE`;
+        const openVersions = versions.filter((v) => v.status === 'captura');
         const area = await tx.fpa_areas.create({
           data: {
             name,
@@ -1311,8 +1372,13 @@ export class FpaService {
     return this.areaRow(dto.area_id);
   }
 
-  /** Personas con un rol de FP&A activo, para los selectores de responsables. */
-  async directory(search?: string) {
+  /**
+   * Personas con un rol de FP&A activo, para los selectores de responsables.
+   * Con `role`, solo quienes tienen ese rol (p. ej. fpa_planeacion para el
+   * firmante de planeación).
+   */
+  async directory(search?: string, role?: string) {
+    const roles = role ? [role] : FPA_MODULE_ROLES;
     const rows = await this.prisma.profiles.findMany({
       where: {
         is_active: true,
@@ -1320,7 +1386,7 @@ export class FpaService {
           some: {
             module: 'fpa',
             is_active: true,
-            role: { in: FPA_MODULE_ROLES as never[] },
+            role: { in: roles as never[] },
           },
         },
         ...(search
@@ -1337,5 +1403,123 @@ export class FpaService {
       take: 50,
     });
     return rows.map((r) => ({ id: r.id, full_name: r.full_name ?? r.email }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Firmantes generales (B2): planeación da el visto bueno a los parámetros y
+  // firma el paso de planeación; el CFO firma el paso final (B3)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * ¿Puede nombrar a este firmante? El de planeación, solo soporte
+   * (super_admin): si planeación lo eligiera, el visto bueno lo daría quien
+   * ella nombre. El del CFO, también planeación (solo hay quien tenga el rol).
+   */
+  private canAssignSigner(user: AuthUser, duty: 'planeacion' | 'cfo') {
+    return duty === 'planeacion'
+      ? hasAnyRole(user, 'super_admin')
+      : this.canAdmin(user);
+  }
+
+  /** GET /fpa/firmantes — titular y suplentes de planeación y del CFO. */
+  async listSigners(user: AuthUser) {
+    const rows = await this.prisma.fpa_assignments.findMany({
+      where: {
+        duty: { in: ['planeacion', 'cfo'] },
+        area_id: null,
+        is_active: true,
+      },
+      include: {
+        profiles_fpa_assignments_profile_idToprofiles: {
+          select: { id: true, full_name: true, email: true },
+        },
+      },
+      orderBy: { created_at: 'asc' },
+    });
+    const group = (duty: string) => {
+      const mine = rows.filter((r) => r.duty === duty);
+      const person = (r: (typeof rows)[number]) => {
+        const p = r.profiles_fpa_assignments_profile_idToprofiles;
+        return { id: p.id, full_name: p.full_name ?? p.email };
+      };
+      const titular = mine.find((r) => !r.is_alternate);
+      return {
+        titular: titular ? person(titular) : null,
+        suplentes: mine.filter((r) => r.is_alternate).map(person),
+      };
+    };
+    return {
+      planeacion: group('planeacion'),
+      cfo: group('cfo'),
+      can_assign: {
+        planeacion: this.canAssignSigner(user, 'planeacion'),
+        cfo: this.canAssignSigner(user, 'cfo'),
+      },
+    };
+  }
+
+  /**
+   * POST /fpa/firmantes — nombra al titular de planeación o del CFO (revoca al
+   * anterior). Planeación pide el rol fpa_planeacion; el CFO, fpa_cfo. Quién
+   * lo nombró y cuándo, y a quién revocó, queda en fpa_assignments.
+   */
+  async assignSigner(
+    user: AuthUser,
+    dto: { duty: 'planeacion' | 'cfo'; profile_id: string },
+  ) {
+    if (!this.canAssignSigner(user, dto.duty)) {
+      throw new ForbiddenException(
+        'Al firmante de planeación lo registra soporte (super_admin): así planeación no elige quién le da el visto bueno',
+      );
+    }
+    const role = dto.duty === 'planeacion' ? 'fpa_planeacion' : 'fpa_cfo';
+    const person = await this.prisma.profiles.findFirst({
+      where: {
+        id: dto.profile_id,
+        is_active: true,
+        user_roles_user_roles_profile_idToprofiles: {
+          some: { module: 'fpa', role, is_active: true },
+        },
+      },
+      select: { id: true },
+    });
+    if (!person) {
+      throw new BadRequestException(
+        dto.duty === 'planeacion'
+          ? 'El firmante de planeación necesita el rol Planeación (FP&A): asígnalo en Administración › Usuarios'
+          : 'El firmante del CFO necesita el rol CFO (FP&A): asígnalo en Administración › Usuarios',
+      );
+    }
+    const current = await this.prisma.fpa_assignments.findMany({
+      where: { duty: dto.duty, area_id: null, is_active: true },
+      select: { id: true, profile_id: true, is_alternate: true },
+    });
+    if (
+      current.some((a) => a.profile_id === dto.profile_id && !a.is_alternate)
+    ) {
+      return this.listSigners(user); // ya es titular: nada que hacer
+    }
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      // El titular anterior deja de serlo; si la persona era suplente, también
+      // se revoca esa fila (una sola función general por persona)
+      for (const a of current) {
+        if (!a.is_alternate || a.profile_id === dto.profile_id) {
+          await tx.fpa_assignments.update({
+            where: { id: a.id },
+            data: { is_active: false, revoked_at: now, revoked_by: user.id },
+          });
+        }
+      }
+      await tx.fpa_assignments.create({
+        data: {
+          duty: dto.duty,
+          area_id: null,
+          profile_id: dto.profile_id,
+          created_by: user.id,
+        },
+      });
+    });
+    return this.listSigners(user);
   }
 }

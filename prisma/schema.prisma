@@ -660,13 +660,17 @@ model profiles {
   fpa_assignments_fpa_assignments_revoked_byToprofiles            fpa_assignments[]                   @relation("fpa_assignments_revoked_byToprofiles")
   fpa_categories                                                  fpa_categories[]
   fpa_classifications                                             fpa_classifications[]
-  fpa_versions                                                    fpa_versions[]
+  fpa_versions_fpa_versions_created_byToprofiles                  fpa_versions[]                      @relation("fpa_versions_created_byToprofiles")
+  fpa_versions_fpa_versions_params_updated_byToprofiles           fpa_versions[]                      @relation("fpa_versions_params_updated_byToprofiles")
+  fpa_versions_fpa_versions_params_approved_byToprofiles          fpa_versions[]                      @relation("fpa_versions_params_approved_byToprofiles")
+  fpa_version_events                                              fpa_version_events[]
   fpa_exchange_rates                                              fpa_exchange_rates[]
   fpa_travel_rates                                                fpa_travel_rates[]
   fpa_budgets                                                     fpa_budgets[]
   fpa_budget_events                                               fpa_budget_events[]
   fpa_line_keys                                                   fpa_line_keys[]
-  fpa_budget_lines                                                fpa_budget_lines[]
+  fpa_budget_lines_fpa_budget_lines_created_byToprofiles          fpa_budget_lines[]                  @relation("fpa_budget_lines_created_byToprofiles")
+  fpa_budget_lines_fpa_budget_lines_updated_byToprofiles          fpa_budget_lines[]                  @relation("fpa_budget_lines_updated_byToprofiles")
   fpa_line_comments                                               fpa_line_comments[]
 
   @@index([department_id], map: "idx_profiles_department")
@@ -2000,14 +2004,43 @@ model fpa_versions {
   created_by         String?              @db.Uuid
   created_at         DateTime             @default(now()) @db.Timestamptz(6)
   updated_at         DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  /// B2 (0022): fuente de los parámetros, último cambio y visto bueno de planeación
+  params_source      String?              @db.VarChar(200)
+  params_updated_by  String?              @db.Uuid
+  params_updated_at  DateTime?            @db.Timestamptz(6)
+  params_approved_by String?              @db.Uuid
+  params_approved_at DateTime?            @db.Timestamptz(6)
   fpa_versions       fpa_versions?        @relation("fpa_versionsTofpa_versions", fields: [base_version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   other_fpa_versions fpa_versions[]       @relation("fpa_versionsTofpa_versions")
-  profiles           profiles?            @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_fpa_versions_created_byToprofiles         profiles? @relation("fpa_versions_created_byToprofiles", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_fpa_versions_params_updated_byToprofiles  profiles? @relation("fpa_versions_params_updated_byToprofiles", fields: [params_updated_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_fpa_versions_params_approved_byToprofiles profiles? @relation("fpa_versions_params_approved_byToprofiles", fields: [params_approved_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fpa_exchange_rates fpa_exchange_rates[]
   fpa_travel_rates   fpa_travel_rates[]
   fpa_budgets        fpa_budgets[]
+  fpa_version_events fpa_version_events[]
 
   @@index([fiscal_year], map: "idx_fpa_versions_year")
+}
+
+/// B2 (0022): historial de la versión, de solo inserción: creada, parametros,
+/// visto_bueno, abierta, regresada, cerrada y reabierta. Los CHECK viven en SQL.
+model fpa_version_events {
+  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  version_id       String       @db.Uuid
+  action           String       @db.VarChar(20)
+  from_status      String?      @db.VarChar(15)
+  to_status        String?      @db.VarChar(15)
+  detail           Json?
+  comment          String?
+  actor_profile_id String       @db.Uuid
+  actor_role       String?      @db.VarChar(50)
+  acting_as        String       @db.VarChar(12)
+  created_at       DateTime     @default(now()) @db.Timestamptz(6)
+  fpa_versions     fpa_versions @relation(fields: [version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles         profiles     @relation(fields: [actor_profile_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([version_id, created_at], map: "idx_fpa_version_events_version")
 }
 
 /// A2 (0021): tipo de cambio de la versión (pesos por unidad); MXN no se guarda.
@@ -2149,12 +2182,15 @@ model fpa_budget_lines {
   created_by             String?                  @db.Uuid
   created_at             DateTime                 @default(now()) @db.Timestamptz(6)
   updated_at             DateTime                 @default(now()) @updatedAt @db.Timestamptz(6)
+  /// B4 (0022): quién cambió o dio de baja la línea por última vez
+  updated_by             String?                  @db.Uuid
   fpa_budgets            fpa_budgets              @relation(fields: [budget_id, version_id], references: [id, version_id], onDelete: NoAction, onUpdate: NoAction, map: "fpa_budget_lines_budget_version_fkey")
   fpa_line_keys          fpa_line_keys            @relation(fields: [line_key_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fpa_departments        fpa_departments          @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fpa_classifications    fpa_classifications      @relation(fields: [classification_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   suppliers              suppliers?               @relation(fields: [supplier_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  profiles               profiles?                @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_fpa_budget_lines_created_byToprofiles profiles? @relation("fpa_budget_lines_created_byToprofiles", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  profiles_fpa_budget_lines_updated_byToprofiles profiles? @relation("fpa_budget_lines_updated_byToprofiles", fields: [updated_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fpa_budget_line_months fpa_budget_line_months[]
   fpa_line_comments      fpa_line_comments[]
 

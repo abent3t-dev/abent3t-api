@@ -21,13 +21,23 @@ import { sendExcel } from '../common/utils/excel-export.util';
 import { FpaCalcInputDto, FpaLineInputDto } from './dto/fpa-line.dto';
 import {
   FpaAssignDto,
+  FpaAssignSignerDto,
   FpaConsolidatedQueryDto,
   FpaCreateAreaDto,
   FpaDirectoryQueryDto,
   FpaVersionQueryDto,
 } from './dto/fpa-query.dto';
-import { FPA_ADMIN, FPA_EDITORS, FPA_ROLES } from './fpa-roles';
+import {
+  FpaApproveParamsDto,
+  FpaCreateVersionDto,
+  FpaReopenVersionDto,
+  FpaUpdateVersionDto,
+  FpaVersionCommentDto,
+  FpaVersionParamsDto,
+} from './dto/fpa-version.dto';
+import { FPA_ADMIN, FPA_EDITORS, FPA_ROLES, FPA_SEE_ALL } from './fpa-roles';
 import { FpaService } from './fpa.service';
+import { FpaVersionsService } from './fpa-versions.service';
 
 /**
  * FP&A (A3, lunes 26-oct). Todos los handlers llevan @Roles, también los
@@ -37,7 +47,10 @@ import { FpaService } from './fpa.service';
  */
 @Controller('fpa')
 export class FpaController {
-  constructor(private readonly service: FpaService) {}
+  constructor(
+    private readonly service: FpaService,
+    private readonly versionsService: FpaVersionsService,
+  ) {}
 
   @Roles(...FPA_ROLES)
   @Get('contexto')
@@ -163,6 +176,117 @@ export class FpaController {
   @Roles(...FPA_ADMIN)
   @Get('usuarios/directorio')
   directory(@Query() query: FpaDirectoryQueryDto) {
-    return this.service.directory(query.search);
+    return this.service.directory(query.search, query.rol);
+  }
+
+  // Firmantes generales (B2): planeación (visto bueno de parámetros y paso de
+  // planeación) y CFO (paso final)
+
+  @Roles(...FPA_ADMIN)
+  @Get('firmantes')
+  signers(@CurrentUser() user: AuthUser) {
+    return this.service.listSigners(user);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Post('firmantes')
+  assignSigner(@Body() dto: FpaAssignSignerDto, @CurrentUser() user: AuthUser) {
+    return this.service.assignSigner(user, dto);
+  }
+
+  // Versiones y sus parámetros (B2): las ve quien ve todo (planeación y CFO);
+  // las cambia planeación
+
+  @Roles(...FPA_SEE_ALL)
+  @Get('versiones/:id')
+  version(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.detail(user, id);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Post('versiones')
+  createVersion(
+    @Body() dto: FpaCreateVersionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.create(user, dto);
+  }
+
+  /** Nombre y notas (no son parámetros). */
+  @Roles(...FPA_ADMIN)
+  @Put('versiones/:id')
+  updateVersion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaUpdateVersionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.update(user, id, dto);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Put('versiones/:id/parametros')
+  setParams(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaVersionParamsDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.setParams(user, id, dto);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Post('versiones/:id/visto-bueno')
+  @HttpCode(200)
+  approveParams(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaApproveParamsDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.approve(user, id, dto);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Post('versiones/:id/abrir')
+  @HttpCode(200)
+  openVersion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.open(user, id);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Post('versiones/:id/regresar')
+  @HttpCode(200)
+  giveBackVersion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaVersionCommentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.giveBack(user, id, dto.comment ?? null);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Post('versiones/:id/cerrar')
+  @HttpCode(200)
+  closeVersion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaVersionCommentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.close(user, id, dto.comment ?? null);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Post('versiones/:id/reabrir')
+  @HttpCode(200)
+  reopenVersion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaReopenVersionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.reopen(user, id, dto.comment);
   }
 }

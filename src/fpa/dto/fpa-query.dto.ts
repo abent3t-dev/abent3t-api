@@ -23,6 +23,11 @@ export class FpaDirectoryQueryDto {
   @IsString()
   @MaxLength(100)
   search?: string;
+
+  /** Solo quienes tienen este rol de FP&A (B2: firmantes). */
+  @IsOptional()
+  @IsIn(['fpa_area', 'fpa_planeacion', 'fpa_cfo'])
+  rol?: 'fpa_area' | 'fpa_planeacion' | 'fpa_cfo';
 }
 
 export class FpaCreateAreaDto {
@@ -32,6 +37,17 @@ export class FpaCreateAreaDto {
   @IsString()
   @MaxLength(120)
   name: string;
+}
+
+/** POST /fpa/firmantes (B2): titular de planeación o del CFO. */
+export class FpaAssignSignerDto {
+  @IsIn(['planeacion', 'cfo'], {
+    message: 'El firmante es de planeación o del CFO',
+  })
+  duty: 'planeacion' | 'cfo';
+
+  @IsUUID('all', { message: 'Elige a la persona del directorio' })
+  profile_id: string;
 }
 
 export class FpaAssignDto {
