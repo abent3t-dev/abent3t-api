@@ -18,6 +18,7 @@ import {
   type AuthUser,
 } from '../common/decorators/current-user.decorator';
 import { sendExcel } from '../common/utils/excel-export.util';
+import { FpaFlowActionDto } from './dto/fpa-flow.dto';
 import { FpaCalcInputDto, FpaLineInputDto } from './dto/fpa-line.dto';
 import {
   FpaAssignDto,
@@ -38,6 +39,7 @@ import {
 import { FPA_ADMIN, FPA_EDITORS, FPA_ROLES, FPA_SEE_ALL } from './fpa-roles';
 import { FpaService } from './fpa.service';
 import { FpaVersionsService } from './fpa-versions.service';
+import { FpaFlowService } from './fpa-flow.service';
 
 /**
  * FP&A (A3, lunes 26-oct). Todos los handlers llevan @Roles, también los
@@ -50,6 +52,7 @@ export class FpaController {
   constructor(
     private readonly service: FpaService,
     private readonly versionsService: FpaVersionsService,
+    private readonly flowService: FpaFlowService,
   ) {}
 
   @Roles(...FPA_ROLES)
@@ -83,6 +86,78 @@ export class FpaController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.getBudget(user, id);
+  }
+
+  // Flujo de aprobación (B3). El turno lo resuelve el service: enviar es de
+  // quien captura el área (también si es de planeación, como Laura en DG);
+  // aprobar y rechazar, de quien tiene el turno (el CFO decide su paso);
+  // retirar, de quien envió; reabrir, de planeación.
+
+  @Roles(...FPA_ROLES)
+  @Get('pendientes')
+  pending(@CurrentUser() user: AuthUser) {
+    return this.flowService.pending(user);
+  }
+
+  @Roles(...FPA_ROLES)
+  @Get('presupuestos/:id/flujo')
+  flow(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.flowService.flow(user, id);
+  }
+
+  @Roles(...FPA_EDITORS)
+  @Post('presupuestos/:id/enviar')
+  @HttpCode(200)
+  submit(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaFlowActionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.flowService.submit(user, id, dto);
+  }
+
+  @Roles(...FPA_ROLES)
+  @Post('presupuestos/:id/aprobar')
+  @HttpCode(200)
+  approveBudget(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaFlowActionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.flowService.approve(user, id, dto);
+  }
+
+  @Roles(...FPA_ROLES)
+  @Post('presupuestos/:id/rechazar')
+  @HttpCode(200)
+  rejectBudget(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaFlowActionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.flowService.reject(user, id, dto);
+  }
+
+  @Roles(...FPA_EDITORS)
+  @Post('presupuestos/:id/retirar')
+  @HttpCode(200)
+  withdrawBudget(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaFlowActionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.flowService.withdraw(user, id, dto);
+  }
+
+  @Roles(...FPA_ADMIN)
+  @Post('presupuestos/:id/reabrir')
+  @HttpCode(200)
+  reopenBudget(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaFlowActionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.flowService.reopen(user, id, dto);
   }
 
   @Roles(...FPA_EDITORS)

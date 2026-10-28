@@ -109,6 +109,23 @@ type LineWithRefs = Prisma.fpa_budget_linesGetPayload<{
   include: typeof LINE_INCLUDE;
 }>;
 
+/** El presupuesto con sus líneas vivas, como lo leen el detalle y la foto de un envío. */
+const BUDGET_DETAIL_INCLUDE = {
+  fpa_areas: { select: { id: true, name: true, department_id: true } },
+  fpa_budget_lines: {
+    where: { is_active: true },
+    include: LINE_INCLUDE,
+    orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
+  },
+} satisfies Prisma.fpa_budgetsInclude;
+
+type BudgetWithLines = Prisma.fpa_budgetsGetPayload<{
+  include: typeof BUDGET_DETAIL_INCLUDE;
+}>;
+
+/** Versión de la foto de un envío (fpa_budget_events.snapshot.schema). */
+const SNAPSHOT_SCHEMA = 1;
+
 interface Scope {
   /** Ve todas las áreas (planeación, CFO, super_admin o consulta general). */
   all: boolean;
@@ -555,26 +572,8 @@ export class FpaService {
       });
   }
 
-  async getBudget(user: AuthUser, budgetId: string) {
-    const budget = await this.prisma.fpa_budgets.findFirst({
-      where: { id: budgetId, is_active: true },
-      include: {
-        fpa_areas: { select: { id: true, name: true, department_id: true } },
-        fpa_budget_lines: {
-          where: { is_active: true },
-          include: LINE_INCLUDE,
-          orderBy: [{ sort_order: 'asc' }, { created_at: 'asc' }],
-        },
-      },
-    });
-    if (!budget) throw new NotFoundException('Presupuesto no encontrado');
-    const version = await this.loadVersion(user, budget.version_id);
-    const scope = await this.scope(user);
-    if (!scope.all && !scope.areaIds.has(budget.area_id)) {
-      throw new ForbiddenException(
-        'No tienes acceso al presupuesto de esta área',
-      );
-    }
+  /** Líneas calculadas y totales (por mes y por categoría) de un presupuesto. */
+  private budgetBody(budget: BudgetWithLines, version: VersionWithParams) {
     const params = this.calcVersion(version);
     const lines = budget.fpa_budget_lines.map((l) => ({
       line: l,
@@ -599,21 +598,9 @@ export class FpaService {
     const total = sumMonths(
       lines.map(({ calc }) => calc.months.map((m) => m.amount_mxn)),
     );
-    const people = await this.titulars([budget.area_id]);
-    const who = people.get(budget.area_id);
-
     return {
-      id: budget.id,
-      version_id: budget.version_id,
-      area: budget.fpa_areas,
-      status: budget.status,
-      current_round: budget.current_round,
-      capturer: who?.capturer ?? null,
-      approver: who?.approver ?? null,
       line_count: lines.length,
       total_mxn: money(total.total),
-      can_edit: this.canEdit(user, scope, budget, version),
-      version: this.versionDto(version),
       lines: lines.map(({ line, calc }) => this.lineDto(line, calc)),
       totals: {
         months_mxn: total.months.map(money),
@@ -633,6 +620,90 @@ export class FpaService {
             };
           }),
       },
+    };
+  }
+
+  async getBudget(user: AuthUser, budgetId: string) {
+    const budget = await this.prisma.fpa_budgets.findFirst({
+      where: { id: budgetId, is_active: true },
+      include: BUDGET_DETAIL_INCLUDE,
+    });
+    if (!budget) throw new NotFoundException('Presupuesto no encontrado');
+    const version = await this.loadVersion(user, budget.version_id);
+    const scope = await this.scope(user);
+    if (!scope.all && !scope.areaIds.has(budget.area_id)) {
+      throw new ForbiddenException(
+        'No tienes acceso al presupuesto de esta área',
+      );
+    }
+    const body = this.budgetBody(budget, version);
+    const people = await this.titulars([budget.area_id]);
+    const who = people.get(budget.area_id);
+
+    return {
+      id: budget.id,
+      version_id: budget.version_id,
+      area: budget.fpa_areas,
+      status: budget.status,
+      current_round: budget.current_round,
+      capturer: who?.capturer ?? null,
+      approver: who?.approver ?? null,
+      line_count: body.line_count,
+      total_mxn: body.total_mxn,
+      can_edit: this.canEdit(user, scope, budget, version),
+      version: this.versionDto(version),
+      lines: body.lines,
+      totals: body.totals,
+    };
+  }
+
+  /**
+   * B3 — la foto de lo que se envía (fpa_budget_events.snapshot): el mismo
+   * detalle que GET /fpa/presupuestos/:id (líneas con sus meses calculados,
+   * totales, tipos de cambio, inflación, fuente y visto bueno), más las
+   * tarifas de viaje de la versión. Sin permisos: la llama el flujo dentro
+   * de la transacción del envío, con el presupuesto ya bloqueado. Si alguna
+   * línea sale "No disponible", has_unavailable y el total es null (no se
+   * envía).
+   */
+  async budgetSnapshot(
+    db: Prisma.TransactionClient | PrismaService,
+    budgetId: string,
+  ) {
+    const budget = await db.fpa_budgets.findFirst({
+      where: { id: budgetId, is_active: true },
+      include: {
+        ...BUDGET_DETAIL_INCLUDE,
+        fpa_versions: { include: VERSION_INCLUDE },
+      },
+    });
+    if (!budget) throw new NotFoundException('Presupuesto no encontrado');
+    const version = budget.fpa_versions;
+    const body = this.budgetBody(budget, version);
+    return {
+      snapshot: {
+        schema: SNAPSHOT_SCHEMA,
+        budget_id: budget.id,
+        area: budget.fpa_areas,
+        version: {
+          ...this.versionDto(version),
+          travel_rates: version.fpa_travel_rates.map((t) => ({
+            trip_type: t.trip_type,
+            traveler_type: t.traveler_type,
+            flight_per_person: t.flight_per_person.toFixed(2),
+            hotel_per_night: t.hotel_per_night.toFixed(2),
+            transport_per_day: t.transport_per_day.toFixed(2),
+            meals_per_day: t.meals_per_day.toFixed(2),
+          })),
+        },
+        line_count: body.line_count,
+        total_mxn: body.total_mxn,
+        lines: body.lines,
+        totals: body.totals,
+      },
+      total_mxn: body.total_mxn,
+      line_count: body.line_count,
+      has_unavailable: body.lines.some((l) => l.total_mxn === null),
     };
   }
 

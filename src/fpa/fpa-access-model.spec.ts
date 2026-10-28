@@ -8,7 +8,11 @@
  *  4) áreas y responsables son solo de planeación (y super_admin);
  *  5) B2: el detalle de una versión lo ve quien ve todo (planeación y CFO) y
  *     la cambia solo planeación (alta, parámetros, visto bueno, abrir,
- *     regresar, cerrar y reabrir); los firmantes son de planeación.
+ *     regresar, cerrar y reabrir); los firmantes son de planeación;
+ *  6) B3: en el flujo, enviar y retirar son de quien captura (fpa_area o
+ *     planeación, si captura un área); aprobar y rechazar, de los cuatro
+ *     roles (el CFO decide su paso); reabrir, de planeación. El turno lo
+ *     resuelve el service.
  * El alcance por área (qué presupuesto ve o edita cada quien) lo cubre
  * fpa.service.spec.ts.
  */
@@ -55,6 +59,12 @@ const ADMIN_ROUTES = [
 
 const VERSION_DETAIL = '/fpa/versiones/:id';
 
+/** B3: aprobar y rechazar (el CFO decide su paso). */
+const DECIDE = [
+  '/fpa/presupuestos/:id/aprobar',
+  '/fpa/presupuestos/:id/rechazar',
+];
+
 describe('FP&A — modelo de acceso del controller', () => {
   const routes = collectRoutes();
 
@@ -88,6 +98,13 @@ describe('FP&A — modelo de acceso del controller', () => {
         'POST /fpa/versiones/:id/regresar',
         'POST /fpa/versiones/:id/cerrar',
         'POST /fpa/versiones/:id/reabrir',
+        'GET /fpa/pendientes',
+        'GET /fpa/presupuestos/:id/flujo',
+        'POST /fpa/presupuestos/:id/enviar',
+        'POST /fpa/presupuestos/:id/aprobar',
+        'POST /fpa/presupuestos/:id/rechazar',
+        'POST /fpa/presupuestos/:id/retirar',
+        'POST /fpa/presupuestos/:id/reabrir',
       ].sort(),
     );
   });
@@ -114,9 +131,9 @@ describe('FP&A — modelo de acceso del controller', () => {
     expect([...(calc?.roles ?? [])].sort()).toEqual([...FPA_EDITORS].sort());
   });
 
-  it('el CFO nunca escribe y las líneas las escriben fpa_area y planeación', () => {
+  it('el CFO solo decide su paso del flujo y las líneas las escriben fpa_area y planeación', () => {
     const writes = routes.filter((r) => r.method !== 'GET');
-    for (const r of writes) {
+    for (const r of writes.filter((w) => !DECIDE.includes(w.route))) {
       expect(r.roles).not.toContain('fpa_cfo');
     }
     const lineWrites = writes.filter((r) => r.route.includes('lineas'));
@@ -138,6 +155,26 @@ describe('FP&A — modelo de acceso del controller', () => {
     for (const r of writes) {
       expect([...(r.roles ?? [])].sort()).toEqual([...FPA_ADMIN].sort());
     }
+  });
+
+  it('el flujo (B3): enviar y retirar de quien captura, decidir de los cuatro roles, reabrir de planeación', () => {
+    const roleOf = (route: string) =>
+      [
+        ...(routes.find((r) => r.method === 'POST' && r.route === route)
+          ?.roles ?? []),
+      ].sort();
+    expect(roleOf('/fpa/presupuestos/:id/enviar')).toEqual(
+      [...FPA_EDITORS].sort(),
+    );
+    expect(roleOf('/fpa/presupuestos/:id/retirar')).toEqual(
+      [...FPA_EDITORS].sort(),
+    );
+    for (const route of DECIDE) {
+      expect(roleOf(route)).toEqual([...FPA_ROLES].sort());
+    }
+    expect(roleOf('/fpa/presupuestos/:id/reabrir')).toEqual(
+      [...FPA_ADMIN].sort(),
+    );
   });
 
   it('áreas, responsables, firmantes y directorio son solo de planeación y super_admin', () => {
