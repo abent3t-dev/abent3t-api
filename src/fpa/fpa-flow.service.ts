@@ -17,7 +17,7 @@ import { BusinessDaysService } from '../common/services/business-days.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { getEffectiveRoles, hasAnyRole } from '../common/utils/roles.util';
 import { addDaysUtc, cdmxDateUtc } from '../contracts/contracts.dates';
-import { FPA_SEE_ALL } from './fpa-roles';
+import { FPA_ADMIN, FPA_SEE_ALL } from './fpa-roles';
 import { FpaService } from './fpa.service';
 import {
   STATUS_AFTER,
@@ -33,6 +33,7 @@ import {
   senderOfRound,
   turnLabel,
   type BudgetStatus,
+  type ActingAs,
   type FlowAction,
   type FlowActor,
   type FlowState,
@@ -157,6 +158,8 @@ export interface Check {
   reason: string | null;
   /** Por qué no: el estado (para nadie) o la persona (le toca a otra). */
   code: 'estado' | 'persona' | null;
+  /** Con qué derecho actuaría (la pantalla avisa cuando es como soporte). */
+  acting_as: ActingAs | null;
 }
 
 /** Quién tiene el turno (o la captura) y puede actuar ahora. */
@@ -325,11 +328,13 @@ export class FpaFlowService {
     }
   }
 
-  /** Quienes tienen hoy el rol de un paso general (cuando no hay firmantes registrados). */
+  /**
+   * Quienes tienen hoy un rol: el de un paso general cuando no hay firmantes
+   * registrados, planeación y soporte para un turno sin quien firme.
+   */
   private async roleHolders(db: Db, role: string): Promise<Contact[]> {
     const rows = await db.user_roles.findMany({
       where: {
-        module: 'fpa',
         role: role as user_role,
         is_active: true,
         profiles_user_roles_profile_idToprofiles: { is_active: true },
@@ -341,6 +346,24 @@ export class FpaFlowService {
     return rows.map((r) =>
       toContact(r.profiles_user_roles_profile_idToprofiles),
     );
+  }
+
+  /** Roles vigentes (de FP&A y super_admin) de cada persona, para resolver el turno con los reales. */
+  private async rolesOf(db: Db, ids: string[]): Promise<Map<string, string[]>> {
+    const map = new Map<string, string[]>();
+    if (ids.length === 0) return map;
+    const rows = await db.user_roles.findMany({
+      where: {
+        profile_id: { in: ids },
+        is_active: true,
+        OR: [{ module: 'fpa' }, { role: 'super_admin' }],
+      },
+      select: { profile_id: true, role: true },
+    });
+    for (const r of rows) {
+      map.set(r.profile_id, [...(map.get(r.profile_id) ?? []), r.role]);
+    }
+    return map;
   }
 
   /**
@@ -368,25 +391,43 @@ export class FpaFlowService {
     if (!step) return { step: null, rule: null, people: [], blocked: false };
     let rule: 'registrados' | 'rol' = 'registrados';
     let candidates: Array<Contact & { titular: boolean }>;
-    let roles: string[] = ['fpa_area'];
     if (step === 'area') {
       candidates = fromAssignments('aprobacion', s.area_id);
+    } else if (holders(s.assignments, step, null).length > 0) {
+      candidates = fromAssignments(step, null);
     } else {
-      roles = [STEP_ROLE[step]];
-      if (holders(s.assignments, step, null).length > 0) {
-        candidates = fromAssignments(step, null);
-      } else {
-        rule = 'rol';
-        candidates = (await this.roleHolders(db, STEP_ROLE[step])).map((c) => ({
-          ...c,
-          titular: true,
-        }));
-      }
+      rule = 'rol';
+      candidates = (await this.roleHolders(db, STEP_ROLE[step])).map((c) => ({
+        ...c,
+        titular: true,
+      }));
     }
-    const people = candidates.filter(
-      (c) => canDecide({ id: c.id, roles }, s).ok,
+    // Con sus roles reales: a quien le quitaron el rol del paso ya no le toca
+    const roles = await this.rolesOf(
+      db,
+      candidates.map((c) => c.id),
     );
+    const people = candidates.filter((c) => {
+      const right = canDecide({ id: c.id, roles: roles.get(c.id) ?? [] }, s);
+      return right.ok && right.acting_as !== 'super_admin';
+    });
     return { step, rule, people, blocked: people.length === 0 };
+  }
+
+  /**
+   * A quién avisar de un turno sin quien firme: planeación (registra otro
+   * firmante o lo escala) y soporte (lo puede firmar).
+   */
+  private async unblockers(
+    db: Db,
+  ): Promise<{ email: Contact[]; screen: Contact[] }> {
+    const [planeacion, soporte] = await Promise.all([
+      this.roleHolders(db, 'fpa_planeacion'),
+      this.roleHolders(db, 'super_admin'),
+    ]);
+    const screen = new Map<string, Contact>();
+    for (const c of [...planeacion, ...soporte]) screen.set(c.id, c);
+    return { email: planeacion, screen: [...screen.values()] };
   }
 
   /** A quién le llega el correo del turno: a los titulares; si ninguno puede, a los suplentes. */
@@ -396,7 +437,10 @@ export class FpaFlowService {
     return titulars.length > 0 ? titulars : t.people;
   }
 
-  /** Días hábiles completos que lleva esperando (después del día en que llegó), hora de México. */
+  /**
+   * Días hábiles que lleva esperando, hora de México: los que siguen al día
+   * en que llegó, hasta hoy (hoy cuenta aunque no haya terminado).
+   */
   private async waitingDays(since: Date, now: Date): Promise<number> {
     const from = cdmxDateUtc(since);
     const to = cdmxDateUtc(now);
@@ -407,8 +451,8 @@ export class FpaFlowService {
   private checks(actor: FlowActor, s: FlowState) {
     const c = (r: Right): Check =>
       r.ok
-        ? { ok: true, reason: null, code: null }
-        : { ok: false, reason: r.reason, code: r.code };
+        ? { ok: true, reason: null, code: null, acting_as: r.acting_as }
+        : { ok: false, reason: r.reason, code: r.code, acting_as: null };
     const decide = c(canDecide(actor, s));
     return {
       submit: c(canSubmit(actor, s)),
@@ -539,6 +583,8 @@ export class FpaFlowService {
       }),
     ]);
     const actor = actorOf(user);
+    // Planeación y soporte ven además los turnos que nadie puede firmar
+    const unblocks = hasAnyRole(user, ...FPA_ADMIN);
     const now = new Date();
     const items = [];
     for (const budget of budgets) {
@@ -550,7 +596,7 @@ export class FpaFlowService {
         events: events.filter((e) => e.budget_id === budget.id),
       };
       const s = this.state(l);
-      let kind: 'firma' | 'devuelto' | null = null;
+      let kind: 'firma' | 'devuelto' | 'bloqueado' | null = null;
       if (s.status === 'devuelto') {
         const captures = s.assignments.some(
           (a) =>
@@ -562,6 +608,9 @@ export class FpaFlowService {
       } else {
         const r = canDecide(actor, s);
         if (r.ok && r.acting_as !== 'super_admin') kind = 'firma';
+        else if (unblocks && (await this.turn(this.prisma, s, l)).blocked) {
+          kind = 'bloqueado';
+        }
       }
       if (!kind) continue;
       const round = l.events.filter((e) => e.round === s.round);
@@ -645,33 +694,38 @@ export class FpaFlowService {
     );
   }
 
-  /** Un reintento: la misma persona ya hizo esta misma acción en esa ronda. */
+  /**
+   * Un reintento: lo último que pasó es esta misma acción, de esta persona,
+   * sobre el estado que tenía su pantalla. Si después pasó algo más, no es
+   * "ya hecho": es un 409 con lo que pasó.
+   */
   private alreadyDone(
     kind: Kind,
     dto: FpaFlowActionDto,
     events: EventRow[],
     userId: string,
   ): boolean {
-    const mine = (e: EventRow) =>
-      e.actor_profile_id === userId && e.action === ACTION_OF[kind];
+    const last = events[events.length - 1];
+    if (
+      !last ||
+      last.actor_profile_id !== userId ||
+      last.action !== ACTION_OF[kind] ||
+      last.from_status !== dto.expected_status
+    ) {
+      return false;
+    }
     switch (kind) {
       case 'submit':
-        return events.some(
-          (e) => mine(e) && e.round === dto.expected_round + 1,
-        );
+        return last.round === dto.expected_round + 1;
       case 'approve':
-      case 'reject': {
-        const step = STEP_OF_STATUS[dto.expected_status];
+      case 'reject':
         return (
-          !!step &&
-          events.some(
-            (e) => mine(e) && e.round === dto.expected_round && e.step === step,
-          )
+          last.round === dto.expected_round &&
+          last.step === STEP_OF_STATUS[dto.expected_status]
         );
-      }
       case 'withdraw':
       case 'reopen':
-        return events.some((e) => mine(e) && e.round === dto.expected_round);
+        return last.round === dto.expected_round;
     }
   }
 
@@ -750,6 +804,11 @@ export class FpaFlowService {
         );
         const right = this.rightFor(kind, actor, s);
         if (!right.ok) throw this.denial(kind, right);
+        // Quienes podían decidir este paso (para quitarlo de sus bandejas)
+        const decidable =
+          kind === 'approve' || kind === 'reject'
+            ? (await this.turn(tx, s, l)).people.map((p) => p.id)
+            : [];
 
         const from = s.status;
         const step =
@@ -829,6 +888,19 @@ export class FpaFlowService {
         notices.push(
           ...(await this.notify(tx, kind, after, step, user, comment)),
         );
+        // Los demás que podían decidir el paso (suplentes, otros del rol):
+        // su bandeja y su contador se actualizan
+        for (const pid of decidable) {
+          if (pid !== user.id && !notices.some((n) => n.userId === pid)) {
+            notices.push(
+              this.screen(
+                pid,
+                after,
+                `Ya se decidió el paso ${STEP_OF[step as Step]} en el presupuesto de ${b.fpa_areas.name} (${b.fpa_versions.code})`,
+              ),
+            );
+          }
+        }
       },
       { timeout: 20_000 },
     );
@@ -938,6 +1010,37 @@ export class FpaFlowService {
     ) {
       const t = await this.turn(tx, s, l);
       const next = t.step as Step;
+      if (t.blocked) {
+        // Nadie de los responsables puede firmar: avisar a quien lo destraba
+        const u = await this.unblockers(tx);
+        const blockedLines = [
+          `${actorName} ${kind === 'submit' ? 'envió' : 'aprobó'} ${whatHtml}, pero nadie de los responsables puede firmar el paso ${STEP_OF[next]} en esta ronda (nadie firma lo que envió ni dos pasos de la misma ronda).`,
+          'Soporte lo puede firmar, o se registra otro firmante en Áreas.',
+        ];
+        for (const p of u.email) {
+          await this.enqueue(
+            tx,
+            p,
+            {
+              template: 'fpa_bloqueado',
+              entityId: `${id}:r${s.round}:${next}`,
+            },
+            `[ABENT 3T] FP&A: nadie puede firmar el paso ${STEP_OF[next]} en ${what}`,
+            blockedLines,
+            id,
+          );
+        }
+        for (const p of u.screen) {
+          notices.push(
+            this.screen(
+              p.id,
+              l,
+              `Nadie puede firmar el paso ${STEP_OF[next]} en ${what}`,
+            ),
+          );
+        }
+        return notices;
+      }
       const lines = [
         `${actorName} ${kind === 'submit' ? 'envió' : 'aprobó'} ${whatHtml}${s.round > 1 && kind === 'submit' ? ` (ronda ${s.round})` : ''}. Sigue el paso ${STEP_OF[next]}, que te toca.`,
       ];
@@ -1048,24 +1151,32 @@ export class FpaFlowService {
         if (days <= REMINDER_AFTER_DAYS) continue;
         const t = await this.turn(this.prisma, s, l);
         const step = t.step as Step;
-        const targets = this.emailTargets(t);
         const what = `el presupuesto de ${l.budget.fpa_areas.name} (${l.budget.fpa_versions.code})`;
+        const whatHtml = `el presupuesto de <strong>${esc(l.budget.fpa_areas.name)}</strong> (${esc(l.budget.fpa_versions.code)})`;
         const sender = senderOfRound(s);
         const sentBy = sender
           ? l.events.find((e) => e.round === s.round && e.action === 'enviado')
               ?.profiles
           : null;
+        // Sin quien firme, el recordatorio va a planeación (lo destraba)
+        const targets = t.blocked
+          ? (await this.unblockers(this.prisma)).email
+          : this.emailTargets(t);
         for (const p of targets) {
           await this.enqueue(
             undefined,
             p,
             {
               template: 'fpa_recordatorio',
-              entityId: `${id}:r${s.round}:${step}`,
+              entityId: `${id}:r${s.round}:${step}${t.blocked ? ':bloqueado' : ''}`,
             },
-            `[ABENT 3T] Recordatorio FP&A: ${what} lleva ${days} días hábiles esperando tu firma`,
+            t.blocked
+              ? `[ABENT 3T] Recordatorio FP&A: nadie puede firmar el paso ${STEP_OF[step]} en ${what} (${days} días hábiles)`
+              : `[ABENT 3T] Recordatorio FP&A: ${what} lleva ${days} días hábiles esperando tu firma`,
             [
-              `El paso ${STEP_OF[step]} del presupuesto de <strong>${esc(l.budget.fpa_areas.name)}</strong> (${esc(l.budget.fpa_versions.code)}) lleva ${days} días hábiles esperando tu firma${sentBy ? ` (lo envió ${esc(toPerson(sentBy).full_name)})` : ''}.`,
+              t.blocked
+                ? `El paso ${STEP_OF[step]} en ${whatHtml} lleva ${days} días hábiles sin quien lo pueda firmar (nadie firma lo que envió ni dos pasos de la misma ronda). Soporte lo puede firmar, o se registra otro firmante en Áreas.`
+                : `El paso ${STEP_OF[step]} en ${whatHtml} lleva ${days} días hábiles esperando tu firma${sentBy ? ` (lo envió ${esc(toPerson(sentBy).full_name)})` : ''}.`,
             ],
             id,
           );

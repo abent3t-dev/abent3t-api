@@ -137,12 +137,65 @@ function makeStore() {
       asg('david', 'planeacion', null),
       asg('laura', 'planeacion', null, true),
     ],
+    // Toda responsabilidad pide un rol de FP&A; soporte tiene super_admin (core)
     roles: [
-      { profile_id: 'david', role: 'fpa_planeacion' },
-      { profile_id: 'laura', role: 'fpa_planeacion' },
-      { profile_id: 'liliana', role: 'fpa_planeacion' },
-      { profile_id: 'uriel', role: 'fpa_cfo' },
-    ],
+      {
+        id: 'ur-diana',
+        profile_id: 'diana',
+        module: 'fpa',
+        role: 'fpa_area',
+        is_active: true,
+      },
+      {
+        id: 'ur-jorge',
+        profile_id: 'jorge',
+        module: 'fpa',
+        role: 'fpa_area',
+        is_active: true,
+      },
+      {
+        id: 'ur-ingrid',
+        profile_id: 'ingrid',
+        module: 'fpa',
+        role: 'fpa_area',
+        is_active: true,
+      },
+      {
+        id: 'ur-david',
+        profile_id: 'david',
+        module: 'fpa',
+        role: 'fpa_planeacion',
+        is_active: true,
+      },
+      {
+        id: 'ur-laura',
+        profile_id: 'laura',
+        module: 'fpa',
+        role: 'fpa_planeacion',
+        is_active: true,
+      },
+      {
+        id: 'ur-liliana',
+        profile_id: 'liliana',
+        module: 'fpa',
+        role: 'fpa_planeacion',
+        is_active: true,
+      },
+      {
+        id: 'ur-uriel',
+        profile_id: 'uriel',
+        module: 'fpa',
+        role: 'fpa_cfo',
+        is_active: true,
+      },
+      {
+        id: 'ur-alex',
+        profile_id: 'alex',
+        module: 'core',
+        role: 'super_admin',
+        is_active: true,
+      },
+    ] as Row[],
     events: [] as Row[],
     /** Lo que regresa la foto (FpaService.budgetSnapshot) de cada presupuesto. */
     photos: {
@@ -319,15 +372,43 @@ function fakePrisma(store: Store) {
       }),
     },
     user_roles: {
-      findMany: jest.fn(({ where }: { where: { role: string } }) =>
-        Promise.resolve(
-          store.roles
-            .filter((r) => r.role === where.role)
-            .map((r) => ({
-              ...r,
-              profiles_user_roles_profile_idToprofiles: profileOf(r.profile_id),
-            })),
-        ),
+      findMany: jest.fn(
+        ({
+          where,
+          select,
+        }: {
+          where: Record<string, unknown>;
+          select?: Record<string, boolean>;
+        }) => {
+          const {
+            profiles_user_roles_profile_idToprofiles: profileWhere,
+            ...rest
+          } = where;
+          return Promise.resolve(
+            store.roles
+              .filter((r) => matches(r, rest))
+              .filter(
+                (r) =>
+                  !profileWhere ||
+                  matches(
+                    profileOf(r.profile_id),
+                    profileWhere as Record<string, unknown>,
+                  ),
+              )
+              .map((r) =>
+                select
+                  ? Object.fromEntries(
+                      Object.keys(select).map((k) => [k, r[k]]),
+                    )
+                  : {
+                      ...r,
+                      profiles_user_roles_profile_idToprofiles: profileOf(
+                        r.profile_id,
+                      ),
+                    },
+              ),
+          );
+        },
       ),
     },
     $queryRaw: jest.fn<
@@ -554,6 +635,20 @@ describe('FpaFlowService — turnos, choques y reintentos', () => {
     expect(ctx.store.events).toHaveLength(3);
   });
 
+  it('un envío viejo después de que lo regresaron no es "ya hecho": es 409 con lo que pasó', async () => {
+    const ctx = setup();
+    const before = seen(ctx, 'bud-compras');
+    await ctx.service.submit(DIANA, 'bud-compras', before);
+    await ctx.service.reject(
+      INGRID,
+      'bud-compras',
+      seen(ctx, 'bud-compras', 'Faltan los viajes de noviembre'),
+    );
+    await expect(
+      ctx.service.submit(DIANA, 'bud-compras', before),
+    ).rejects.toThrow(/lo regresó a captura en el paso del área/);
+  });
+
   it('un reintento de la misma persona con la misma acción cuenta como ya hecho', async () => {
     const ctx = await atPlaneacion();
     const screen = seen(ctx, 'bud-compras');
@@ -681,8 +776,68 @@ describe('FpaFlowService — la bandeja y el turno sin salida', () => {
       who: [],
       blocked: true,
     });
-    expect(await ctx.service.pending(DAVID)).toEqual([]);
-    expect(await ctx.service.pending(LAURA)).toEqual([]);
+    // Planeación y soporte lo ven como "sin quien firme"; el área, no
+    for (const who of [DAVID, LAURA, LILIANA, ALEX]) {
+      expect(await ctx.service.pending(who)).toEqual([
+        expect.objectContaining({
+          budget_id: 'bud-dg',
+          kind: 'bloqueado',
+          step: 'planeacion',
+        }),
+      ]);
+    }
+    expect(await ctx.service.pending(INGRID)).toEqual([]);
+    // El correo a planeación (lo destraba) y el aviso en pantalla, también a soporte
+    expect(
+      emails(ctx)
+        .filter((e) => e.template === 'fpa_bloqueado')
+        .map((e) => e.to.email)
+        .sort(),
+    ).toEqual([
+      'david@abent3t.com',
+      'laura@abent3t.com',
+      'liliana@abent3t.com',
+    ]);
+    expect(screens(ctx).slice(-4).sort()).toEqual([
+      'alex',
+      'david',
+      'laura',
+      'liliana',
+    ]);
+  });
+
+  it('a un firmante registrado sin el rol del paso ya no le toca (403) ni sale en el turno', async () => {
+    const ctx = setup();
+    await ctx.service.submit(DIANA, 'bud-compras', seen(ctx, 'bud-compras'));
+    await ctx.service.approve(INGRID, 'bud-compras', seen(ctx, 'bud-compras'));
+    // A David le cambiaron el rol de planeación por el de área
+    (ctx.store.roles.find((r) => r.profile_id === 'david') as Row).role =
+      'fpa_area';
+    const david = asUser('david', ['fpa_area']);
+    const attempt = ctx.service.approve(
+      david,
+      'bud-compras',
+      seen(ctx, 'bud-compras'),
+    );
+    await expect(attempt).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(attempt).rejects.toThrow(/necesitas el rol Planeación/);
+    const f = await ctx.service.flow(LILIANA, 'bud-compras');
+    expect(f.turn.who.map((p) => p.id)).toEqual(['laura']);
+  });
+
+  it('soporte ve sus pasos como soporte, y al decidir un paso se avisa a los demás que podían', async () => {
+    const ctx = setup();
+    await ctx.service.submit(DIANA, 'bud-compras', seen(ctx, 'bud-compras'));
+    await ctx.service.approve(INGRID, 'bud-compras', seen(ctx, 'bud-compras'));
+    const f = await ctx.service.flow(ALEX, 'bud-compras');
+    expect(f.actions.approve).toMatchObject({
+      ok: true,
+      acting_as: 'super_admin',
+    });
+    ctx.socket.emitToUser.mockClear();
+    await ctx.service.approve(DAVID, 'bud-compras', seen(ctx, 'bud-compras'));
+    // Laura (la otra firmante) recibe el aviso para que se le quite de la bandeja
+    expect(screens(ctx)).toContain('laura');
   });
 
   it('el flujo de un área solo lo ve quien tiene algo en ella, o quien ve todo', async () => {

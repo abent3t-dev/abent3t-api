@@ -435,3 +435,92 @@ describe('fpa-flow — qué cambió entre rondas', () => {
     });
   });
 });
+
+describe('fpa-flow — revisión del 28-oct', () => {
+  it('primero la persona: con la versión cerrada, a quien no captura o no es de planeación se le dice eso', () => {
+    const closed = state({ version_status: 'cerrada' });
+    expect(canSubmit(URIEL, closed)).toMatchObject({ code: 'persona' });
+    expect(canSubmit(DIANA, closed)).toMatchObject({ code: 'estado' });
+    const approvedClosed = state({
+      status: 'aprobado_cfo',
+      round: 1,
+      version_status: 'cerrada',
+    });
+    expect(canReopen(INGRID, approvedClosed)).toMatchObject({
+      code: 'persona',
+    });
+    expect(canReopen(LILIANA, approvedClosed)).toMatchObject({
+      code: 'estado',
+    });
+  });
+
+  it('el firmante registrado necesita el rol del paso; el aprobador del área, algún rol de FP&A', () => {
+    const s = state({
+      status: 'aprobado_area',
+      round: 1,
+      events: [sent(1), approved(1, 'area', 'ingrid')],
+    });
+    expect(canDecide(actor('david', ['fpa_area']), s)).toEqual({
+      ok: false,
+      code: 'persona',
+      reason:
+        'Para firmar el paso de planeación necesitas el rol Planeación (FP&A)',
+    });
+    const atArea = state({ status: 'enviado', round: 1, events: [sent(1)] });
+    expect(canDecide(actor('ingrid', []), atArea)).toMatchObject({
+      ok: false,
+      code: 'persona',
+    });
+    // David aprueba el área de DG con su rol de planeación: vale
+    expect(canDecide(actor('ingrid', ['fpa_planeacion']), atArea).ok).toBe(
+      true,
+    );
+  });
+
+  it('retirar con la versión fuera de captura no se puede', () => {
+    expect(
+      canWithdraw(
+        DIANA,
+        state({
+          status: 'enviado',
+          round: 1,
+          events: [sent(1)],
+          version_status: 'cerrada',
+        }),
+      ),
+    ).toMatchObject({ ok: false, code: 'estado' });
+  });
+
+  it('qué cambió también ve la justificación, el índice y las etiquetas', () => {
+    const before: SnapshotBody = {
+      total_mxn: '100.00',
+      lines: [
+        {
+          line_key_id: 'k1',
+          folio: 'L-000001',
+          concept: 'Asesoría',
+          total_mxn: '100.00',
+          justification: 'Pendiente',
+          price_index: 'inflacion',
+          project_tag: null,
+        },
+      ],
+    };
+    const after: SnapshotBody = {
+      total_mxn: '100.00',
+      lines: [
+        {
+          ...before.lines[0],
+          justification: 'Auditoría anual que pide el consejo',
+          price_index: 'precio_acordado',
+          project_tag: 'ERP',
+        },
+      ],
+    };
+    expect(diffSnapshots(before, after).changed[0].fields).toEqual([
+      'Índice',
+      'Justificación',
+      'Etiquetas',
+    ]);
+  });
+});

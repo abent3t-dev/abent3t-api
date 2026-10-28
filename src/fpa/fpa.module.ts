@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ScheduleModule } from '@nestjs/schedule';
 import { FpaController } from './fpa.controller';
 import { FpaService } from './fpa.service';
 import { FpaVersionsService } from './fpa-versions.service';
@@ -13,9 +12,12 @@ import { FpaReminderScheduler } from './fpa-reminder.scheduler';
  * bandeja de pendientes, avisos (correo y user:{id}) y recordatorio diario.
  * Diseño: documentation/FPA.md, secciones "Diseño" y "Bloque B". EmailModule,
  * SocketModule y PrismaModule (días hábiles) son globales.
+ *
+ * Sin ScheduleModule.forRoot(): con Nest 11 cada import registra otra vez
+ * todos los cron de la app. El del recordatorio lo registran los que ya
+ * importan otros módulos (ver fpa-reminder.scheduler.ts).
  */
 @Module({
-  imports: [ScheduleModule.forRoot()],
   controllers: [FpaController],
   providers: [
     FpaService,

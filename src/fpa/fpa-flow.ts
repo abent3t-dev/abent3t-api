@@ -178,17 +178,20 @@ export function signedInRound(s: FlowState): Map<Step, string> {
   return map;
 }
 
-/** ¿Puede enviar (o reenviar) el presupuesto? */
+/**
+ * ¿Puede enviar (o reenviar) el presupuesto? Primero la persona: a quien no
+ * captura el área no se le enseña lo que le falta al presupuesto.
+ */
 export function canSubmit(actor: FlowActor, s: FlowState): Right {
+  const a = mine(s, actor, 'captura', s.area_id);
+  if (!a && !isSuper(actor)) {
+    return byPerson('Solo quien captura el área lo envía');
+  }
   if (s.version_status !== 'captura') {
     return byState('La versión no está abierta a captura');
   }
   if (s.status !== 'borrador' && s.status !== 'devuelto') {
     return byState('El presupuesto ya está en aprobación o aprobado');
-  }
-  const a = mine(s, actor, 'captura', s.area_id);
-  if (!a && !isSuper(actor)) {
-    return byPerson('Solo quien captura el área lo envía');
   }
   if (s.line_count === 0) {
     return byState('No tiene líneas: captura al menos una antes de enviarlo');
@@ -234,7 +237,8 @@ export function canDecide(actor: FlowActor, s: FlowState): Right {
 
   if (step === 'area') {
     const a = mine(s, actor, 'aprobacion', s.area_id);
-    if (a) {
+    // Toda responsabilidad pide un rol de FP&A activo (diseño §3)
+    if (a && FPA_ROLES.some((r) => has(actor, r))) {
       return {
         ok: true,
         step,
@@ -250,15 +254,23 @@ export function canDecide(actor: FlowActor, s: FlowState): Right {
   const registered = holders(s.assignments, step, null);
   if (registered.length > 0) {
     const a = registered.find((r) => r.profile_id === actor.id);
-    if (a) {
+    // Firmante registrado y con el rol del paso (si le quitaron el rol, ya no firma)
+    if (a && has(actor, role)) {
       return {
         ok: true,
         step,
         acting_as: a.is_alternate ? 'suplente' : 'titular',
-        actor_role: fpaRole(actor, role),
+        actor_role: role,
       };
     }
     if (isSuper(actor)) return asSuper(step);
+    if (a) {
+      return byPerson(
+        step === 'planeacion'
+          ? 'Para firmar el paso de planeación necesitas el rol Planeación (FP&A)'
+          : 'Para firmar el paso del CFO necesitas el rol CFO (FP&A)',
+      );
+    }
     return byPerson(`Lo firma el firmante ${STEP_OF[step]}`);
   }
   if (has(actor, role))
@@ -271,6 +283,9 @@ export function canDecide(actor: FlowActor, s: FlowState): Right {
 
 /** ¿Puede retirar el envío (antes de la primera firma de la ronda)? */
 export function canWithdraw(actor: FlowActor, s: FlowState): Right {
+  if (s.version_status !== 'captura') {
+    return byState('La versión no está abierta a captura');
+  }
   if (s.status !== 'enviado') {
     return byState('Solo se retira un presupuesto enviado y sin firmas');
   }
@@ -297,8 +312,15 @@ export function canWithdraw(actor: FlowActor, s: FlowState): Right {
   );
 }
 
-/** ¿Puede reabrir un presupuesto aprobado? */
+/**
+ * ¿Puede reabrir un presupuesto aprobado? Primero la persona: solo le
+ * importa a planeación (y a soporte).
+ */
 export function canReopen(actor: FlowActor, s: FlowState): Right {
+  const planeacion = has(actor, 'fpa_planeacion');
+  if (!planeacion && !isSuper(actor)) {
+    return byPerson('Solo planeación reabre un presupuesto aprobado');
+  }
   if (s.status !== 'aprobado_cfo') {
     return byState('Solo se reabre un presupuesto aprobado');
   }
@@ -308,11 +330,9 @@ export function canReopen(actor: FlowActor, s: FlowState): Right {
   if (s.version_status !== 'captura') {
     return byState('La versión no está abierta a captura');
   }
-  if (has(actor, 'fpa_planeacion')) {
-    return { ok: true, acting_as: 'rol', actor_role: 'fpa_planeacion' };
-  }
-  if (isSuper(actor)) return asSuper();
-  return byPerson('Solo planeación reabre un presupuesto aprobado');
+  return planeacion
+    ? { ok: true, acting_as: 'rol', actor_role: 'fpa_planeacion' }
+    : asSuper();
 }
 
 /** De quién es el turno, para mostrar. */
@@ -350,6 +370,16 @@ export interface SnapshotLine {
   department?: { name: string } | null;
   supplier_name?: string | null;
   currency?: string;
+  justification?: string | null;
+  priority?: string | null;
+  calc_method?: string;
+  price_index?: string;
+  unit_price?: string | null;
+  trip?: unknown;
+  contract_label?: string | null;
+  project_tag?: string | null;
+  outside_ebitda?: boolean | null;
+  spend_type?: string | null;
 }
 
 export interface SnapshotBody {
@@ -423,6 +453,32 @@ export function diffSnapshots(
       fields.push('Proveedor');
     }
     if ((old.currency ?? null) !== (l.currency ?? null)) fields.push('Moneda');
+    if ((old.calc_method ?? null) !== (l.calc_method ?? null)) {
+      fields.push('Forma de cálculo');
+    }
+    if ((old.price_index ?? null) !== (l.price_index ?? null)) {
+      fields.push('Índice');
+    }
+    if ((old.unit_price ?? null) !== (l.unit_price ?? null)) {
+      fields.push('Precio');
+    }
+    if (JSON.stringify(old.trip ?? null) !== JSON.stringify(l.trip ?? null)) {
+      fields.push('Viaje');
+    }
+    if ((old.justification ?? null) !== (l.justification ?? null)) {
+      fields.push('Justificación');
+    }
+    if ((old.priority ?? null) !== (l.priority ?? null)) {
+      fields.push('Prioridad');
+    }
+    const tags = (x: SnapshotLine) =>
+      JSON.stringify([
+        x.contract_label ?? null,
+        x.project_tag ?? null,
+        x.outside_ebitda ?? null,
+        x.spend_type ?? null,
+      ]);
+    if (tags(old) !== tags(l)) fields.push('Etiquetas');
     if (!sameAmount(old.total_mxn, l.total_mxn)) fields.push('Monto');
     else if (monthsKey(old) !== monthsKey(l)) fields.push('Meses');
     if (fields.length > 0) {
