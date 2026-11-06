@@ -321,6 +321,13 @@ export class FpaService {
         include: {
           fpa_classifications: {
             where: { is_active: true },
+            include: {
+              // C1: departamentos a los que el COA les da la clasificación
+              fpa_department_classifications: {
+                where: { is_active: true },
+                select: { department_id: true },
+              },
+            },
             orderBy: [{ sort_order: 'asc' }, { name: 'asc' }],
           },
         },
@@ -340,6 +347,10 @@ export class FpaService {
           id: k.id,
           name: k.name,
           allows_negative: k.allows_negative,
+          // Vacío = la ven todas las áreas (p. ej. Viajes › Viajes)
+          department_ids: k.fpa_department_classifications.map(
+            (d) => d.department_id,
+          ),
         })),
       })),
       departments: departments.map((d) => ({

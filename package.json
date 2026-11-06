@@ -28,6 +28,11 @@
     "avance:check": "ts-node -T scripts/avance-semanal-check.ts",
     "fpa:seed-dev": "ts-node -T scripts/fpa-seed-dev.ts",
     "fpa:arranque": "ts-node -T scripts/fpa-arranque.ts",
+    "fpa:coa-leer": "ts-node -T scripts/fpa-coa-leer.ts",
+    "fpa:catalogo": "ts-node -T scripts/fpa-catalogo.ts",
+    "fpa:areas": "ts-node -T scripts/fpa-areas.ts",
+    "fpa:b27-leer": "ts-node -T scripts/fpa-b27-leer.ts",
+    "fpa:b27": "ts-node -T scripts/fpa-b27.ts",
     "sap:smoke": "node scripts/smoke-sap-b1.mjs"
   },
   "dependencies": {

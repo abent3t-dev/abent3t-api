@@ -822,3 +822,94 @@ describe('FpaService — alta de área', () => {
     );
   });
 });
+
+describe('FpaService — catálogo (C1)', () => {
+  it('cada clasificación dice en qué departamentos aplica; vacía = todas las áreas', async () => {
+    const prisma = {
+      fpa_categories: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'cat-com',
+            name: 'Comunicaciones',
+            sort_order: 4,
+            fpa_classifications: [
+              {
+                id: 'k-int',
+                name: 'Internet',
+                allows_negative: false,
+                fpa_department_classifications: [
+                  { department_id: 'dep-a' },
+                  { department_id: 'dep-b' },
+                ],
+              },
+            ],
+          },
+          {
+            id: 'cat-via',
+            name: 'Viajes',
+            sort_order: 9,
+            fpa_classifications: [
+              {
+                id: 'k-via',
+                name: 'Viajes',
+                allows_negative: false,
+                fpa_department_classifications: [],
+              },
+            ],
+          },
+        ]),
+      },
+      fpa_departments: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 'dep-a',
+            name: 'Compras',
+            area_id: 'area-a',
+            cost_center: 'GSGAD012',
+          },
+        ]),
+      },
+    };
+    const service = new FpaService(prisma as unknown as PrismaService);
+    const out = await service.catalog();
+    expect(out.categories.map((c) => c.classifications)).toEqual([
+      [
+        {
+          id: 'k-int',
+          name: 'Internet',
+          allows_negative: false,
+          department_ids: ['dep-a', 'dep-b'],
+        },
+      ],
+      [
+        {
+          id: 'k-via',
+          name: 'Viajes',
+          allows_negative: false,
+          department_ids: [],
+        },
+      ],
+    ]);
+    // Solo las parejas activas
+    const [args] = prisma.fpa_categories.findMany.mock.calls[0] as [
+      {
+        include: {
+          fpa_classifications: {
+            include: { fpa_department_classifications: unknown };
+          };
+        };
+      },
+    ];
+    expect(
+      args.include.fpa_classifications.include.fpa_department_classifications,
+    ).toEqual({ where: { is_active: true }, select: { department_id: true } });
+    expect(out.departments).toEqual([
+      {
+        id: 'dep-a',
+        name: 'Compras',
+        area_id: 'area-a',
+        cost_center: 'GSGAD012',
+      },
+    ]);
+  });
+});

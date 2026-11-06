@@ -1,0 +1,2683 @@
+{
+  "fuente": {
+    "archivo": "3. A3T_CHART_OF_ACCOUNTS_2025.xlsx",
+    "md5": "d720dfc570246dec49fb95d83b6fd1e8",
+    "hoja": "OACT_SAP_2025",
+    "cuentas": 2658
+  },
+  "departamentos": [
+    {
+      "nombre": "Recursos Humanos",
+      "centro_costos": "GSGAD001",
+      "cuentas": 409
+    },
+    {
+      "nombre": "Dirección General",
+      "centro_costos": "GSGAD002",
+      "cuentas": 86
+    },
+    {
+      "nombre": "Finanzas",
+      "centro_costos": "GSGAD003",
+      "cuentas": 96
+    },
+    {
+      "nombre": "Legal",
+      "centro_costos": "GSGAD004",
+      "cuentas": 126
+    },
+    {
+      "nombre": "Comercial",
+      "centro_costos": "GSGAD005",
+      "cuentas": 97
+    },
+    {
+      "nombre": "Medición",
+      "centro_costos": "GSGAD006",
+      "cuentas": 120
+    },
+    {
+      "nombre": "Operación",
+      "centro_costos": "GSGAD007",
+      "cuentas": 131
+    },
+    {
+      "nombre": "Servicios Generales",
+      "centro_costos": "GSGAD009",
+      "cuentas": 217
+    },
+    {
+      "nombre": "Planta",
+      "centro_costos": "GSGAD010",
+      "cuentas": 65
+    },
+    {
+      "nombre": "Contraloría",
+      "centro_costos": "GSGAD011",
+      "cuentas": 84
+    },
+    {
+      "nombre": "Compras",
+      "centro_costos": "GSGAD012",
+      "cuentas": 79
+    },
+    {
+      "nombre": "IT",
+      "centro_costos": "GSGAD013",
+      "cuentas": 90
+    },
+    {
+      "nombre": "Cuarto Tren",
+      "centro_costos": "GSGAD014",
+      "cuentas": 85
+    },
+    {
+      "nombre": "Fianzas",
+      "centro_costos": "GSGAD015",
+      "cuentas": 7
+    },
+    {
+      "nombre": "Seguros",
+      "centro_costos": "GSGAD018",
+      "cuentas": 19
+    },
+    {
+      "nombre": "NAES",
+      "centro_costos": "GMTOM",
+      "cuentas": 70
+    },
+    {
+      "nombre": "GE",
+      "centro_costos": "GGEEM",
+      "cuentas": 6
+    }
+  ],
+  "categorias": [
+    {
+      "nombre": "Servicios Profesionales",
+      "orden": 1,
+      "clasificaciones": [
+        {
+          "nombre": "Servicios Profesionales",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Asesoría Legal",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Asesoría Comercial",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Facturación",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Lecturas",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Consultorías",
+      "orden": 2,
+      "clasificaciones": [
+        {
+          "nombre": "Consultorías",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Consultorías Fiscal",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Auditorías",
+      "orden": 3,
+      "clasificaciones": [
+        {
+          "nombre": "Auditorías",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Comunicaciones",
+      "orden": 4,
+      "clasificaciones": [
+        {
+          "nombre": "Internet",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Telefonía Celular",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Telefonía Fija",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Otras Comunicaciones",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Monitoreo",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Internet Tabasco",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Otras Comunicaciones",
+      "orden": 5,
+      "clasificaciones": [
+        {
+          "nombre": "Otras Comunicaciones",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Arrendamientos",
+      "orden": 6,
+      "clasificaciones": [
+        {
+          "nombre": "Arrendamientos",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Renta Oficina",
+          "acepta_negativos": true
+        },
+        {
+          "nombre": "Renta de Vehículos",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Renta de Equipo de Cómputo",
+          "acepta_negativos": true
+        }
+      ]
+    },
+    {
+      "nombre": "Cuotas y Suscripciones",
+      "orden": 7,
+      "clasificaciones": [
+        {
+          "nombre": "Cuotas y Suscripciones",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "AME",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Otros",
+      "orden": 8,
+      "clasificaciones": [
+        {
+          "nombre": "Otros",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "No deducibles",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Viajes",
+      "orden": 9,
+      "clasificaciones": [
+        {
+          "nombre": "Hospedaje",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Viáticos",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Alimentos",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Transporte",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Renta de autos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Eventos",
+      "orden": 10,
+      "clasificaciones": [
+        {
+          "nombre": "Eventos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Servicios Administrados y Licencias",
+      "orden": 11,
+      "clasificaciones": [
+        {
+          "nombre": "Servicios Administrados y Licencias",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Instalaciones Técnicas",
+      "orden": 12,
+      "clasificaciones": [
+        {
+          "nombre": "Instalaciones Técnicas",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Medidores",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Derechos y Permisos",
+      "orden": 13,
+      "clasificaciones": [
+        {
+          "nombre": "Derechos y Permisos",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "CRE",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Salarios",
+      "orden": 14,
+      "clasificaciones": [
+        {
+          "nombre": "Sueldos y Salarios",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Vacaciones",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Prima Vacacional",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Aguinaldo",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Gratificaciones",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Pasivo Laboral",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Cuotas IMSS",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Aportaciones Infonavit",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Aportaciones al SAR",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "ISN CDMX",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "ISN Tabasco",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Beneficios",
+      "orden": 15,
+      "clasificaciones": [
+        {
+          "nombre": "Extensiones",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Vales de Restaurante",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Descuento Vales de Restaurante",
+          "acepta_negativos": true
+        },
+        {
+          "nombre": "Vales de Despensa",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Descuento Vales de Despensa",
+          "acepta_negativos": true
+        },
+        {
+          "nombre": "Fondo de Ahorro",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Gasolina",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Autos",
+          "acepta_negativos": true
+        },
+        {
+          "nombre": "Psicóloga",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Nutrióloga",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Alimentos",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Gimnasio",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Comida Empleados",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "SGMM",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Seguro de Gastos Menores",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Vida",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Administración Nómina",
+      "orden": 16,
+      "clasificaciones": [
+        {
+          "nombre": "Administración Nómina",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Capacitación",
+      "orden": 17,
+      "clasificaciones": [
+        {
+          "nombre": "Capacitación",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Gastos de Oficina",
+      "orden": 18,
+      "clasificaciones": [
+        {
+          "nombre": "Protección Civil",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Gastos de Oficina",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Luz",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Agua",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Estacionamiento",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Combustible",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Limpieza",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Mantenimiento Oficina",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Impresoras",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Papelería",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Mensajería",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Autos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Estacionamiento",
+      "orden": 19,
+      "clasificaciones": [
+        {
+          "nombre": "Estacionamiento",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Mantenimiento",
+      "orden": 20,
+      "clasificaciones": [
+        {
+          "nombre": "Mantenimiento",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Impresoras",
+      "orden": 21,
+      "clasificaciones": [
+        {
+          "nombre": "Impresoras",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Papelería",
+      "orden": 22,
+      "clasificaciones": [
+        {
+          "nombre": "Papelería",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Mensajería",
+      "orden": 23,
+      "clasificaciones": [
+        {
+          "nombre": "Mensajería",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Gastos Autos",
+      "orden": 24,
+      "clasificaciones": [
+        {
+          "nombre": "Gastos Autos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Litigios",
+      "orden": 25,
+      "clasificaciones": [
+        {
+          "nombre": "Litigios",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Amparos",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Juicios",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Recursos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Fiduciarios",
+      "orden": 26,
+      "clasificaciones": [
+        {
+          "nombre": "Fiduciarios",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Energía",
+      "orden": 27,
+      "clasificaciones": [
+        {
+          "nombre": "Energía",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Controles Volumétricos",
+      "orden": 28,
+      "clasificaciones": [
+        {
+          "nombre": "Controles Volumétricos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Seguridad Planta",
+      "orden": 29,
+      "clasificaciones": [
+        {
+          "nombre": "Seguridad Planta",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Mantenimiento Planta",
+      "orden": 30,
+      "clasificaciones": [
+        {
+          "nombre": "Mantenimiento Planta",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Gastos Generales Planta",
+      "orden": 31,
+      "clasificaciones": [
+        {
+          "nombre": "Protección Civil",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Gastos Generales",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Gastos de Oficina",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Luz Oficina",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Agua Oficina",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Estacionamiento",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Combustible",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Limpieza",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Mantenimiento Oficina",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Papelería",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Mensajería",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Autos",
+          "acepta_negativos": true
+        },
+        {
+          "nombre": "EPP",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Seguros",
+      "orden": 32,
+      "clasificaciones": [
+        {
+          "nombre": "No deducibles",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Planta",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Vehículos",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Oficinas",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Amparo tarifas porteo",
+      "orden": 33,
+      "clasificaciones": [
+        {
+          "nombre": "No deducibles",
+          "acepta_negativos": false
+        },
+        {
+          "nombre": "Amparo tarifas porteo",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Equipo de oficina, Muebles de oficina",
+      "orden": 34,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Equipo de oficina, Muebles de oficina",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Suministros de oficina, Gastos de oficina",
+      "orden": 35,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Suministros de oficina, Gastos de oficina",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Herramientas de mantenimiento, Equipo de mantenimiento",
+      "orden": 36,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Herramientas de mantenimiento, Equipo de mantenimiento",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Refacciones de planta",
+      "orden": 37,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Refacciones de planta",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Consumibles",
+      "orden": 38,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Consumibles",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Químicos",
+      "orden": 39,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Químicos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Servicios externos",
+      "orden": 40,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Servicios externos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Mantenimiento Programado",
+      "orden": 41,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Mantenimiento Programado",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Renta de equipo",
+      "orden": 42,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Renta de equipo",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Seguridad, Calidad, Medio Ambiente",
+      "orden": 43,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Seguridad, Calidad, Medio Ambiente",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Cuenta de control de almacen",
+      "orden": 44,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Cuenta de control de almacen",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Contingencias",
+      "orden": 45,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Contingencias",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Edificios y áreas en general",
+      "orden": 46,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Edificios y áreas en general",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Mantenimiento lineas de transmisión",
+      "orden": 47,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Mantenimiento lineas de transmisión",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Preservación",
+      "orden": 48,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Preservación",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Gastos Horas Generación PML",
+      "orden": 49,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Gastos Horas Generación PML",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Informática",
+      "orden": 50,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Informática",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Departamento de Administración",
+      "orden": 51,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Departamento de Administración",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Departamento de Operación",
+      "orden": 52,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Departamento de Operación",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Departamento de Mantenimiento",
+      "orden": 53,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Departamento de Mantenimiento",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Gases",
+      "orden": 54,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Gases",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Combustible",
+      "orden": 55,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Combustible",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Reactivos",
+      "orden": 56,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Reactivos",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Servicios de calibración",
+      "orden": 57,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Servicios de calibración",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Servicios de suministros e instalaciones",
+      "orden": 58,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Servicios de suministros e instalaciones",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Servicios de Infraestructura, diagramas y otros",
+      "orden": 59,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Servicios de Infraestructura, diagramas y otros",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M No deducibles",
+      "orden": 60,
+      "clasificaciones": [
+        {
+          "nombre": "O&M No deducibles",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Mantenimiento mayor",
+      "orden": 61,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Mantenimiento mayor",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Fee O&M",
+      "orden": 62,
+      "clasificaciones": [
+        {
+          "nombre": "Fee O&M",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Bono Naes",
+      "orden": 63,
+      "clasificaciones": [
+        {
+          "nombre": "Bono Naes",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Capacitación, Gastos de viaje, Gastos generales",
+      "orden": 64,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Capacitación, Gastos de viaje, Gastos generales",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Vehículos de planta",
+      "orden": 65,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Vehículos de planta",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Nómina",
+      "orden": 66,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Nómina",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "O&M Otros",
+      "orden": 67,
+      "clasificaciones": [
+        {
+          "nombre": "O&M Otros",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "GE Fixed Fee + Variable Fee",
+      "orden": 68,
+      "clasificaciones": [
+        {
+          "nombre": "GE Fixed Fee + Variable Fee",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "GE Pruebas de Performance",
+      "orden": 69,
+      "clasificaciones": [
+        {
+          "nombre": "GE Pruebas de Performance",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "GE Refacciones mantto y Paro Programado",
+      "orden": 70,
+      "clasificaciones": [
+        {
+          "nombre": "GE Refacciones mantto y Paro Programado",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Impuestos Generales de Importacion y Exportacion",
+      "orden": 71,
+      "clasificaciones": [
+        {
+          "nombre": "Impuestos Generales de Importacion y Exportacion",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Prevalidación del pedimento",
+      "orden": 72,
+      "clasificaciones": [
+        {
+          "nombre": "Prevalidación del pedimento",
+          "acepta_negativos": false
+        }
+      ]
+    },
+    {
+      "nombre": "Derecho de tramite aduanero",
+      "orden": 73,
+      "clasificaciones": [
+        {
+          "nombre": "Derecho de tramite aduanero",
+          "acepta_negativos": false
+        }
+      ]
+    }
+  ],
+  "pares": {
+    "NAES": [
+      [
+        "O&M Equipo de oficina, Muebles de oficina",
+        "O&M Equipo de oficina, Muebles de oficina"
+      ],
+      [
+        "O&M Suministros de oficina, Gastos de oficina",
+        "O&M Suministros de oficina, Gastos de oficina"
+      ],
+      [
+        "O&M Herramientas de mantenimiento, Equipo de mantenimiento",
+        "O&M Herramientas de mantenimiento, Equipo de mantenimiento"
+      ],
+      [
+        "O&M Refacciones de planta",
+        "O&M Refacciones de planta"
+      ],
+      [
+        "O&M Consumibles",
+        "O&M Consumibles"
+      ],
+      [
+        "O&M Químicos",
+        "O&M Químicos"
+      ],
+      [
+        "O&M Servicios externos",
+        "O&M Servicios externos"
+      ],
+      [
+        "O&M Mantenimiento Programado",
+        "O&M Mantenimiento Programado"
+      ],
+      [
+        "O&M Renta de equipo",
+        "O&M Renta de equipo"
+      ],
+      [
+        "O&M Seguridad, Calidad, Medio Ambiente",
+        "O&M Seguridad, Calidad, Medio Ambiente"
+      ],
+      [
+        "O&M Cuenta de control de almacen",
+        "O&M Cuenta de control de almacen"
+      ],
+      [
+        "O&M Contingencias",
+        "O&M Contingencias"
+      ],
+      [
+        "O&M Edificios y áreas en general",
+        "O&M Edificios y áreas en general"
+      ],
+      [
+        "O&M Mantenimiento lineas de transmisión",
+        "O&M Mantenimiento lineas de transmisión"
+      ],
+      [
+        "O&M Preservación",
+        "O&M Preservación"
+      ],
+      [
+        "O&M Gastos Horas Generación PML",
+        "O&M Gastos Horas Generación PML"
+      ],
+      [
+        "O&M Informática",
+        "O&M Informática"
+      ],
+      [
+        "O&M Departamento de Administración",
+        "O&M Departamento de Administración"
+      ],
+      [
+        "O&M Departamento de Operación",
+        "O&M Departamento de Operación"
+      ],
+      [
+        "O&M Departamento de Mantenimiento",
+        "O&M Departamento de Mantenimiento"
+      ],
+      [
+        "O&M Gases",
+        "O&M Gases"
+      ],
+      [
+        "O&M Combustible",
+        "O&M Combustible"
+      ],
+      [
+        "O&M Reactivos",
+        "O&M Reactivos"
+      ],
+      [
+        "O&M Servicios de calibración",
+        "O&M Servicios de calibración"
+      ],
+      [
+        "O&M Servicios de suministros e instalaciones",
+        "O&M Servicios de suministros e instalaciones"
+      ],
+      [
+        "O&M Servicios de Infraestructura, diagramas y otros",
+        "O&M Servicios de Infraestructura, diagramas y otros"
+      ],
+      [
+        "O&M No deducibles",
+        "O&M No deducibles"
+      ],
+      [
+        "O&M Mantenimiento mayor",
+        "O&M Mantenimiento mayor"
+      ],
+      [
+        "Fee O&M",
+        "Fee O&M"
+      ],
+      [
+        "Bono Naes",
+        "Bono Naes"
+      ],
+      [
+        "O&M Capacitación, Gastos de viaje, Gastos generales",
+        "O&M Capacitación, Gastos de viaje, Gastos generales"
+      ],
+      [
+        "O&M Vehículos de planta",
+        "O&M Vehículos de planta"
+      ],
+      [
+        "O&M Nómina",
+        "O&M Nómina"
+      ],
+      [
+        "O&M Otros",
+        "O&M Otros"
+      ],
+      [
+        "Impuestos Generales de Importacion y Exportacion",
+        "Impuestos Generales de Importacion y Exportacion"
+      ],
+      [
+        "Prevalidación del pedimento",
+        "Prevalidación del pedimento"
+      ],
+      [
+        "Derecho de tramite aduanero",
+        "Derecho de tramite aduanero"
+      ]
+    ],
+    "GE": [
+      [
+        "GE Fixed Fee + Variable Fee",
+        "GE Fixed Fee + Variable Fee"
+      ],
+      [
+        "GE Pruebas de Performance",
+        "GE Pruebas de Performance"
+      ],
+      [
+        "GE Refacciones mantto y Paro Programado",
+        "GE Refacciones mantto y Paro Programado"
+      ]
+    ],
+    "Recursos Humanos": [
+      [
+        "Salarios",
+        "Sueldos y Salarios"
+      ],
+      [
+        "Salarios",
+        "Vacaciones"
+      ],
+      [
+        "Salarios",
+        "Prima Vacacional"
+      ],
+      [
+        "Salarios",
+        "Aguinaldo"
+      ],
+      [
+        "Salarios",
+        "Gratificaciones"
+      ],
+      [
+        "Salarios",
+        "Pasivo Laboral"
+      ],
+      [
+        "Salarios",
+        "Cuotas IMSS"
+      ],
+      [
+        "Salarios",
+        "Aportaciones Infonavit"
+      ],
+      [
+        "Salarios",
+        "Aportaciones al SAR"
+      ],
+      [
+        "Salarios",
+        "ISN CDMX"
+      ],
+      [
+        "Salarios",
+        "ISN Tabasco"
+      ],
+      [
+        "Beneficios",
+        "Extensiones"
+      ],
+      [
+        "Beneficios",
+        "Vales de Restaurante"
+      ],
+      [
+        "Beneficios",
+        "Descuento Vales de Restaurante"
+      ],
+      [
+        "Beneficios",
+        "Vales de Despensa"
+      ],
+      [
+        "Beneficios",
+        "Descuento Vales de Despensa"
+      ],
+      [
+        "Beneficios",
+        "Fondo de Ahorro"
+      ],
+      [
+        "Beneficios",
+        "Gasolina"
+      ],
+      [
+        "Beneficios",
+        "Autos"
+      ],
+      [
+        "Beneficios",
+        "Psicóloga"
+      ],
+      [
+        "Beneficios",
+        "Nutrióloga"
+      ],
+      [
+        "Beneficios",
+        "Alimentos"
+      ],
+      [
+        "Beneficios",
+        "Gimnasio"
+      ],
+      [
+        "Beneficios",
+        "Comida Empleados"
+      ],
+      [
+        "Beneficios",
+        "SGMM"
+      ],
+      [
+        "Beneficios",
+        "Seguro de Gastos Menores"
+      ],
+      [
+        "Beneficios",
+        "Vida"
+      ],
+      [
+        "Administración Nómina",
+        "Administración Nómina"
+      ],
+      [
+        "Capacitación",
+        "Capacitación"
+      ],
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Eventos",
+        "Eventos"
+      ]
+    ],
+    "Dirección General": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Cuotas y Suscripciones",
+        "Cuotas y Suscripciones"
+      ],
+      [
+        "Cuotas y Suscripciones",
+        "AME"
+      ]
+    ],
+    "Finanzas": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Consultorías",
+        "Consultorías Fiscal"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Cuotas y Suscripciones",
+        "Cuotas y Suscripciones"
+      ]
+    ],
+    "Legal": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Servicios Profesionales",
+        "Asesoría Legal"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Cuotas y Suscripciones",
+        "Cuotas y Suscripciones"
+      ],
+      [
+        "Litigios",
+        "Litigios"
+      ],
+      [
+        "Litigios",
+        "Amparos"
+      ],
+      [
+        "Litigios",
+        "Juicios"
+      ],
+      [
+        "Litigios",
+        "Recursos"
+      ],
+      [
+        "Fiduciarios",
+        "Fiduciarios"
+      ]
+    ],
+    "Comercial": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Servicios Profesionales",
+        "Asesoría Comercial"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Eventos",
+        "Eventos"
+      ],
+      [
+        "Cuotas y Suscripciones",
+        "Cuotas y Suscripciones"
+      ]
+    ],
+    "Medición": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Servicios Profesionales",
+        "Facturación"
+      ],
+      [
+        "Servicios Profesionales",
+        "Lecturas"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Monitoreo"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Medidores"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Cuotas y Suscripciones",
+        "Cuotas y Suscripciones"
+      ],
+      [
+        "Servicios Administrados y Licencias",
+        "Servicios Administrados y Licencias"
+      ]
+    ],
+    "Operación": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Servicios Profesionales",
+        "Facturación"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Comunicaciones",
+        "Internet Tabasco"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Medidores"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Energía",
+        "Energía"
+      ],
+      [
+        "Cuotas y Suscripciones",
+        "Cuotas y Suscripciones"
+      ],
+      [
+        "Derechos y Permisos",
+        "Derechos y Permisos"
+      ],
+      [
+        "Derechos y Permisos",
+        "CRE"
+      ],
+      [
+        "Controles Volumétricos",
+        "Controles Volumétricos"
+      ],
+      [
+        "Servicios Administrados y Licencias",
+        "Servicios Administrados y Licencias"
+      ]
+    ],
+    "Servicios Generales": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Comunicaciones",
+        "Internet Tabasco"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Gastos de Oficina",
+        "Protección Civil"
+      ],
+      [
+        "Gastos de Oficina",
+        "Gastos de Oficina"
+      ],
+      [
+        "Gastos de Oficina",
+        "Luz"
+      ],
+      [
+        "Gastos de Oficina",
+        "Agua"
+      ],
+      [
+        "Gastos de Oficina",
+        "Estacionamiento"
+      ],
+      [
+        "Estacionamiento",
+        "Estacionamiento"
+      ],
+      [
+        "Gastos de Oficina",
+        "Combustible"
+      ],
+      [
+        "Gastos de Oficina",
+        "Limpieza"
+      ],
+      [
+        "Gastos de Oficina",
+        "Mantenimiento Oficina"
+      ],
+      [
+        "Mantenimiento",
+        "Mantenimiento"
+      ],
+      [
+        "Gastos de Oficina",
+        "Impresoras"
+      ],
+      [
+        "Impresoras",
+        "Impresoras"
+      ],
+      [
+        "Gastos de Oficina",
+        "Papelería"
+      ],
+      [
+        "Papelería",
+        "Papelería"
+      ],
+      [
+        "Gastos de Oficina",
+        "Mensajería"
+      ],
+      [
+        "Mensajería",
+        "Mensajería"
+      ],
+      [
+        "Gastos de Oficina",
+        "Autos"
+      ],
+      [
+        "Gastos Autos",
+        "Gastos Autos"
+      ],
+      [
+        "Cuotas y Suscripciones",
+        "Cuotas y Suscripciones"
+      ],
+      [
+        "Derechos y Permisos",
+        "Derechos y Permisos"
+      ]
+    ],
+    "Planta": [
+      [
+        "Otras Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Comunicaciones",
+        "Internet Tabasco"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Protección Civil"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Gastos Generales"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Gastos de Oficina"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Luz Oficina"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Agua Oficina"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Estacionamiento"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Combustible"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Limpieza"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Mantenimiento Oficina"
+      ],
+      [
+        "Derechos y Permisos",
+        "Derechos y Permisos"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Papelería"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Mensajería"
+      ],
+      [
+        "Gastos Generales Planta",
+        "Autos"
+      ],
+      [
+        "Gastos Generales Planta",
+        "EPP"
+      ],
+      [
+        "Servicios Administrados y Licencias",
+        "Servicios Administrados y Licencias"
+      ],
+      [
+        "Seguridad Planta",
+        "Seguridad Planta"
+      ],
+      [
+        "Mantenimiento Planta",
+        "Mantenimiento Planta"
+      ]
+    ],
+    "Contraloría": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ]
+    ],
+    "Compras": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ]
+    ],
+    "IT": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Comunicaciones",
+        "Internet Tabasco"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ],
+      [
+        "Servicios Administrados y Licencias",
+        "Servicios Administrados y Licencias"
+      ]
+    ],
+    "Cuarto Tren": [
+      [
+        "Servicios Profesionales",
+        "Servicios Profesionales"
+      ],
+      [
+        "Consultorías",
+        "Consultorías"
+      ],
+      [
+        "Auditorías",
+        "Auditorías"
+      ],
+      [
+        "Comunicaciones",
+        "Internet"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Celular"
+      ],
+      [
+        "Comunicaciones",
+        "Telefonía Fija"
+      ],
+      [
+        "Comunicaciones",
+        "Otras Comunicaciones"
+      ],
+      [
+        "Instalaciones Técnicas",
+        "Instalaciones Técnicas"
+      ],
+      [
+        "Arrendamientos",
+        "Arrendamientos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta Oficina"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Vehículos"
+      ],
+      [
+        "Arrendamientos",
+        "Renta de Equipo de Cómputo"
+      ],
+      [
+        "Otros",
+        "Otros"
+      ],
+      [
+        "Viajes",
+        "Hospedaje"
+      ],
+      [
+        "Viajes",
+        "Viáticos"
+      ],
+      [
+        "Viajes",
+        "Alimentos"
+      ],
+      [
+        "Viajes",
+        "Transporte"
+      ],
+      [
+        "Viajes",
+        "Renta de autos"
+      ],
+      [
+        "Otros",
+        "No deducibles"
+      ]
+    ],
+    "Fianzas": [
+      [
+        "Amparo tarifas porteo",
+        "No deducibles"
+      ],
+      [
+        "Amparo tarifas porteo",
+        "Amparo tarifas porteo"
+      ]
+    ],
+    "Seguros": [
+      [
+        "Seguros",
+        "No deducibles"
+      ],
+      [
+        "Seguros",
+        "Planta"
+      ],
+      [
+        "Seguros",
+        "Vehículos"
+      ],
+      [
+        "Seguros",
+        "Oficinas"
+      ]
+    ]
+  },
+  "avisos": [
+    "NAES: 1 cuenta(s) sin Descripción 2 o 3; no entran al catálogo",
+    "Cuarto Tren: 6 cuenta(s) sin Descripción 2 o 3; no entran al catálogo"
+  ]
+}

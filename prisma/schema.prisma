@@ -1928,6 +1928,7 @@ model fpa_departments {
   profiles                                           profiles?          @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fpa_areas_fpa_areas_department_idTofpa_departments fpa_areas[]        @relation("fpa_areas_department_idTofpa_departments")
   fpa_budget_lines                                   fpa_budget_lines[]
+  fpa_department_classifications                     fpa_department_classifications[]
 
   @@index([area_id], map: "idx_fpa_departments_area")
 }
@@ -1982,8 +1983,27 @@ model fpa_classifications {
   fpa_categories   fpa_categories     @relation(fields: [category_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   profiles         profiles?          @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fpa_budget_lines fpa_budget_lines[]
+  fpa_department_classifications fpa_department_classifications[]
 
   @@unique([category_id, name], map: "uq_fpa_classifications_name")
+}
+
+/// C1 (0024): clasificaciones que el Chart of Accounts le da a cada
+/// departamento; el área ve en la captura las de sus departamentos (una
+/// clasificación sin filas la ven todas). created_by lleva su FK en SQL; aquí
+/// va sin relación para no tocar el modelo profiles.
+model fpa_department_classifications {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  department_id     String              @db.Uuid
+  classification_id String              @db.Uuid
+  is_active         Boolean             @default(true)
+  created_by        String?             @db.Uuid
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
+  fpa_departments     fpa_departments     @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fpa_classifications fpa_classifications @relation(fields: [classification_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([department_id, classification_id], map: "uq_fpa_department_classifications")
 }
 
 /// A2 (0021): versión de un ejercicio. kind: presupuesto | forecast |
