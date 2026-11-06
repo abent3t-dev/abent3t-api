@@ -196,15 +196,16 @@ export async function cargarAreas(
       },
     });
     const quedan: string[] = [];
+    const nombrePapel = (duty: string, alterna: boolean) =>
+      duty === 'captura'
+        ? alterna
+          ? 'también captura'
+          : 'captura'
+        : alterna
+          ? 'suplente de aprobación'
+          : 'aprueba';
     for (const r of responsablesDe(a)) {
-      const papel =
-        r.duty === 'captura'
-          ? r.is_alternate
-            ? 'también captura'
-            : 'captura'
-          : r.is_alternate
-            ? 'suplente de aprobación'
-            : 'aprueba';
+      const papel = nombrePapel(r.duty, r.is_alternate);
       const perfil = perfilDe(r.email);
       if (!perfil) {
         const lista = faltanPorCorreo.get(r.email) ?? [];
@@ -223,7 +224,7 @@ export async function cargarAreas(
             `${a.area}: ${r.email} ya está en ${r.duty} como ${suya.is_alternate ? 'suplente' : 'titular'}; se deja así`,
           );
         }
-        quedan.push(`${papel}: ${r.email}`);
+        quedan.push(`${nombrePapel(suya.duty, suya.is_alternate)}: ${r.email}`);
         continue;
       }
       let alterna = r.is_alternate;
@@ -257,7 +258,7 @@ export async function cargarAreas(
           ? 'responsables de captura'
           : 'responsables de aprobación',
       );
-      quedan.push(`${papel}: ${r.email}`);
+      quedan.push(`${nombrePapel(r.duty, alterna)}: ${r.email}`);
     }
     porArea.push(
       `${a.area}: ${quedan.length ? quedan.join('; ') : 'nadie registrado'}${a.pendiente ? ` · pendiente: ${a.pendiente}` : ''}`,
