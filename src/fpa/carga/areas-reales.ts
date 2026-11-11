@@ -1,20 +1,21 @@
 /**
- * FP&A (bloque C, C2) — las 13 áreas reales con su gente.
+ * FP&A (bloque C, C2) — las áreas reales con su gente (14 desde el 10-nov).
  *
  * Fuente: la relación de capturistas que Laura mandó el 27-oct
  * (`Relación capturistas y aprobadores por departamento.xlsx`, Hoja1!B2:D15;
- * FPA.md, "Reunión del 26-oct", punto 4.2) y lo acordado el 4-nov (FPA.md,
- * "Reunión del 4-nov", "Cómo quedan las firmas"):
+ * FPA.md, "Reunión del 26-oct", punto 4.2), con lo que ella actualizó el
+ * 10-nov (NAES la captura alfredo.moreno y Seguros, ella misma), y lo acordado
+ * el 4-nov (FPA.md, "Reunión del 4-nov", "Cómo quedan las firmas"):
  *   - captura: el primero de la relación es el titular y los demás "también
  *     capturan" (filas de suplente);
- *   - aprueba: Laura titular y Liliana suplente en todas las áreas; en DG y
- *     Finanzas, solo Liliana, porque Laura las captura (la base no deja que
- *     quien captura un área la apruebe).
+ *   - aprueba: Laura titular y Liliana suplente en todas las áreas; en DG,
+ *     Finanzas y Seguros, solo Liliana, porque Laura las captura (la base no
+ *     deja que quien captura un área la apruebe).
  *
- * Fuera, y en la lista de lo que falta de Laura: Seguros (no viene en la
- * relación) y quien captura NAES (acxa.may@naes.com, que no entra con
- * Microsoft). Uriel no se registra en Finanzas: si él envía, nadie puede
- * firmar el paso del CFO (FPA.md, 4-nov).
+ * La columna "Aprobación" de la relación (Denisse, Gilberto, Guillermo…) no se
+ * usa: desde el 4-nov esos líderes revisan con su equipo antes de enviar y no
+ * firman en la plataforma. Uriel no se registra en Finanzas: si él envía,
+ * nadie puede firmar el paso del CFO (FPA.md, 4-nov).
  */
 
 export const DOMINIO = '@abent3t.com';
@@ -60,13 +61,7 @@ export const AREAS_REALES: AreaReal[] = [
     captura: ['gilberto.maltos', 'noemi.velazquez'],
   },
   { area: 'GE', departamento: 'GE', captura: ['gilberto.maltos'] },
-  {
-    area: 'NAES',
-    departamento: 'NAES',
-    captura: [],
-    pendiente:
-      'quién captura: la relación trae acxa.may@naes.com, que no entra con Microsoft',
-  },
+  { area: 'NAES', departamento: 'NAES', captura: ['alfredo.moreno'] },
   {
     area: 'Comercial',
     departamento: 'Comercial',
@@ -97,16 +92,23 @@ export const AREAS_REALES: AreaReal[] = [
       'uriel.lases no se registra para capturar: si él envía, nadie puede firmar el paso del CFO',
   },
   {
+    area: 'Seguros',
+    departamento: 'Seguros',
+    captura: ['laura.montano'],
+    aprueba: ['liliana.martinez'],
+  },
+  {
     area: 'Legal',
     departamento: 'Legal',
     captura: ['graciela.herrera', 'erin.valverde', 'roberto.martinez'],
   },
 ];
 
-/** Áreas del control que no vienen en la relación (se listan, no se crean). */
-export const AREAS_PENDIENTES = [
-  'Seguros (GSGAD018): no viene en la relación; falta quién captura',
-];
+/**
+ * Áreas del control que no vienen en la relación (se listan, no se crean).
+ * Vacía desde el 10-nov, cuando Laura agregó Seguros.
+ */
+export const AREAS_PENDIENTES: string[] = [];
 
 export interface Responsable {
   email: string;

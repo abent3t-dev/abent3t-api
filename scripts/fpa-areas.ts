@@ -1,7 +1,8 @@
 /**
- * FP&A (bloque C, C2) — da de alta las 13 áreas reales con su gente
- * (documentation/TAREAS_FPA_2026-11-04.md, C2). Los datos y las reglas viven
- * en src/fpa/carga/areas-reales.ts, con pruebas.
+ * FP&A (bloque C, C2) — da de alta las áreas reales con su gente
+ * (documentation/TAREAS_FPA_2026-11-04.md, C2): 13 el 9-nov y Seguros desde
+ * el 10-nov. Los datos y las reglas viven en src/fpa/carga/areas-reales.ts,
+ * con pruebas.
  *
  * Qué hace:
  *   1. cada área con su departamento propio, el del COA (lo crea fpa:catalogo,
@@ -15,7 +16,7 @@
  *      - no da roles: el rol fpa_area se da cuando César les dé acceso;
  *      - si el área ya tiene otro titular, lo respeta y registra al de la
  *        relación como "también captura" (o suplente);
- *   4. lista lo que falta de Laura: Seguros, quién captura NAES y Uriel.
+ *   4. lista lo que sigue pendiente de Laura (Uriel en Finanzas).
  *
  * Idempotente: lo que ya existe se reusa y nada se borra. Al final comprueba
  * que el total de cada versión no se movió.
@@ -49,7 +50,8 @@ import {
 } from './fpa-comun';
 
 const PERFILES_DE_PRUEBA = process.argv.includes('--perfiles-de-prueba');
-const NOTA = 'Relación de capturistas (27-oct) y reunión del 4-nov';
+const NOTA =
+  'Relación de capturistas (27-oct, actualizada por Laura el 10-nov) y reunión del 4-nov';
 
 interface Resultado {
   problemas: string[];

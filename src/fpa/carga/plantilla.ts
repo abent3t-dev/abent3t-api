@@ -429,6 +429,8 @@ export const SECCIONES: Record<string, { area: string; departamento: string }> =
       departamento: 'Dirección General',
     },
     [clave('Finanzas')]: { area: 'Finanzas', departamento: 'Finanzas' },
+    // Área desde el 10-nov; en el COA también es la categoría de las pólizas
+    [clave('Seguros')]: { area: 'Seguros', departamento: 'Seguros' },
   };
 
 /** Supuestos para decidir con Laura: nombres del archivo que no son del COA. */
