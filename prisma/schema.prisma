@@ -2030,6 +2030,8 @@ model fpa_versions {
   params_updated_at  DateTime?            @db.Timestamptz(6)
   params_approved_by String?              @db.Uuid
   params_approved_at DateTime?            @db.Timestamptz(6)
+  /// C4 (0025): último día (hora de México) para capturar y enviar; null = sin fecha
+  capture_deadline   DateTime?            @db.Date
   fpa_versions       fpa_versions?        @relation("fpa_versionsTofpa_versions", fields: [base_version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   other_fpa_versions fpa_versions[]       @relation("fpa_versionsTofpa_versions")
   profiles_fpa_versions_created_byToprofiles         profiles? @relation("fpa_versions_created_byToprofiles", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -2116,6 +2118,10 @@ model fpa_budgets {
   created_by        String?             @db.Uuid
   created_at        DateTime            @default(now()) @db.Timestamptz(6)
   updated_at        DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
+  /// C4 (0025): prórroga del área (hasta qué día, quién y cuándo); sin relación a profiles para no tocar ese modelo
+  capture_extended_until DateTime?       @db.Date
+  capture_extended_by    String?         @db.Uuid
+  capture_extended_at    DateTime?       @db.Timestamptz(6)
   fpa_versions      fpa_versions        @relation(fields: [version_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fpa_areas         fpa_areas           @relation(fields: [area_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   profiles          profiles?           @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)

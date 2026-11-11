@@ -105,6 +105,8 @@ describe('FP&A — modelo de acceso del controller', () => {
         'POST /fpa/presupuestos/:id/rechazar',
         'POST /fpa/presupuestos/:id/retirar',
         'POST /fpa/presupuestos/:id/reabrir',
+        'PUT /fpa/versiones/:id/fecha-limite',
+        'POST /fpa/presupuestos/:id/prorroga',
       ].sort(),
     );
   });
@@ -151,10 +153,23 @@ describe('FP&A — modelo de acceso del controller', () => {
     const writes = routes.filter(
       (r) => r.method !== 'GET' && r.route.startsWith('/fpa/versiones'),
     );
-    expect(writes).toHaveLength(8);
+    expect(writes).toHaveLength(9);
     for (const r of writes) {
       expect([...(r.roles ?? [])].sort()).toEqual([...FPA_ADMIN].sort());
     }
+  });
+
+  it('la fecha límite de captura y la prórroga de un área son de planeación (C4)', () => {
+    const fecha = routes.find(
+      (r) =>
+        r.method === 'PUT' && r.route === '/fpa/versiones/:id/fecha-limite',
+    );
+    const prorroga = routes.find(
+      (r) =>
+        r.method === 'POST' && r.route === '/fpa/presupuestos/:id/prorroga',
+    );
+    expect([...(fecha?.roles ?? [])].sort()).toEqual([...FPA_ADMIN].sort());
+    expect([...(prorroga?.roles ?? [])].sort()).toEqual([...FPA_ADMIN].sort());
   });
 
   it('el flujo (B3): enviar y retirar de quien captura, decidir de los cuatro roles, reabrir de planeación', () => {

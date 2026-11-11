@@ -42,6 +42,19 @@ import {
   type Step,
 } from './fpa-flow';
 import type { FpaFlowActionDto } from './dto/fpa-flow.dto';
+import {
+  LATE_LIST_BUSINESS_DAYS,
+  NOTICE_BUSINESS_DAYS,
+  captureUntil,
+  captureWindow,
+  dateOf,
+  dayLabel,
+  dayOf,
+  nextDay,
+  pastDeadline,
+  todayMx,
+  type DeadlineInput,
+} from './fpa-deadline';
 
 /**
  * FP&A (B3) — flujo de aprobación de un presupuesto: enviar, aprobar (área,
@@ -60,6 +73,9 @@ import type { FpaFlowActionDto } from './dto/fpa-flow.dto';
  * - Los avisos: el correo entra a la cola en la misma transacción (con la
  *   llave del presupuesto, la ronda y el paso) y el aviso en pantalla
  *   (user:{id}) sale al terminar. Nunca por sala de rol.
+ * - C4: la fecha de captura (fpa-deadline.ts) entra al estado del flujo, y el
+ *   recordatorio diario avisa a quien captura antes de que cierre y a
+ *   planeación de las áreas que no enviaron.
  */
 
 type Db = Prisma.TransactionClient | PrismaService;
@@ -100,7 +116,14 @@ const PERSON_SELECT = { id: true, full_name: true, email: true } as const;
 const BUDGET_INCLUDE = {
   fpa_areas: { select: { id: true, name: true } },
   fpa_versions: {
-    select: { id: true, code: true, name: true, status: true, is_active: true },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      status: true,
+      is_active: true,
+      capture_deadline: true,
+    },
   },
 } satisfies Prisma.fpa_budgetsInclude;
 
@@ -264,13 +287,25 @@ export class FpaFlowService {
     return { budget, assignments, events };
   }
 
+  /** C4: la fecha de captura del presupuesto, para las reglas. */
+  private deadlineInput(budget: BudgetRow): DeadlineInput {
+    return {
+      version_status: budget.fpa_versions.status,
+      status: budget.status,
+      deadline: dayOf(budget.fpa_versions.capture_deadline),
+      extended_until: dayOf(budget.capture_extended_until),
+    };
+  }
+
   private state(
     l: Loaded,
     content: { line_count: number; has_unavailable: boolean } = {
       line_count: 0,
       has_unavailable: false,
     },
+    now: Date = new Date(),
   ): FlowState {
+    const d = this.deadlineInput(l.budget);
     return {
       status: l.budget.status as BudgetStatus,
       round: l.budget.current_round,
@@ -289,6 +324,8 @@ export class FpaFlowService {
         actor_profile_id: e.actor_profile_id,
       })),
       ...content,
+      capture_until: captureUntil(d.deadline, d.extended_until),
+      past_deadline: pastDeadline(d, todayMx(now)),
     };
   }
 
@@ -489,6 +526,7 @@ export class FpaFlowService {
     await this.assertCanSee(user, l);
     const s = this.state(l, await this.content(this.prisma, l));
     const turn = await this.turn(this.prisma, s, l);
+    const capture = captureWindow(this.deadlineInput(l.budget), todayMx());
     const photos = await this.prisma.fpa_budget_events.findMany({
       where: { budget_id: budgetId, action: 'enviado' },
       select: { round: true, snapshot: true },
@@ -533,10 +571,14 @@ export class FpaFlowService {
           name: l.budget.fpa_versions.name,
           status: l.budget.fpa_versions.status,
         },
+        capture,
       },
       turn: {
         step: turn.step,
-        label: turnLabel(s.status, s.round),
+        label:
+          capture.closed && capture.until
+            ? `Fuera de tiempo: la captura cerró el ${dayLabel(capture.until)} sin que se enviara`
+            : turnLabel(s.status, s.round),
         rule: turn.rule,
         who: turn.people.map((p) => ({
           id: p.id,
@@ -917,16 +959,27 @@ export class FpaFlowService {
   private async enqueue(
     tx: Prisma.TransactionClient | undefined,
     to: Contact,
-    notice: { template: string; entityId: string },
+    notice: {
+      template: string;
+      entityId: string;
+      /** El día de la llave (por omisión, hoy): un aviso que sale una sola vez lo fija. */
+      at?: Date;
+      /** Otra liga en vez de la del presupuesto (p. ej. la lista de una versión). */
+      link?: { path: string; label: string };
+    },
     subject: string,
     lines: string[],
     budgetId: string,
   ) {
     const base = frontendUrl();
+    const link = notice.link ?? {
+      path: `/fpa/presupuestos/${budgetId}`,
+      label: 'Abrir el presupuesto',
+    };
     const body = [
       `<p>Hola, <strong>${esc(to.full_name)}</strong>:</p>`,
       ...lines.map((line) => `<p>${line}</p>`),
-      `<p><a href="${esc(`${base}/fpa/presupuestos/${budgetId}`)}">Abrir el presupuesto</a> · <a href="${esc(`${base}/fpa/pendientes`)}">Mis pendientes de FP&amp;A</a></p>`,
+      `<p><a href="${esc(`${base}${link.path}`)}">${esc(link.label)}</a> · <a href="${esc(`${base}/fpa/pendientes`)}">Mis pendientes de FP&amp;A</a></p>`,
       '<p style="color:#666;font-size:12px">Mensaje automático de FP&amp;A, plataforma ABENT 3T.</p>',
     ].join('\n');
     await this.email.enqueue(
@@ -938,6 +991,7 @@ export class FpaFlowService {
         subject: subject.replace(/\s+/g, ' '),
         body,
         isHtml: true,
+        ...(notice.at ? { at: notice.at } : {}),
       },
       tx,
     );
@@ -1190,6 +1244,142 @@ export class FpaFlowService {
     if (result.reminded > 0 || result.errors.length > 0) {
       this.logger.log(
         `Recordatorios de FP&A: revisados=${result.checked} enviados=${result.reminded} errores=${result.errors.length}`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * C4 — avisos de la fecha de captura, en día hábil (con el recordatorio):
+   * - a quien captura un área que no ha enviado, cuando faltan 2 días hábiles
+   *   o menos para su fecha (la de la versión o su prórroga);
+   * - a planeación, la lista de las áreas que no enviaron, en los 3 días
+   *   hábiles que siguen a la fecha (más tarde ya no: no avisa de fechas
+   *   viejas).
+   *
+   * Cada aviso sale una vez por fecha: la llave de la cola lleva la fecha, así
+   * que si un día no corre, sale al siguiente, y si la fecha cambia, vuelve a
+   * salir. Nunca revienta.
+   */
+  async runDeadlineCheck(now: Date = new Date()) {
+    const result = { checked: 0, notified: 0, late: 0, errors: [] as string[] };
+    const today = todayMx(now);
+    if ((await this.businessDays.calculate(today, today)) === 0) return result;
+    const budgets = await this.prisma.fpa_budgets.findMany({
+      where: {
+        is_active: true,
+        status: 'borrador',
+        fpa_versions: {
+          is_active: true,
+          status: 'captura',
+          capture_deadline: { not: null },
+        },
+      },
+      include: BUDGET_INCLUDE,
+      orderBy: { fpa_areas: { sort_order: 'asc' } },
+    });
+    result.checked = budgets.length;
+    // Las que ya cerraron, por versión y fecha: van en una sola lista a planeación
+    const late = new Map<
+      string,
+      { budget: BudgetRow; until: string; areas: string[] }
+    >();
+    for (const b of budgets) {
+      try {
+        const until = captureUntil(
+          dayOf(b.fpa_versions.capture_deadline),
+          dayOf(b.capture_extended_until),
+        );
+        if (!until) continue;
+        const area = b.fpa_areas.name;
+        const code = b.fpa_versions.code;
+        if (today > until) {
+          const after = await this.businessDays.calculate(
+            nextDay(until),
+            today,
+          );
+          if (after > LATE_LIST_BUSINESS_DAYS) continue;
+          const key = `${b.version_id}:${until}`;
+          const group = late.get(key) ?? { budget: b, until, areas: [] };
+          group.areas.push(area);
+          late.set(key, group);
+          continue;
+        }
+        const left =
+          today === until
+            ? 0
+            : await this.businessDays.calculate(nextDay(today), until);
+        if (left > NOTICE_BUSINESS_DAYS) continue;
+        const capturers = await this.prisma.fpa_assignments.findMany({
+          where: { is_active: true, area_id: b.area_id, duty: 'captura' },
+          include: ASSIGNMENT_INCLUDE,
+          orderBy: { created_at: 'asc' },
+        });
+        const when =
+          left === 0
+            ? `cierra hoy, ${dayLabel(until)}`
+            : `cierra el ${dayLabel(until)}`;
+        for (const a of capturers) {
+          await this.enqueue(
+            undefined,
+            toContact(a.profiles_fpa_assignments_profile_idToprofiles),
+            {
+              template: 'fpa_fecha_captura',
+              entityId: `${b.id}:fecha:${until}`,
+              at: dateOf(until),
+            },
+            `[ABENT 3T] FP&A: la captura de ${area} (${code}) ${when}`,
+            [
+              `El presupuesto de <strong>${esc(area)}</strong> (${esc(code)}) todavía no se envía, y la captura ${esc(when)}.`,
+              'Después de esa fecha ya no se podrá capturar ni enviar sin una prórroga de planeación.',
+            ],
+            b.id,
+          );
+        }
+        if (capturers.length > 0) result.notified += 1;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.errors.push(`${b.id}: ${msg}`);
+      }
+    }
+    if (late.size > 0) {
+      const planeacion = (await this.unblockers(this.prisma)).email;
+      for (const g of late.values()) {
+        try {
+          const code = g.budget.fpa_versions.code;
+          const n = g.areas.length;
+          for (const p of planeacion) {
+            await this.enqueue(
+              undefined,
+              p,
+              {
+                template: 'fpa_fecha_vencida',
+                entityId: `${g.budget.version_id}:vencida:${g.until}`,
+                at: dateOf(g.until),
+                link: {
+                  path: `/fpa?version=${g.budget.version_id}`,
+                  label: 'Abrir Presupuestos',
+                },
+              },
+              `[ABENT 3T] FP&A: ${n === 1 ? '1 área no envió' : `${n} áreas no enviaron`} su presupuesto ${code} (la captura cerró el ${dayLabel(g.until)})`,
+              [
+                `La captura de la ${esc(code)} cerró el ${dayLabel(g.until)}, y ${n === 1 ? 'esta área no envió su presupuesto' : 'estas áreas no enviaron su presupuesto'}:`,
+                `<ul>${g.areas.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>`,
+                'Ya no capturan ni envían. Desde el presupuesto de cada una le puedes dar una prórroga.',
+              ],
+              g.budget.id,
+            );
+          }
+          if (planeacion.length > 0) result.late += 1;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          result.errors.push(`${g.budget.version_id}: ${msg}`);
+        }
+      }
+    }
+    if (result.notified > 0 || result.late > 0 || result.errors.length > 0) {
+      this.logger.log(
+        `Fechas de captura de FP&A: revisados=${result.checked} avisos=${result.notified} listas=${result.late} errores=${result.errors.length}`,
       );
     }
     return result;

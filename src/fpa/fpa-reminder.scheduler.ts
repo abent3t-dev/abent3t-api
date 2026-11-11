@@ -5,7 +5,8 @@ import { FpaFlowService } from './fpa-flow.service';
 /**
  * FP&A (B3) — recordatorio diario a quien tiene un turno de firma que lleva
  * más de 2 días hábiles (diseño §4). 08:25 CDMX, después de contratos (08:00)
- * y del comité (08:15). Solo en días hábiles. Nunca revienta.
+ * y del comité (08:15). Solo en días hábiles. Nunca revienta. Desde C4,
+ * también el aviso de la fecha de captura (runDeadlineCheck).
  *
  * FpaModule no importa ScheduleModule.forRoot(): el cron lo registran los
  * forRoot() que ya importan otros módulos, y cada uno lo registra otra vez
@@ -30,6 +31,13 @@ export class FpaReminderScheduler {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Recordatorio de FP&A falló: ${msg}`);
+    }
+    // C4: el aviso de la fecha de captura, con el mismo candado
+    try {
+      await this.flow.runDeadlineCheck();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Aviso de la fecha de captura de FP&A falló: ${msg}`);
     } finally {
       this.running = false;
     }

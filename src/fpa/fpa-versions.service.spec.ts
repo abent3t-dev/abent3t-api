@@ -231,6 +231,11 @@ const matches = (
   relations: Relations = {},
 ): boolean =>
   Object.entries(where).every(([k, v]) => {
+    if (k === 'OR') {
+      return (v as Record<string, unknown>[]).some((w) =>
+        matches(row, w, relations),
+      );
+    }
     if (k in relations) {
       const related = relations[k](row);
       return !!related && matches(related, v as Record<string, unknown>);
@@ -243,6 +248,9 @@ const matches = (
     ) {
       const cond = v as Record<string, unknown>;
       if ('in' in cond) return (cond.in as unknown[]).includes(row[k]);
+      if ('not' in cond && cond.not === null) {
+        return row[k] !== null && row[k] !== undefined;
+      }
       if ('equals' in cond) {
         return (
           String(row[k]).toLowerCase() === String(cond.equals).toLowerCase()
@@ -459,11 +467,42 @@ function fakePrisma(store: Store) {
         },
       ),
     },
-    fpa_budgets: table(
-      store.budgets,
-      {},
-      { status: 'borrador', current_round: 0 },
-    ),
+    fpa_budgets: {
+      ...table(store.budgets, {}, { status: 'borrador', current_round: 0 }),
+      // C4: el área y la versión salen como relación cuando se piden
+      findMany: jest.fn(
+        ({
+          where,
+          select,
+        }: {
+          where?: Record<string, unknown>;
+          select?: Record<string, unknown>;
+        } = {}) =>
+          Promise.resolve(
+            store.budgets
+              .filter((r) => matches(r, where))
+              .map((r) => ({
+                ...pick(r, select as Record<string, boolean> | undefined),
+                ...(select?.fpa_areas
+                  ? { fpa_areas: store.areas.find((a) => a.id === r.area_id) }
+                  : {}),
+              })),
+          ),
+      ),
+      findFirst: jest.fn(({ where }: { where: Record<string, unknown> }) => {
+        const b = store.budgets.find((r) => matches(r, where));
+        return Promise.resolve(
+          b
+            ? {
+                capture_extended_until: null,
+                ...b,
+                fpa_areas: store.areas.find((a) => a.id === b.area_id),
+                fpa_versions: store.versions.find((v) => v.id === b.version_id),
+              }
+            : null,
+        );
+      }),
+    },
     fpa_budget_lines: table(store.lines, {
       fpa_budgets: (l) => store.budgets.find((b) => b.id === l.budget_id),
     }),
@@ -1141,5 +1180,158 @@ describe('FpaService — firmantes de planeación y del CFO', () => {
     await expect(
       fpa.assignSigner(LAURA, { duty: 'cfo', profile_id: 'diana' }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('FpaVersionsService — fecha límite de captura y prórroga (C4)', () => {
+  // Hoy es el 10-nov (mediodía en México): las fechas de las pruebas no caducan
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.setSystemTime(new Date('2026-11-10T18:00:00Z'));
+  });
+  afterEach(() => jest.useRealTimers());
+
+  const b26 = (store: Store) => store.versions.find((v) => v.id === 'b26')!;
+  const budget = (store: Store, id: string) =>
+    store.budgets.find((b) => b.id === id)!;
+
+  it('Laura pone la fecha de la B-26 abierta: queda en el historial y el visto bueno se queda', async () => {
+    const { store, service } = setup();
+    const approvedAt = new Date('2026-10-28T17:00:00Z');
+    Object.assign(b26(store), {
+      params_approved_by: 'david',
+      params_approved_at: approvedAt,
+    });
+    const detail = await service.setDeadline(LAURA, 'b26', {
+      capture_deadline: '2026-11-20',
+      comment: 'Una fecha para todas las áreas',
+    });
+    expect(b26(store).capture_deadline).toEqual(
+      new Date('2026-11-20T00:00:00.000Z'),
+    );
+    expect(b26(store).params_approved_at).toBe(approvedAt);
+    expect(lastEvent(store)).toMatchObject({
+      version_id: 'b26',
+      action: 'fecha_limite',
+      from_status: null,
+      to_status: null,
+      detail: { schema: 1, antes: null, despues: '2026-11-20' },
+      comment: 'Una fecha para todas las áreas',
+      actor_profile_id: 'laura',
+      acting_as: 'rol',
+    });
+    expect(detail.version.capture_deadline).toBe('2026-11-20');
+    expect(detail.actions.set_deadline).toEqual({ ok: true, reason: null });
+  });
+
+  it('el mismo día no hace nada; null la quita y también queda', async () => {
+    const { store, service } = setup();
+    await service.setDeadline(LAURA, 'b26', { capture_deadline: '2026-11-20' });
+    const events = store.events.length;
+    await service.setDeadline(LAURA, 'b26', { capture_deadline: '2026-11-20' });
+    expect(store.events).toHaveLength(events);
+    await service.setDeadline(LAURA, 'b26', { capture_deadline: null });
+    expect(b26(store).capture_deadline).toBeNull();
+    expect(lastEvent(store).detail).toEqual({
+      schema: 1,
+      antes: '2026-11-20',
+      despues: null,
+    });
+  });
+
+  it('un día que ya pasó o que no existe no pasa (400); hoy sí', async () => {
+    const { service } = setup();
+    await expect(
+      service.setDeadline(LAURA, 'b26', { capture_deadline: '2026-11-09' }),
+    ).rejects.toThrow('La fecha límite no puede ser un día que ya pasó');
+    await expect(
+      service.setDeadline(LAURA, 'b26', { capture_deadline: '2026-02-30' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.setDeadline(LAURA, 'b26', { capture_deadline: '2026-11-10' }),
+    ).resolves.toBeDefined();
+  });
+
+  it('una versión cerrada no cambia (409) y el CFO no la pone (403)', async () => {
+    const { store, service } = setup();
+    b26(store).status = 'cerrada';
+    await expect(
+      service.setDeadline(LAURA, 'b26', { capture_deadline: '2026-11-20' }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      service.setDeadline(URIEL, 'b26', { capture_deadline: '2026-11-20' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('prórroga a Compras: queda quién y cuándo, y el evento con el área', async () => {
+    const { store, service } = setup();
+    b26(store).capture_deadline = new Date('2026-11-20T00:00:00Z');
+    await expect(
+      service.extendCapture(LAURA, 'bud-compras', {
+        until: '2026-11-25',
+        comment: 'Le falta la cotización de licencias',
+      }),
+    ).resolves.toEqual({ budget_id: 'bud-compras', until: '2026-11-25' });
+    expect(budget(store, 'bud-compras')).toMatchObject({
+      capture_extended_until: new Date('2026-11-25T00:00:00.000Z'),
+      capture_extended_by: 'laura',
+    });
+    expect(budget(store, 'bud-compras').capture_extended_at).toBeInstanceOf(
+      Date,
+    );
+    expect(lastEvent(store)).toMatchObject({
+      version_id: 'b26',
+      action: 'prorroga',
+      detail: {
+        schema: 1,
+        presupuesto: 'bud-compras',
+        area: 'Compras',
+        antes: null,
+        despues: '2026-11-25',
+      },
+      comment: 'Le falta la cotización de licencias',
+    });
+    // quitarla deja la fila sin prórroga
+    await service.extendCapture(LAURA, 'bud-compras', { until: null });
+    expect(budget(store, 'bud-compras')).toMatchObject({
+      capture_extended_until: null,
+      capture_extended_by: null,
+      capture_extended_at: null,
+    });
+  });
+
+  it('sin fecha en la versión no hay prórroga (409); antes o el mismo día de la fecha, tampoco (400)', async () => {
+    const { store, service } = setup();
+    await expect(
+      service.extendCapture(LAURA, 'bud-compras', { until: '2026-11-25' }),
+    ).rejects.toThrow('La versión no tiene fecha límite');
+    b26(store).capture_deadline = new Date('2026-11-20T00:00:00Z');
+    await expect(
+      service.extendCapture(LAURA, 'bud-compras', { until: '2026-11-20' }),
+    ).rejects.toThrow(
+      'La prórroga va después de la fecha límite de la versión (20 de noviembre de 2026)',
+    );
+    await expect(
+      service.extendCapture(DIANA, 'bud-compras', { until: '2026-11-25' }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('el detalle dice qué áreas ya no capturan y cuáles tienen prórroga', async () => {
+    const { store, service } = setup();
+    b26(store).capture_deadline = new Date('2026-11-20T00:00:00Z');
+    Object.assign(budget(store, 'bud-compras'), {
+      capture_extended_until: new Date('2026-11-25T00:00:00Z'),
+      capture_extended_by: 'laura',
+      capture_extended_at: new Date(),
+    });
+    jest.setSystemTime(new Date('2026-11-23T18:00:00Z'));
+    const detail = await service.detail(LAURA, 'b26');
+    expect(detail.capture).toEqual({
+      deadline: '2026-11-20',
+      closed_areas: [{ budget_id: 'bud-planta', area: 'Planta' }],
+      extensions: [
+        { budget_id: 'bud-compras', area: 'Compras', until: '2026-11-25' },
+      ],
+    });
   });
 });

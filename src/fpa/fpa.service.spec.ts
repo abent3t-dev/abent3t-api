@@ -173,8 +173,12 @@ const CLASSIFICATIONS: Record<
  * Prisma en memoria: solo lo que usa el service en estos casos.
  * `lockedStatus`: el estado que encuentra el candado dentro de la transacción,
  * para simular que alguien envió el presupuesto entre la revisión y el guardado.
+ * `lockedDeadline`: la fecha límite que encuentra el candado (C4), para
+ * simular que planeación la puso entre la revisión y el guardado.
  */
-function fakePrisma(opts: { lockedStatus?: string } = {}) {
+function fakePrisma(
+  opts: { lockedStatus?: string; lockedDeadline?: Date } = {},
+) {
   const created: {
     line?: Record<string, unknown>;
     months: Record<string, unknown>[];
@@ -384,6 +388,12 @@ function fakePrisma(opts: { lockedStatus?: string } = {}) {
             is_active: b.is_active,
             version_status: v.status,
             code: v.code,
+            capture_deadline:
+              opts.lockedDeadline ??
+              (v as Record<string, unknown>).capture_deadline ??
+              null,
+            capture_extended_until:
+              (b as Record<string, unknown>).capture_extended_until ?? null,
           },
         ]);
       }
@@ -911,5 +921,74 @@ describe('FpaService — catálogo (C1)', () => {
         cost_center: 'GSGAD012',
       },
     ]);
+  });
+});
+
+describe('FpaService — fecha límite de captura (C4)', () => {
+  const b26 = VERSIONS['b-26'] as Record<string, unknown>;
+  const budA = BUDGETS['bud-a'] as Record<string, unknown>;
+
+  // Lunes 23-nov: la fecha de la B-26 fue el viernes 20
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.setSystemTime(new Date('2026-11-23T18:00:00Z'));
+    b26.capture_deadline = new Date('2026-11-20T00:00:00Z');
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    delete b26.capture_deadline;
+    delete budA.capture_extended_until;
+  });
+
+  it('pasada la fecha, quien captura un área que no envió ya no agrega líneas (409); planeación sí', async () => {
+    const prisma = fakePrisma();
+    const service = new FpaService(prisma as unknown as PrismaService);
+    await expect(service.createLine(CAP_A, 'bud-a', ELVA)).rejects.toThrow(
+      'La captura cerró el 20 de noviembre de 2026: planeación puede darle una prórroga al área',
+    );
+    expect(prisma.fpa_budget_lines.create).not.toHaveBeenCalled();
+    await expect(
+      service.createLine(PLAN, 'bud-a', ELVA),
+    ).resolves.toMatchObject({ total_mxn: '30000.00' });
+  });
+
+  it('con prórroga, el área vuelve a capturar hasta ese día', async () => {
+    budA.capture_extended_until = new Date('2026-11-25T00:00:00Z');
+    const service = new FpaService(fakePrisma() as unknown as PrismaService);
+    await expect(
+      service.createLine(CAP_A, 'bud-a', ELVA),
+    ).resolves.toMatchObject({ total_mxn: '30000.00' });
+  });
+
+  it('la lista y el detalle dicen hasta cuándo, y que ya cerró (sin el botón de capturar)', async () => {
+    const service = new FpaService(fakePrisma() as unknown as PrismaService);
+    const list = await service.listBudgets(CAP_A, 'b-26');
+    const a = list.find((b) => b.id === 'bud-a');
+    expect(a?.can_edit).toBe(false);
+    expect(a?.capture).toEqual({
+      deadline: '2026-11-20',
+      extended_until: null,
+      until: '2026-11-20',
+      closed: true,
+    });
+    const detail = await service.getBudget(CAP_A, 'bud-a');
+    expect(detail.version.capture_deadline).toBe('2026-11-20');
+    expect(detail.capture.closed).toBe(true);
+    expect(detail.capture_extension).toBeNull();
+    // planeación sí edita
+    const forPlan = await service.listBudgets(PLAN, 'b-26');
+    expect(forPlan.find((b) => b.id === 'bud-a')?.can_edit).toBe(true);
+  });
+
+  it('el candado vuelve a revisar la fecha dentro de la transacción', async () => {
+    delete b26.capture_deadline;
+    const racing = fakePrisma({
+      lockedDeadline: new Date('2026-11-20T00:00:00Z'),
+    });
+    const svc = new FpaService(racing as unknown as PrismaService);
+    await expect(svc.createLine(CAP_A, 'bud-a', ELVA)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(racing.fpa_budget_lines.create).not.toHaveBeenCalled();
   });
 });

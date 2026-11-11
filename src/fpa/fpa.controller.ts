@@ -30,6 +30,8 @@ import {
 } from './dto/fpa-query.dto';
 import {
   FpaApproveParamsDto,
+  FpaCaptureDeadlineDto,
+  FpaCaptureExtensionDto,
   FpaCreateVersionDto,
   FpaReopenVersionDto,
   FpaUpdateVersionDto,
@@ -158,6 +160,18 @@ export class FpaController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.flowService.reopen(user, id, dto);
+  }
+
+  /** C4: planeación le da a un área una fecha nueva para capturar y enviar. */
+  @Roles(...FPA_ADMIN)
+  @Post('presupuestos/:id/prorroga')
+  @HttpCode(200)
+  extendCapture(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaCaptureExtensionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.extendCapture(user, id, dto);
   }
 
   @Roles(...FPA_EDITORS)
@@ -320,6 +334,17 @@ export class FpaController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.versionsService.approve(user, id, dto);
+  }
+
+  /** C4: el último día para capturar y enviar, uno para todas las áreas. */
+  @Roles(...FPA_ADMIN)
+  @Put('versiones/:id/fecha-limite')
+  setDeadline(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: FpaCaptureDeadlineDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.versionsService.setDeadline(user, id, dto);
   }
 
   @Roles(...FPA_ADMIN)
