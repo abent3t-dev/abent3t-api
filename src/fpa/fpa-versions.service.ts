@@ -17,8 +17,18 @@ import {
   paramsSnapshot,
   type ParamsSnapshot,
 } from './fpa-versions';
+import {
+  captureClosed,
+  dateOf,
+  dayLabel,
+  dayOf,
+  isRealDay,
+  todayMx,
+} from './fpa-deadline';
 import type {
   FpaApproveParamsDto,
+  FpaCaptureDeadlineDto,
+  FpaCaptureExtensionDto,
   FpaCreateVersionDto,
   FpaUpdateVersionDto,
   FpaVersionParamsDto,
@@ -43,6 +53,8 @@ import type {
  * - Cada paso: en una transacción, bloquea la fila de la versión (FOR UPDATE),
  *   revisa el estado con lo que hay en la base, la cambia y guarda el evento
  *   en fpa_version_events (solo inserción).
+ * - C4: la fecha límite de captura (una para todas las áreas) y la prórroga de
+ *   un área, también con su evento (fpa-deadline.ts).
  */
 
 type Tx = Prisma.TransactionClient;
@@ -317,6 +329,14 @@ export class FpaVersionsService {
       : v.status !== 'cerrada'
         ? no('Solo se reabre una versión cerrada')
         : yes;
+    // C4: la fecha no es un parámetro del cálculo: cambia también abierta
+    const setDeadline: Check = !admin
+      ? onlyAdmin
+      : v.status === 'cerrada'
+        ? closed
+        : v.kind === 'comparacion'
+          ? no('Una versión de comparación no se captura')
+          : yes;
     return {
       edit_params: editParams,
       edit_info: !admin ? onlyAdmin : v.status === 'cerrada' ? closed : yes,
@@ -325,6 +345,7 @@ export class FpaVersionsService {
       give_back: giveBack,
       close,
       reopen,
+      set_deadline: setDeadline,
     };
   }
 
@@ -347,7 +368,7 @@ export class FpaVersionsService {
       );
     }
     const v = await this.load(id);
-    const [usage, signers, people, events, base] = await Promise.all([
+    const [usage, signers, people, events, base, drafts] = await Promise.all([
       this.usage(id),
       this.signers(),
       this.prisma.profiles.findMany({
@@ -372,6 +393,24 @@ export class FpaVersionsService {
             select: { id: true, code: true },
           })
         : Promise.resolve(null),
+      // C4: las áreas fuera de tiempo y las prórrogas
+      this.prisma.fpa_budgets.findMany({
+        where: {
+          version_id: id,
+          is_active: true,
+          OR: [
+            { status: 'borrador' },
+            { capture_extended_until: { not: null } },
+          ],
+        },
+        select: {
+          id: true,
+          status: true,
+          capture_extended_until: true,
+          fpa_areas: { select: { name: true, sort_order: true } },
+        },
+        orderBy: { fpa_areas: { sort_order: 'asc' } },
+      }),
     ]);
     const personOf = (pid: string | null) =>
       toPerson(people.find((p) => p.id === pid) ?? null);
@@ -388,7 +427,9 @@ export class FpaVersionsService {
         notes: v.notes,
         base_version: base,
         created_at: v.created_at.toISOString(),
+        capture_deadline: dayOf(v.capture_deadline),
       },
+      capture: this.captureSummary(v, drafts),
       params: this.paramsDto(snap),
       params_updated:
         v.params_updated_at !== null
@@ -423,6 +464,43 @@ export class FpaVersionsService {
         acting_as: e.acting_as,
         created_at: e.created_at.toISOString(),
       })),
+    };
+  }
+
+  /** C4: qué áreas ya no capturan (no enviaron a tiempo) y cuáles tienen prórroga. */
+  private captureSummary(
+    v: VersionWithParams,
+    drafts: Array<{
+      id: string;
+      status: string;
+      capture_extended_until: Date | null;
+      fpa_areas: { name: string };
+    }>,
+  ) {
+    const today = todayMx();
+    const deadline = dayOf(v.capture_deadline);
+    return {
+      deadline,
+      closed_areas: drafts
+        .filter((b) =>
+          captureClosed(
+            {
+              version_status: v.status,
+              status: b.status,
+              deadline,
+              extended_until: dayOf(b.capture_extended_until),
+            },
+            today,
+          ),
+        )
+        .map((b) => ({ budget_id: b.id, area: b.fpa_areas.name })),
+      extensions: drafts
+        .filter((b) => b.capture_extended_until)
+        .map((b) => ({
+          budget_id: b.id,
+          area: b.fpa_areas.name,
+          until: dayOf(b.capture_extended_until) as string,
+        })),
     };
   }
 
@@ -1010,5 +1088,144 @@ export class FpaVersionsService {
       { timeout: 20_000 },
     );
     return this.detail(user, id);
+  }
+
+  // ---------------------------------------------------------------------------
+  // C4 — fecha límite de captura y prórroga
+  // ---------------------------------------------------------------------------
+
+  /** Un día que exista y que no haya pasado (hoy vale). */
+  private assertDay(day: string | null, what: string) {
+    if (day === null) return;
+    if (!isRealDay(day)) {
+      throw new BadRequestException(`${what}: ese día no existe`);
+    }
+    if (day < todayMx()) {
+      throw new BadRequestException(`${what} no puede ser un día que ya pasó`);
+    }
+  }
+
+  /**
+   * PUT /fpa/versiones/:id/fecha-limite — el último día para capturar y
+   * enviar, uno para todas las áreas (Laura, 10-nov). Planeación lo pone o lo
+   * cambia en preparación o en captura: no es un parámetro del cálculo, así
+   * que no quita el visto bueno. null lo quita. Queda en el historial.
+   */
+  async setDeadline(user: AuthUser, id: string, dto: FpaCaptureDeadlineDto) {
+    this.assertAdmin(user);
+    const next = dto.capture_deadline ?? null;
+    this.assertDay(next, 'La fecha límite');
+    await this.prisma.$transaction(
+      async (tx) => {
+        const v = await this.lock(tx, id);
+        const check = this.actions(
+          user,
+          v,
+          [],
+          await this.usage(id, tx),
+          await this.signers(tx),
+        ).set_deadline;
+        if (!check.ok) throw new ConflictException(check.reason);
+        const before = dayOf(v.capture_deadline);
+        if (before === next) return;
+        await tx.fpa_versions.update({
+          where: { id },
+          data: { capture_deadline: next ? dateOf(next) : null },
+        });
+        await this.event(tx, user, {
+          version_id: id,
+          action: 'fecha_limite',
+          detail: { schema: EVENT_SCHEMA, antes: before, despues: next },
+          comment: dto.comment ?? null,
+        });
+      },
+      { timeout: 20_000 },
+    );
+    return this.detail(user, id);
+  }
+
+  /**
+   * POST /fpa/presupuestos/:id/prorroga — planeación le da a un área una
+   * fecha nueva ("le abro este cacho y lo vuelvo a cerrar", 4-nov): captura y
+   * envía hasta ese día. Va después de la fecha de la versión; null la quita.
+   * Queda en el historial de la versión, con el área.
+   */
+  async extendCapture(
+    user: AuthUser,
+    budgetId: string,
+    dto: FpaCaptureExtensionDto,
+  ) {
+    this.assertAdmin(user);
+    const next = dto.until ?? null;
+    this.assertDay(next, 'La prórroga');
+    const head = await this.prisma.fpa_budgets.findFirst({
+      where: { id: budgetId, is_active: true },
+      select: { version_id: true },
+    });
+    if (!head) throw new NotFoundException('Presupuesto no encontrado');
+    await this.prisma.$transaction(
+      async (tx) => {
+        // La versión (cambiar su fecha o cerrarla espera) y el presupuesto
+        await tx.$queryRaw`SELECT id FROM fpa_versions WHERE id = ${head.version_id}::uuid FOR SHARE`;
+        await tx.$queryRaw`SELECT id FROM fpa_budgets WHERE id = ${budgetId}::uuid FOR UPDATE`;
+        const b = await tx.fpa_budgets.findFirst({
+          where: { id: budgetId, is_active: true },
+          select: {
+            capture_extended_until: true,
+            fpa_areas: { select: { name: true } },
+            fpa_versions: {
+              select: { status: true, capture_deadline: true },
+            },
+          },
+        });
+        if (!b) throw new NotFoundException('Presupuesto no encontrado');
+        if (b.fpa_versions.status !== 'captura') {
+          throw new ConflictException(
+            'Solo se da una prórroga con la versión abierta a captura',
+          );
+        }
+        const deadline = dayOf(b.fpa_versions.capture_deadline);
+        if (!deadline) {
+          throw new ConflictException(
+            'La versión no tiene fecha límite: no hace falta una prórroga',
+          );
+        }
+        if (next !== null && next <= deadline) {
+          throw new BadRequestException(
+            `La prórroga va después de la fecha límite de la versión (${dayLabel(deadline)})`,
+          );
+        }
+        const before = dayOf(b.capture_extended_until);
+        if (before === next) return;
+        await tx.fpa_budgets.update({
+          where: { id: budgetId },
+          data: next
+            ? {
+                capture_extended_until: dateOf(next),
+                capture_extended_by: user.id,
+                capture_extended_at: new Date(),
+              }
+            : {
+                capture_extended_until: null,
+                capture_extended_by: null,
+                capture_extended_at: null,
+              },
+        });
+        await this.event(tx, user, {
+          version_id: head.version_id,
+          action: 'prorroga',
+          detail: {
+            schema: EVENT_SCHEMA,
+            presupuesto: budgetId,
+            area: b.fpa_areas.name,
+            antes: before,
+            despues: next,
+          },
+          comment: dto.comment ?? null,
+        });
+      },
+      { timeout: 20_000 },
+    );
+    return { budget_id: budgetId, until: next };
   }
 }

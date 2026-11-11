@@ -26,6 +26,15 @@ import {
   type CalcVersion,
 } from './fpa-calc';
 import { FPA_ADMIN, FPA_MODULE_ROLES, FPA_SEE_ALL } from './fpa-roles';
+import {
+  captureClosed,
+  captureUntil,
+  captureWindow,
+  closedReason,
+  dayOf,
+  todayMx,
+  type DeadlineInput,
+} from './fpa-deadline';
 import type { FpaCalcInputDto, FpaLineInputDto } from './dto/fpa-line.dto';
 
 /** Lo que usa el cálculo de una línea (alta, cambio o POST /fpa/calcular). */
@@ -52,6 +61,17 @@ type Decimal = Prisma.Decimal;
 type Money = string | null;
 
 const EDITABLE_BUDGET = ['borrador', 'devuelto'];
+
+/** C4: la fecha de captura de un presupuesto y su versión, para las reglas. */
+const deadlineInput = (
+  budget: { status: string; capture_extended_until: Date | null },
+  version: { status: string; capture_deadline: Date | null },
+): DeadlineInput => ({
+  version_status: version.status,
+  status: budget.status,
+  deadline: dayOf(version.capture_deadline),
+  extended_until: dayOf(budget.capture_extended_until),
+});
 
 const BUDGET_STATUS_LABEL: Record<string, string> = {
   borrador: 'en borrador',
@@ -185,17 +205,27 @@ export class FpaService {
     };
   }
 
-  /** ¿Puede editar las líneas de este presupuesto ahora? (rol, área, estado y versión) */
+  /**
+   * ¿Puede editar las líneas de este presupuesto ahora? (rol, área, estado y
+   * versión). C4: pasada la fecha de captura, quien captura un área que no
+   * envió ya no edita; planeación sí.
+   */
   private canEdit(
     user: AuthUser,
     scope: Scope,
-    budget: { area_id: string; status: string; is_active: boolean },
-    version: { status: string },
+    budget: {
+      area_id: string;
+      status: string;
+      is_active: boolean;
+      capture_extended_until: Date | null;
+    },
+    version: { status: string; capture_deadline: Date | null },
   ): boolean {
     if (!budget.is_active) return false;
     if (!EDITABLE_BUDGET.includes(budget.status)) return false;
     if (version.status !== 'captura') return false;
     if (this.canAdmin(user)) return true;
+    if (captureClosed(deadlineInput(budget, version), todayMx())) return false;
     return (
       hasAnyRole(user, 'fpa_area') && scope.captureAreaIds.has(budget.area_id)
     );
@@ -250,6 +280,8 @@ export class FpaService {
       // B2: de dónde salen los parámetros y quién les dio el visto bueno
       params_source: version.params_source,
       params_approved: this.approvalDto(version),
+      // C4: último día para capturar y enviar (null: sin fecha)
+      capture_deadline: dayOf(version.capture_deadline),
     };
   }
 
@@ -579,6 +611,7 @@ export class FpaService {
           line_count: b.fpa_budget_lines.length,
           total_mxn: money(sums.total),
           can_edit: this.canEdit(user, scope, b, version),
+          capture: captureWindow(deadlineInput(b, version), todayMx()),
         };
       });
   }
@@ -650,6 +683,13 @@ export class FpaService {
     const body = this.budgetBody(budget, version);
     const people = await this.titulars([budget.area_id]);
     const who = people.get(budget.area_id);
+    // C4: quién dio la prórroga vigente
+    const extendedBy = budget.capture_extended_by
+      ? await this.prisma.profiles.findUnique({
+          where: { id: budget.capture_extended_by },
+          select: { id: true, full_name: true, email: true },
+        })
+      : null;
 
     return {
       id: budget.id,
@@ -662,6 +702,20 @@ export class FpaService {
       line_count: body.line_count,
       total_mxn: body.total_mxn,
       can_edit: this.canEdit(user, scope, budget, version),
+      capture: captureWindow(deadlineInput(budget, version), todayMx()),
+      capture_extension:
+        budget.capture_extended_until && budget.capture_extended_at
+          ? {
+              until: dayOf(budget.capture_extended_until),
+              at: budget.capture_extended_at.toISOString(),
+              by: extendedBy
+                ? {
+                    id: extendedBy.id,
+                    full_name: extendedBy.full_name ?? extendedBy.email,
+                  }
+                : null,
+            }
+          : null,
       version: this.versionDto(version),
       lines: body.lines,
       totals: body.totals,
@@ -750,7 +804,18 @@ export class FpaService {
         `La versión ${version.code} no está abierta a captura`,
       );
     }
+    this.assertCaptureOpen(user, deadlineInput(budget, version));
     return { budget, version };
+  }
+
+  /** C4: pasada la fecha, quien captura un área que no envió ya no edita (planeación sí). */
+  private assertCaptureOpen(user: AuthUser, d: DeadlineInput) {
+    if (this.canAdmin(user)) return;
+    if (!captureClosed(d, todayMx())) return;
+    const until = captureUntil(d.deadline, d.extended_until);
+    throw new ConflictException(
+      until ? closedReason(until) : 'La captura de esta área ya cerró',
+    );
   }
 
   /**
@@ -761,15 +826,22 @@ export class FpaService {
    * regresarla a preparación: esos pasos esperan a que termine, o ella a
    * ellos y entonces responde 409.
    */
-  private async lockForEdit(tx: Prisma.TransactionClient, budgetId: string) {
+  private async lockForEdit(
+    tx: Prisma.TransactionClient,
+    budgetId: string,
+    user: AuthUser,
+  ) {
     const rows = await tx.$queryRaw<
       Array<{
         status: string;
         is_active: boolean;
         version_status: string;
         code: string;
+        capture_deadline: Date | null;
+        capture_extended_until: Date | null;
       }>
-    >`SELECT b.status, b.is_active, v.status AS version_status, v.code
+    >`SELECT b.status, b.is_active, v.status AS version_status, v.code,
+             v.capture_deadline, b.capture_extended_until
       FROM fpa_budgets b JOIN fpa_versions v ON v.id = b.version_id
       WHERE b.id = ${budgetId}::uuid
       FOR SHARE OF b, v`;
@@ -787,6 +859,12 @@ export class FpaService {
         `La versión ${row.code} no está abierta a captura`,
       );
     }
+    this.assertCaptureOpen(user, {
+      version_status: row.version_status,
+      status: row.status,
+      deadline: dayOf(row.capture_deadline),
+      extended_until: dayOf(row.capture_extended_until),
+    });
   }
 
   /**
@@ -965,7 +1043,7 @@ export class FpaService {
     const { budget, version } = await this.loadForEdit(user, budgetId);
     const { data, monthRows } = await this.prepareLine(dto, version);
     const lineId = await this.prisma.$transaction(async (tx) => {
-      await this.lockForEdit(tx, budget.id);
+      await this.lockForEdit(tx, budget.id, user);
       const key = await tx.fpa_line_keys.create({
         data: { origin: 'captura', created_by: user.id },
       });
@@ -1002,7 +1080,7 @@ export class FpaService {
     const { version } = await this.loadForEdit(user, current.budget_id);
     const { data, monthRows } = await this.prepareLine(dto, version);
     await this.prisma.$transaction(async (tx) => {
-      await this.lockForEdit(tx, current.budget_id);
+      await this.lockForEdit(tx, current.budget_id, user);
       await tx.fpa_budget_lines.update({
         where: { id: lineId },
         data: { ...data, updated_by: user.id },
@@ -1073,7 +1151,7 @@ export class FpaService {
     if (!current) throw new NotFoundException('Línea no encontrada');
     await this.loadForEdit(user, current.budget_id);
     await this.prisma.$transaction(async (tx) => {
-      await this.lockForEdit(tx, current.budget_id);
+      await this.lockForEdit(tx, current.budget_id, user);
       await tx.fpa_budget_lines.update({
         where: { id: lineId },
         data: { is_active: false, updated_by: user.id },

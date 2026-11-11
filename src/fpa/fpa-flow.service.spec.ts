@@ -230,6 +230,9 @@ function matches(row: Row, where: Record<string, unknown> = {}): boolean {
     if (v !== null && typeof v === 'object' && !(v instanceof Date)) {
       const cond = v as Record<string, unknown>;
       if ('in' in cond) return (cond.in as unknown[]).includes(row[k]);
+      if ('not' in cond && cond.not === null) {
+        return row[k] !== null && row[k] !== undefined;
+      }
       throw new Error(`El fake no sabe filtrar por ${k}`);
     }
     return row[k] === v;
@@ -881,5 +884,128 @@ describe('FpaFlowService — recordatorio diario', () => {
     r = await ctx.service.runReminderCheck(new Date('2026-11-07T14:25:00Z'));
     expect(r.checked).toBe(0);
     expect(emails(ctx)).toEqual([]);
+  });
+});
+
+describe('FpaFlowService — fecha límite de captura (C4)', () => {
+  type EmailAt = EmailCall & { at?: Date };
+  const mails = (ctx: Ctx) =>
+    ctx.email.enqueue.mock.calls.map((c) => (c as unknown as [EmailAt])[0]);
+  const withDeadline = (until = '2026-11-20') => {
+    const ctx = setup();
+    ctx.store.versions[0].capture_deadline = new Date(`${until}T00:00:00Z`);
+    return ctx;
+  };
+
+  it('faltando 2 días hábiles, avisa a quienes capturan las áreas que no han enviado; con 3, todavía no', async () => {
+    const ctx = withDeadline();
+    // Martes 17-nov: faltan 3 (mié, jue y vie)
+    let r = await ctx.service.runDeadlineCheck(
+      new Date('2026-11-17T14:25:00Z'),
+    );
+    expect(r).toMatchObject({ checked: 2, notified: 0, late: 0 });
+    expect(mails(ctx)).toEqual([]);
+
+    // Miércoles 18-nov: faltan 2 (jue y vie)
+    r = await ctx.service.runDeadlineCheck(new Date('2026-11-18T14:25:00Z'));
+    expect(r).toMatchObject({ notified: 2, late: 0, errors: [] });
+    const avisos = mails(ctx);
+    expect(avisos.map((m) => m.to.email).sort()).toEqual([
+      'diana@abent3t.com',
+      'jorge@abent3t.com',
+      'laura@abent3t.com',
+    ]);
+    expect(avisos[0]).toMatchObject({
+      template: 'fpa_fecha_captura',
+      entityId: 'bud-compras:fecha:2026-11-20',
+      subject:
+        '[ABENT 3T] FP&A: la captura de Compras (B-26) cierra el 20 de noviembre de 2026',
+      // la llave lleva la fecha: sale una vez aunque corra varios días
+      at: new Date('2026-11-20T00:00:00Z'),
+    });
+  });
+
+  it('el día después, planeación recibe la lista de las que no enviaron; un enviado ya no cuenta', async () => {
+    const ctx = withDeadline();
+    await ctx.service.submit(DIANA, 'bud-compras', seen(ctx, 'bud-compras'));
+    ctx.email.enqueue.mockClear();
+    // Lunes 23-nov (el 20 fue viernes)
+    const r = await ctx.service.runDeadlineCheck(
+      new Date('2026-11-23T14:25:00Z'),
+    );
+    expect(r).toMatchObject({ checked: 1, notified: 0, late: 1 });
+    const lista = mails(ctx);
+    expect(lista.map((m) => m.to.email).sort()).toEqual([
+      'david@abent3t.com',
+      'laura@abent3t.com',
+      'liliana@abent3t.com',
+    ]);
+    expect(lista[0]).toMatchObject({
+      template: 'fpa_fecha_vencida',
+      entityId: 'b26:vencida:2026-11-20',
+      subject:
+        '[ABENT 3T] FP&A: 1 área no envió su presupuesto B-26 (la captura cerró el 20 de noviembre de 2026)',
+      at: new Date('2026-11-20T00:00:00Z'),
+    });
+    expect(lista[0].body).toContain('<li>Dirección General</li>');
+    expect(lista[0].body).toContain('/fpa?version=b26');
+    expect(lista[0].body).not.toContain('Compras');
+  });
+
+  it('con prórroga, el área recibe su aviso con su fecha y no sale en la lista', async () => {
+    const ctx = withDeadline();
+    budget(ctx).capture_extended_until = new Date('2026-11-25T00:00:00Z');
+    const r = await ctx.service.runDeadlineCheck(
+      new Date('2026-11-23T14:25:00Z'),
+    );
+    expect(r).toMatchObject({ notified: 1, late: 1 });
+    const byTemplate = (t: string) =>
+      mails(ctx).filter((m) => m.template === t);
+    expect(byTemplate('fpa_fecha_captura')[0]).toMatchObject({
+      entityId: 'bud-compras:fecha:2026-11-25',
+    });
+    expect(byTemplate('fpa_fecha_vencida')[0].body).toContain(
+      '<li>Dirección General</li>',
+    );
+    expect(byTemplate('fpa_fecha_vencida')[0].body).not.toContain('Compras');
+  });
+
+  it('de una fecha vieja ya no avisa, y en fin de semana no corre', async () => {
+    const ctx = withDeadline();
+    // Jueves 26-nov: 4 días hábiles después del 20
+    let r = await ctx.service.runDeadlineCheck(
+      new Date('2026-11-26T14:25:00Z'),
+    );
+    expect(r).toMatchObject({ checked: 2, notified: 0, late: 0 });
+    // Sábado 21-nov
+    r = await ctx.service.runDeadlineCheck(new Date('2026-11-21T14:25:00Z'));
+    expect(r.checked).toBe(0);
+    expect(mails(ctx)).toEqual([]);
+  });
+
+  it('el flujo dice que cerró y no deja enviar; con prórroga, sí', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.setSystemTime(new Date('2026-11-23T18:00:00Z'));
+    try {
+      const ctx = withDeadline();
+      const f = await ctx.service.flow(DIANA, 'bud-compras');
+      expect(f.turn.label).toBe(
+        'Fuera de tiempo: la captura cerró el 20 de noviembre de 2026 sin que se enviara',
+      );
+      expect(f.budget.capture).toMatchObject({
+        until: '2026-11-20',
+        closed: true,
+      });
+      expect(f.actions.submit).toMatchObject({ ok: false, code: 'estado' });
+      await expect(
+        ctx.service.submit(DIANA, 'bud-compras', seen(ctx, 'bud-compras')),
+      ).rejects.toThrow('La captura cerró el 20 de noviembre de 2026');
+
+      budget(ctx).capture_extended_until = new Date('2026-11-25T00:00:00Z');
+      await ctx.service.submit(DIANA, 'bud-compras', seen(ctx, 'bud-compras'));
+      expect(budget(ctx).status).toBe('enviado');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

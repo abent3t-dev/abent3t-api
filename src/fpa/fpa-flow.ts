@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { closedReason, withdrawReason } from './fpa-deadline';
 
 /**
  * FP&A (B3) — flujo de aprobación de un presupuesto: de quién es el turno y
@@ -19,6 +20,9 @@ import { Prisma } from '@prisma/client';
  *   versión no esté cerrada.
  * - super_admin actúa en cualquier paso como soporte (queda dicho en el
  *   historial), con las mismas reglas de no firmar lo que envió ni dos pasos.
+ * - C4: pasada la fecha de captura (la de la versión o la prórroga del área),
+ *   un borrador ya no se envía y un enviado ya no se retira. Un devuelto se
+ *   reenvía sin fecha: las firmas no llevan fecha (fpa-deadline.ts).
  */
 
 export type BudgetStatus =
@@ -103,6 +107,10 @@ export interface FlowState {
   line_count: number;
   /** ¿Alguna línea viva sale "No disponible"? (no se puede enviar) */
   has_unavailable: boolean;
+  /** C4: hasta qué día captura el área (la fecha o su prórroga; null: sin fecha). */
+  capture_until?: string | null;
+  /** C4: ya pasó ese día (hora de México). */
+  past_deadline?: boolean;
 }
 
 /**
@@ -192,6 +200,9 @@ export function canSubmit(actor: FlowActor, s: FlowState): Right {
   }
   if (s.status !== 'borrador' && s.status !== 'devuelto') {
     return byState('El presupuesto ya está en aprobación o aprobado');
+  }
+  if (s.status === 'borrador' && s.past_deadline && s.capture_until) {
+    return byState(closedReason(s.capture_until));
   }
   if (s.line_count === 0) {
     return byState('No tiene líneas: captura al menos una antes de enviarlo');
@@ -291,6 +302,9 @@ export function canWithdraw(actor: FlowActor, s: FlowState): Right {
   }
   if (signedInRound(s).size > 0) {
     return byState('Ya tiene una firma: ya no se retira');
+  }
+  if (s.past_deadline && s.capture_until) {
+    return byState(withdrawReason(s.capture_until));
   }
   if (senderOfRound(s) !== actor.id) {
     return isSuper(actor)

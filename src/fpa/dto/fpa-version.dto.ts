@@ -226,3 +226,25 @@ export class FpaReopenVersionDto {
   @MaxLength(1000, { message: 'El comentario lleva hasta 1,000 caracteres' })
   comment: string;
 }
+
+// C4 — fecha límite de captura y prórroga por área. El día va como
+// 'AAAA-MM-DD'; null (o vacío) la quita. Que exista y que no haya pasado lo
+// revisa el service.
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+const toDayOrNull = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() || null : value;
+
+export class FpaCaptureDeadlineDto extends FpaVersionCommentDto {
+  @Transform(toDayOrNull)
+  @ValidateIf((o: FpaCaptureDeadlineDto) => o.capture_deadline !== null)
+  @Matches(DAY, { message: 'La fecha límite va como AAAA-MM-DD' })
+  capture_deadline: string | null;
+}
+
+export class FpaCaptureExtensionDto extends FpaVersionCommentDto {
+  @Transform(toDayOrNull)
+  @ValidateIf((o: FpaCaptureExtensionDto) => o.until !== null)
+  @Matches(DAY, { message: 'La prórroga va como AAAA-MM-DD' })
+  until: string | null;
+}
