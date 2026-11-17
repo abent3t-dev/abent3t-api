@@ -274,34 +274,59 @@ export function maximoPoExchangeRate(alias: string): Prisma.Sql {
  * (sin número al final; empate, el usuario menor y luego la primera que
  * llega), con el nombre de su primera PERSON. Mapper: `rfqBuyerOf`. Sin RQ,
  * las tres en NULL.
+ *
+ * O2 (2026-11-17, la validación pendiente de O3): además, `rq_enter_by` =
+ * el ENTERBY ("Introducido por") de su RQ en AB_COTIZACIONES
+ * (`maximo_rfqs`, sin las obsoletas) y `rq_cotizacion` = su RFQNUM. La RQ se
+ * liga por el RFQNUM de arriba o, si no, por el PONUM de sus líneas; con
+ * varias, gana la del RFQNUM de AB_COMPRAS y luego la más reciente. Si no
+ * coinciden, gana "Introducido por" (`maximoKpiBuyer`). Sin filas en
+ * `maximo_rfqs`, las dos en NULL y todo sigue como en O3. No mira el flag:
+ * si ya se sincronizaron RQ, apagar MAXIMO_RFQS_ENABLED no regresa al
+ * comprador de O3 (el "Introducido por" no cambia); para eso hay que vaciar
+ * `maximo_rfqs`.
  */
 export function maximoRqBuyerJoin(alias: string, as = 'rq'): Prisma.Sql {
   return Prisma.raw(`LEFT JOIN LATERAL (
-    SELECT f.changeby AS rq_buyer,
-           CASE WHEN f.personid IS NULL OR upper(f.personid) = upper(f.changeby)
-                THEN f.displayname END AS rq_buyer_name,
-           f.rfqnum AS rq_num
-    FROM (
-      SELECT ${rawText('r.value', 'CHANGEBY')} AS changeby,
-             ${rawNumber('r.value', 'RFQSTATUSSEQ')} AS seq,
-             ${rawText('r.value', 'RFQNUM')} AS rfqnum,
-             ${rawText('p.person', 'DISPLAYNAME')} AS displayname,
-             ${rawText('p.person', 'PERSONID')} AS personid,
-             nodos.nivel, nodos.nodo_ord, r.ord AS fila_ord
-      FROM (${rawRfqNodes(alias)}) AS nodos
-      CROSS JOIN LATERAL jsonb_array_elements(${rawChildren('nodos.n', 'RFQSTATUS')})
-        WITH ORDINALITY AS r(value, ord)
-      LEFT JOIN LATERAL (
-        SELECT pe.value AS person
-        FROM jsonb_array_elements(${rawChildren('r.value', 'PERSON')}) WITH ORDINALITY AS pe(value, ord)
-        WHERE jsonb_typeof(pe.value) = 'object'
-        ORDER BY pe.ord
-        LIMIT 1
-      ) AS p ON true
-    ) f
-    WHERE f.changeby IS NOT NULL
-    ORDER BY f.seq DESC NULLS LAST, f.changeby COLLATE "C", f.nivel, f.nodo_ord, f.fila_ord
-    LIMIT 1
+    SELECT b.rq_buyer, b.rq_buyer_name, b.rq_num,
+           c.enter_by AS rq_enter_by, c.rfqnum AS rq_cotizacion
+    FROM (SELECT 1) AS uno
+    LEFT JOIN LATERAL (
+      SELECT f.changeby AS rq_buyer,
+             CASE WHEN f.personid IS NULL OR upper(f.personid) = upper(f.changeby)
+                  THEN f.displayname END AS rq_buyer_name,
+             f.rfqnum AS rq_num
+      FROM (
+        SELECT ${rawText('r.value', 'CHANGEBY')} AS changeby,
+               ${rawNumber('r.value', 'RFQSTATUSSEQ')} AS seq,
+               ${rawText('r.value', 'RFQNUM')} AS rfqnum,
+               ${rawText('p.person', 'DISPLAYNAME')} AS displayname,
+               ${rawText('p.person', 'PERSONID')} AS personid,
+               nodos.nivel, nodos.nodo_ord, r.ord AS fila_ord
+        FROM (${rawRfqNodes(alias)}) AS nodos
+        CROSS JOIN LATERAL jsonb_array_elements(${rawChildren('nodos.n', 'RFQSTATUS')})
+          WITH ORDINALITY AS r(value, ord)
+        LEFT JOIN LATERAL (
+          SELECT pe.value AS person
+          FROM jsonb_array_elements(${rawChildren('r.value', 'PERSON')}) WITH ORDINALITY AS pe(value, ord)
+          WHERE jsonb_typeof(pe.value) = 'object'
+          ORDER BY pe.ord
+          LIMIT 1
+        ) AS p ON true
+      ) f
+      WHERE f.changeby IS NOT NULL
+      ORDER BY f.seq DESC NULLS LAST, f.changeby COLLATE "C", f.nivel, f.nodo_ord, f.fila_ord
+      LIMIT 1
+    ) AS b ON true
+    LEFT JOIN LATERAL (
+      SELECT q.enter_by, q.rfqnum
+      FROM maximo_rfqs q
+      WHERE q.superseded_at IS NULL
+        AND (q.rfqnum = b.rq_num OR q.po_nums @> ARRAY[${alias}.ponum]::text[])
+      ORDER BY (q.rfqnum = b.rq_num) DESC NULLS LAST, q.enter_date DESC NULLS LAST,
+               q.rfqnum DESC
+      LIMIT 1
+    ) AS c ON true
   ) ${as} ON true`);
 }
 
@@ -388,6 +413,8 @@ export interface MaximoGestionRow {
    */
   rq_buyer?: string | null;
   rq_buyer_name?: string | null;
+  /** O2: ENTERBY de su RQ en AB_COTIZACIONES (gana si no coincide). */
+  rq_enter_by?: string | null;
   de_contrato?: boolean | null;
 }
 
@@ -418,7 +445,7 @@ export function maximoGestionSql(
 ): Prisma.Sql {
   const comprador = opciones.comprador
     ? Prisma.sql`, ${maximoPoDeContrato('oc')} AS de_contrato,
-           rq.rq_buyer, rq.rq_buyer_name`
+           rq.rq_buyer, rq.rq_buyer_name, rq.rq_enter_by`
     : Prisma.empty;
   const rq = opciones.comprador ? maximoRqBuyerJoin('oc') : Prisma.empty;
   return Prisma.sql`

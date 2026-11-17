@@ -353,6 +353,11 @@ export interface MaximoKpiFields {
   /** O3: comprador de la RQ (`maximoRqBuyerJoin`). */
   rq_buyer?: string | null;
   rq_buyer_name?: string | null;
+  /**
+   * O2 (la validación de O3): ENTERBY ("Introducido por") de su RQ en
+   * AB_COTIZACIONES (`maximoRqBuyerJoin`); null sin RQ ahí.
+   */
+  rq_enter_by?: string | null;
   /** O3: la OC trae CONTRACTREFNUM (`maximoPoDeContrato`). */
   de_contrato?: boolean | null;
 }
@@ -361,12 +366,15 @@ export interface MaximoKpiFields {
  * O3 (2026-10-26) — comprador de una OC de Maximo (o de la OC de SAP que
  * nació allá) para los KPIs por persona:
  *  1. de contrato → grupo "OC de contrato";
- *  2. el comprador de su RQ (CHANGEBY de RFQSTATUS): alias de Compras >
- *     DISPLAYNAME de esa fila > usuario;
+ *  2. el comprador de su RQ: O2 (2026-11-17), el "Introducido por" (ENTERBY)
+ *     de la RQ en AB_COTIZACIONES, que gana si no coincide con el CHANGEBY de
+ *     RFQSTATUS de AB_COMPRAS; sin él, ese CHANGEBY. Nombre: alias de
+ *     Compras > DISPLAYNAME de la fila de RFQSTATUS (solo si es el mismo
+ *     usuario) > usuario;
  *  3. el agente de compras (PURCHASEAGENT), con la regla de E4;
  *  4. si no, sin comprador ("Capturó" ya no cuenta).
- * Un usuario de sistema (MAXADMIN, MAXREG) no es comprador: una RQ suya
- * cuenta como sin RQ (sigue el agente) y como agente, sin comprador.
+ * Un usuario de sistema (MAXADMIN, MAXREG) no es comprador: su RQ cuenta
+ * como sin RQ (sigue el siguiente) y como agente, sin comprador.
  * `alias` = el nombre salió de Compras → Roles.
  */
 export function maximoKpiBuyer(
@@ -375,16 +383,26 @@ export function maximoKpiBuyer(
   dir: PersonDirectory = EMPTY_DIRECTORY,
 ): KpiBuyer {
   if (po.de_contrato) return OC_DE_CONTRATO;
-  // una RQ movida por un usuario de sistema no tiene comprador: sigue el agente
+  // un usuario de sistema no es comprador: sigue el siguiente de la regla
+  const comprador = (value: string | null | undefined) => {
+    const code = value?.trim() || null;
+    return code && !isMaximoSystemUser(code) ? code : null;
+  };
   const rqCode = po.rq_buyer?.trim() || null;
-  const rq = rqCode && !isMaximoSystemUser(rqCode) ? rqCode : null;
+  const rq = comprador(po.rq_enter_by) ?? comprador(rqCode);
   const code = rq ?? (po.purchase_agent?.trim() || null);
   if (code === null || isMaximoSystemUser(code)) {
     return { ...NO_BUYER, alias: false };
   }
+  // el DISPLAYNAME de RFQSTATUS es de su CHANGEBY: no nombra a otro usuario
+  const mismoQueRfqStatus =
+    rq !== null && rqCode !== null && rq.toUpperCase() === rqCode.toUpperCase();
   const buyer: KpiBuyer = rq
     ? {
-        name: aliases.get(rq) ?? (po.rq_buyer_name?.trim() || null) ?? rq,
+        name:
+          aliases.get(rq) ??
+          (mismoQueRfqStatus ? po.rq_buyer_name?.trim() || null : null) ??
+          rq,
         kind: 'comprador',
       }
     : maximoBuyer(

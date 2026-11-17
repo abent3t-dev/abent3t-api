@@ -420,7 +420,10 @@ export class PurchaseDashboardService {
         SELECT (SELECT min(doc_date) FROM sap_purchase_orders) AS sap_desde,
                (SELECT min(created_at_source) FROM maximo_purchase_orders) AS maximo_desde,
                (SELECT max(finished_at) FROM sap_sync_runs WHERE status = 'success') AS sap_sync,
-               (SELECT max(finished_at) FROM maximo_sync_runs WHERE status = 'success') AS maximo_sync`),
+               -- O2: la de los datos de OC (una corrida de RQ no la tapa)
+               (SELECT max(finished_at) FROM maximo_sync_runs
+                 WHERE status = 'success'
+                   AND target IN ('purchase_orders', 'contracts')) AS maximo_sync`),
       // K4.3: las PR de Maximo entran al selector por su creación
       // (ISSUEDATE) en la vista por PR, sin las revisiones obsoletas; antes
       // era la fecha del contrato y la PR sin contrato no tenía año.
@@ -641,10 +644,11 @@ export class PurchaseDashboardService {
         WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT c.currency, c.purchase_agent, c.purchase_agent_name,
                ${maximoPoDeContrato('c')} AS de_contrato, rq.rq_buyer, rq.rq_buyer_name,
+               rq.rq_enter_by,
                coalesce(sum(c.ab_ahorro), 0) AS total, count(*)::int AS count
         FROM current c ${maximoRqBuyerJoin('c')}
         WHERE coalesce(c.status, '') NOT IN ('CAN', 'CANCEL') AND c.ab_ahorro IS NOT NULL ${andYear('c.created_at_source', year)}
-        GROUP BY 1, 2, 3, 4, 5, 6`),
+        GROUP BY 1, 2, 3, 4, 5, 6, 7`),
       // SAP: la clasificación vive en la línea (U_Clas_gts); el importe de
       // la línea (sin IVA) va en la moneda del documento (LineTotal en MXN,
       // RowTotalFC en documentos extranjeros — misma regla que el mapper).
@@ -692,10 +696,10 @@ export class PurchaseDashboardService {
         WITH current AS (${CURRENT_MAXIMO_POS})
         SELECT c.currency, c.purchase_agent, c.purchase_agent_name,
                ${maximoPoDeContrato('c')} AS de_contrato, rq.rq_buyer, rq.rq_buyer_name,
-               ${poSubtotalColumns('c')}, count(*)::int AS count
+               rq.rq_enter_by, ${poSubtotalColumns('c')}, count(*)::int AS count
         FROM current c ${maximoRqBuyerJoin('c')}
         WHERE coalesce(c.status, '') NOT IN ('CAN', 'CANCEL') ${andYear('c.created_at_source', year)}
-        GROUP BY 1, 2, 3, 4, 5, 6`),
+        GROUP BY 1, 2, 3, 4, 5, 6, 7`),
       // N3: desde cuándo hay ahorro capturado (sin año), con los filtros de
       // la tarjeta
       this.prisma.$queryRaw<AhorroDesdeRow[]>(Prisma.sql`
@@ -726,8 +730,8 @@ export class PurchaseDashboardService {
       this.sapGestionRequests(gestionPos),
       this.maximoBuyersByPonum(ponums),
     ]);
-    // O3: el comprador de la RQ y el PURCHASEAGENT son códigos → alias de
-    // Compras
+    // O3: el comprador de la RQ (O2: también su "Introducido por") y el
+    // PURCHASEAGENT son códigos → alias de Compras
     const names = await this.aliases.resolveMany(
       'maximo',
       [
@@ -735,7 +739,7 @@ export class PurchaseDashboardService {
         ...maximoAdjudicado,
         ...maximoGestionRows,
         ...ponumBuyers,
-      ].flatMap((r) => [r.rq_buyer, r.purchase_agent]),
+      ].flatMap((r) => [r.rq_enter_by, r.rq_buyer, r.purchase_agent]),
     );
     // N2: la persona ligada a su perfil (alias ligado o nombre igual)
     const directory = buildPersonDirectory(aliasEntries.values(), profiles);
@@ -939,7 +943,8 @@ export class PurchaseDashboardService {
     // O3: con el comprador de la RQ y la marca de contrato de esa revisión
     return this.prisma.$queryRaw<MaximoPonumBuyerRow[]>(Prisma.sql`
       SELECT m.ponum, m.purchase_agent, m.purchase_agent_name, m.created_by,
-             ${maximoPoDeContrato('m')} AS de_contrato, rq.rq_buyer, rq.rq_buyer_name
+             ${maximoPoDeContrato('m')} AS de_contrato, rq.rq_buyer, rq.rq_buyer_name,
+             rq.rq_enter_by
       FROM (SELECT DISTINCT ON (ponum) *
             FROM maximo_purchase_orders
             WHERE ponum IN (${Prisma.join(ponums)})

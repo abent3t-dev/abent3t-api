@@ -803,6 +803,63 @@ describe('O3: solo compradores, y las OC de contrato aparte', () => {
     });
   });
 
+  it('O2: el "Introducido por" de la RQ (AB_COTIZACIONES) gana si no coincide con el de AB_COMPRAS; no se nombra con el DISPLAYNAME de otro', () => {
+    // no coinciden: gana ENTERBY, con su alias
+    expect(
+      maximoKpiBuyer(
+        {
+          rq_enter_by: 'ADCS1',
+          rq_buyer: 'DYMP1',
+          rq_buyer_name: 'Diana Yohara',
+          purchase_agent: 'DYMP1',
+        },
+        aliases,
+      ),
+    ).toEqual({
+      name: 'Ana Daniela Contreras Sánchez',
+      kind: 'comprador',
+      alias: true,
+    });
+    // no coinciden y sin alias: el usuario, nunca el nombre de la otra fila
+    expect(
+      maximoKpiBuyer(
+        {
+          rq_enter_by: 'JAGS1',
+          rq_buyer: 'DYMP1',
+          rq_buyer_name: 'Diana Yohara',
+        },
+        aliases,
+      ),
+    ).toEqual({ name: 'JAGS1', kind: 'comprador', alias: false });
+    // coinciden (sin importar mayúsculas): el DISPLAYNAME de RFQSTATUS sí vale
+    expect(
+      maximoKpiBuyer(
+        {
+          rq_enter_by: 'jags1',
+          rq_buyer: 'JAGS1',
+          rq_buyer_name: 'Jorge Alberto González Soriano',
+        },
+        aliases,
+      ),
+    ).toEqual({
+      name: 'Jorge Alberto González Soriano',
+      kind: 'comprador',
+      alias: false,
+    });
+    // un ENTERBY de sistema no es comprador: sigue el de AB_COMPRAS
+    expect(
+      maximoKpiBuyer({ rq_enter_by: 'MAXADMIN', rq_buyer: 'DYMP1' }, aliases),
+    ).toEqual({ name: 'Diana Yohara Méndez', kind: 'comprador', alias: true });
+    // sin RQ en AB_COTIZACIONES (flag apagado): como en O3
+    expect(
+      maximoKpiBuyer({ rq_enter_by: null, rq_buyer: 'DYMP1' }, aliases),
+    ).toEqual({ name: 'Diana Yohara Méndez', kind: 'comprador', alias: true });
+    // la OC de contrato sigue en su grupo
+    expect(
+      maximoKpiBuyer({ de_contrato: true, rq_enter_by: 'ADCS1' }, aliases),
+    ).toBe(OC_DE_CONTRATO);
+  });
+
   it('SAP: quien capturó cuenta solo si está marcado; la marca se compara sin acentos ni mayúsculas', () => {
     expect(COMPRADORES_SAP.map((c) => c.maximo)).toEqual([
       'IVTOG',
