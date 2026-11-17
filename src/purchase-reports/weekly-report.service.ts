@@ -39,7 +39,6 @@ import {
   type AvancePage,
   buildAvancePage,
   fuentesDelReporte,
-  grupoEnFrase,
   lastCompleteWeek,
 } from './avance-semanal/avance-semanal.engine';
 import { montoBaseTexto } from './avance-semanal/avance-semanal.reglas';
@@ -884,17 +883,12 @@ export class WeeklyReportService {
       },
     );
     for (const c of p.anual) {
-      // L2: si la página trae grupos (Maximo con 'contrato', por parámetro o
-      // por default), el desglose usa los cuatro grupos con sus nombres
-      const grupos = p.grupos?.anual.find((a) => a.anio === c.anio);
       rows.push(
         { indicador: `Recibidas en ${c.anio}`, valor: c.recibidas },
         {
           indicador: `Atendidas de ${c.anio}`,
           valor: c.atendidas,
-          nota: grupos
-            ? `${c.atendidas_pct ?? 'sin datos'}% · ${grupos.grupos.map((g) => `${g.valor} ${grupoEnFrase(g.clave)}`).join(' · ')}`
-            : `${c.atendidas_pct ?? 'sin datos'}% · ${c.cerradas} cerradas · ${c.canceladas} canceladas · ${c.abiertas} abiertas`,
+          nota: `${c.atendidas_pct ?? 'sin datos'}% · ${c.cerradas} cerradas · ${c.canceladas} canceladas · ${c.abiertas} abiertas`,
         },
       );
     }

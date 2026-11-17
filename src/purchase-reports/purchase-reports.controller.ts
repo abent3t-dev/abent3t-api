@@ -31,9 +31,8 @@ export class PurchaseReportsController {
   ) {}
 
   // H1 (2026-09-29): reporte de avance semanal (el de Jorge) — JSON de la
-  // página de una semana. Lectura abierta. L2 (vista previa): `grupos=contrato`
-  // arma la página de Maximo con "De contrato (OC automática)" y "Canceladas
-  // en Maximo" aparte; sin el parámetro, AVANCE_GRUPOS_MAXIMO.
+  // página de una semana. Lectura abierta. O2: la página de Maximo cuenta RQ
+  // con MAXIMO_RFQS_ENABLED y RQ sincronizadas (si no, PR).
   @Get('avance-semanal')
   getAvanceSemanal(@Query() query: AvanceSemanalDto) {
     return this.avance.getSemana(query);
@@ -48,7 +47,7 @@ export class PurchaseReportsController {
   }
 
   // H1: el mismo reporte en PDF: `semana` = una página; `desde`/`hasta` =
-  // una página por semana (acumulado). L2: también acepta `grupos`.
+  // una página por semana (acumulado).
   @Get('avance-semanal/pdf')
   async getAvanceSemanalPdf(
     @Query() query: AvanceSemanalDto,

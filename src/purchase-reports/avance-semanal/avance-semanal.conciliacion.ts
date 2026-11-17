@@ -19,6 +19,7 @@ import {
   AVANCE_TIPO_CAMBIO,
   type AvanceCorte,
   type AvanceDiasTipo,
+  type AvanceGestionMaximo,
   type AvanceInicio,
   type AvanceMontoBase,
   type AvanceMontosFuente,
@@ -80,6 +81,10 @@ import {
  *    (`rq_octubre`) contra nuestra página de Maximo de esos días.
  *  - Los días de cierre que se comparan son los del título de la página
  *    (`cierre.titulo`, O1.3): del año o de la semana, según la regla.
+ *  - O2 (2026-11-17): la variante `rq` (las gestiones de Maximo son las RQ
+ *    de AB_COTIZACIONES). El estatus de cada RQ al 16 y al 20-oct sale de su
+ *    historial, para compararlo con el informe de RQ de Jorge; la diferencia
+ *    de 30 RQ queda anotada en la nota hasta que llegue su informe.
  */
 
 export type KpiConciliacion =
@@ -785,6 +790,21 @@ export const RQ_OCTUBRE_NOTA =
   'Jorge cuenta solicitudes de cotización (RQ) creadas en el año; nuestra página de Maximo cuenta PR aprobadas (llegada a Compras). La diferencia esperada son las PR que no llegan a RQ (p. ej. canceladas para cambiar el alcance) y se cierra con O2.';
 
 /**
+ * O2 (2026-11-17): con las RQ de AB_COTIZACIONES, las dos cuentan RQ. El
+ * estatus de cada RQ al final del día del informe sale de su historial. La
+ * consulta del 17-nov encontró 30 RQ menos que Jorge en las dos fechas (588
+ * contra 618 al 16-oct; 596 contra 626 al 20-oct): queda anotado hasta su
+ * informe de RQ (quizá filtra por otra fecha).
+ */
+export const RQ_OCTUBRE_NOTA_RQ =
+  'Jorge y nuestra página de Maximo cuentan solicitudes de cotización (RQ) creadas en el año; el estatus de cada RQ al final de ese día sale de su historial (AB_COTIZACIONES). La consulta del 17-nov encontró 30 RQ menos que Jorge, las mismas en las dos fechas: se aclara con su informe de RQ.';
+
+/** O2: la nota según de qué salieron las gestiones de Maximo. */
+export function notaRqOctubre(gestion: AvanceGestionMaximo): string {
+  return gestion === 'rq' ? RQ_OCTUBRE_NOTA_RQ : RQ_OCTUBRE_NOTA;
+}
+
+/**
  * O1.5: las cifras del informe de RQ de Jorge del 16 y del 20-oct contra
  * nuestra página de Maximo: el estado del año al final de ese día y, de su
  * semana, las nuevas y las cerradas.
@@ -854,12 +874,18 @@ export interface AnualConciliado {
 export interface ConciliacionAvance {
   opciones: AvanceOpciones;
   generado: string;
+  /**
+   * O2: de qué salieron las gestiones de Maximo (PR aprobadas o RQ). Con
+   * `gestion=rq` y sin RQ sincronizadas, 'pr'.
+   */
+  gestion_maximo: AvanceGestionMaximo;
   maximo: {
-    /** PR del universo (con la fecha de inicio de la regla). */
+    /** PR del universo (con la fecha de inicio de la regla) o RQ. */
     gestiones: number;
     /**
      * PR fuera del universo HOY (todas las fechas); cada página cuenta las
-     * suyas al corte (H6: también las aprobadas después del corte).
+     * suyas al corte (H6: también las aprobadas después del corte). O2: con
+     * RQ, las que no traen su creación.
      */
     no_recibidas: number;
   };
@@ -980,9 +1006,11 @@ export function conciliarAvance(
   );
   const lunesUltima = parseDay(ultima.semana.lunes);
 
+  const gestion = data.maximo_gestion ?? 'pr';
   return {
     opciones,
     generado: generado.toISOString(),
+    gestion_maximo: gestion,
     maximo: {
       gestiones: data.gestiones.filter((g) => g.sistema === 'maximo').length,
       no_recibidas: data.maximo_no_recibidas.length,
@@ -996,7 +1024,7 @@ export function conciliarAvance(
       montosConciliados(data, pagina2025.semana.anio, lunes2025, opciones),
     ],
     rq_octubre: {
-      nota: RQ_OCTUBRE_NOTA,
+      nota: notaRqOctubre(gestion),
       puntos: rqOctubre(data, opciones, generado),
     },
     anual,

@@ -1,11 +1,6 @@
 import PDFDocument from 'pdfkit';
 import type { Response } from 'express';
-import type {
-  AvancePage,
-  DiasStats,
-  GrupoClave,
-  GruposConteo,
-} from './avance-semanal.engine';
+import type { AvancePage, DiasStats } from './avance-semanal.engine';
 import { montoBaseTexto } from './avance-semanal.reglas';
 import {
   LOGO_A3T_PNG,
@@ -30,16 +25,15 @@ import {
  * va en una línea chica. H3: con `reglas.dias_tipo='habiles'`, las
  * tarjetas de días dicen "días hábiles" (`cierre.unidad`).
  *
- * L2 (2026-10-08, vista previa): si la página trae `grupos` (Maximo con
- * `grupos=contrato`), la dona, los medidores y las barras muestran "De
- * contrato (OC automática)" y "Canceladas en Maximo" aparte de las cerradas y
- * las abiertas. Sin `grupos`, la página se dibuja igual que antes.
- *
  * O1 (2026-10-26): la página de Maximo lleva en el encabezado la leyenda de
  * las recibidas (`avance.leyenda`); el número grande de las tarjetas de días es
  * el promedio del título (`cierre.titulo`, del año o de la semana); los
  * montos dicen qué OC suman (`montos.descripcion`) y, en Maximo, las de
  * contrato que no suman y las monedas pasadas a pesos.
+ *
+ * O2 (2026-11-17): sale la vista previa de L2 (grupos en la dona, los
+ * medidores y las barras). Con las RQ la página es la misma; sus textos
+ * (subtítulos y notas) vienen del motor y no traen leyenda.
  */
 
 type Doc = PDFKit.PDFDocument;
@@ -510,17 +504,6 @@ const ESTADOS = [
   { key: 'abiertas', label: 'Abiertas', color: C.dorado },
 ] as const;
 
-/**
- * L2: color de cada grupo (los de la dona de siempre; las de contrato en el
- * marino de la marca), igual en la dona, los medidores y las barras.
- */
-const GRUPO_COLOR: Record<GrupoClave, string> = {
-  cerradas_sin_contrato: C.verde,
-  de_contrato: C.marino,
-  canceladas: C.grisSuave,
-  abiertas: C.dorado,
-};
-
 /** Una rebanada de la dona y su renglón en la leyenda. */
 interface Rebanada {
   label: string;
@@ -532,21 +515,11 @@ interface Rebanada {
 
 /**
  * Geometría de la dona (radios, centro y leyenda desde el `top` de la
- * tarjeta). L2: con cuatro grupos es más chica para que quepan tres
- * etiquetas largas en dos renglones.
+ * tarjeta).
  */
 const DONA = { inner: 34, outer: 52, centro: 58, leyenda: 62 };
-const DONA_GRUPOS = { inner: 30, outer: 46, centro: 50, leyenda: 56 };
 
 function rebanadas(page: AvancePage): Rebanada[] {
-  if (page.grupos) {
-    return page.grupos.estado_anio.grupos.map((g) => ({
-      label: g.etiqueta,
-      color: GRUPO_COLOR[g.clave],
-      value: g.valor,
-      pct: g.pct ?? 0,
-    }));
-  }
   // K5: las mismas tres en todas las fuentes (Maximo ya trae la CAN)
   const e = page.estado_anio;
   return ESTADOS.map((s) => ({
@@ -559,54 +532,10 @@ function rebanadas(page: AvancePage): Rebanada[] {
 }
 
 /**
- * L2: la etiqueta en uno o dos renglones: si no cabe en `ancho`, se corta
- * antes del paréntesis ("De contrato" / "(OC automática)") o en el primer
- * espacio ("Cerradas" / "sin contrato", "Canceladas" / "en Maximo").
- */
-function renglones(
-  doc: Doc,
-  label: string,
-  ancho: number,
-  size: number,
-): [string] | [string, string] {
-  doc.font(F.r).fontSize(size);
-  if (doc.widthOfString(label) <= ancho) return [label];
-  const parentesis = label.indexOf(' (');
-  const corte = parentesis > 0 ? parentesis : label.indexOf(' ');
-  return corte > 0 ? [label.slice(0, corte), label.slice(corte + 1)] : [label];
-}
-
-/**
- * L2: los grupos de un año en renglones, con su nombre dentro de la frase y
- * sin el paréntesis, como en la banda ("385 cerradas sin contrato", "121 de
- * contrato", "56 canceladas en Maximo", "44 abiertas"): "121 de contrato (OC
- * automática)" no cabe en un renglón del medidor (pdfkit también cuenta el
- * salto de línea en el ancho).
- */
-const gruposEnRenglones = (c: GruposConteo) =>
-  c.grupos
-    .map((g) => {
-      const nombre = g.etiqueta.replace(/ \(.*\)$/, '');
-      return `${fmtInt(g.valor)} ${nombre.charAt(0).toLowerCase()}${nombre.slice(1)}`;
-    })
-    .join('\n');
-
-/**
  * Geometría de cada medidor (radios, centro desde la celda y el detalle
- * debajo). L2: con grupos, el detalle lleva cuatro renglones más juntos y el
- * arco es un poco más chico para que no se encime con el de abajo. El tope
- * de alto (36) deja que pdfkit no corte con "…": con `lineGap` negativo, el
- * penúltimo renglón pide espacio para dos renglones completos (35 pt).
+ * debajo).
  */
 const MEDIDOR = { inner: 20, outer: 30, centro: 34, detalle: 12, alto: 20 };
-const MEDIDOR_GRUPOS = {
-  inner: 18,
-  outer: 27,
-  centro: 30,
-  detalle: 11,
-  alto: 36,
-  lineGap: -1.4,
-};
 
 function donaCard(
   doc: Doc,
@@ -618,7 +547,7 @@ function donaCard(
 ) {
   const e = page.estado_anio;
   const top = card(doc, x, y, w, h, `Recibidas ${page.semana.anio} por estado`);
-  const geo = page.grupos ? DONA_GRUPOS : DONA;
+  const geo = DONA;
   const cx = x + w / 2;
   const cy = top + geo.centro;
   const total = e.recibidas;
@@ -649,36 +578,23 @@ function donaCard(
   let ly = cy + geo.leyenda;
   const labelW = w - 90;
   for (const s of items) {
-    // L2: "De contrato (OC automática)" y "Canceladas en Maximo" no caben
-    // junto al valor: el resto de la etiqueta baja un renglón
-    const [linea, resto] = page.grupos
-      ? renglones(doc, s.label, labelW, 7.5)
-      : [s.label];
     doc.roundedRect(x + 14, ly + 2, 7, 7, 1.5).fill(s.color);
-    text(doc, linea, x + 25, ly, { size: 7.5, width: labelW });
+    text(doc, s.label, x + 25, ly, { size: 7.5, width: labelW });
     text(doc, `${fmtInt(s.value)} · ${fmtPct(s.pct)}`, x + w - 72, ly, {
       font: F.s,
       size: 7.5,
       width: 58,
       align: 'right',
     });
-    if (resto) {
-      ly += 10;
-      text(doc, resto, x + 25, ly, { size: 7.5, width: labelW });
-    }
     ly += 13;
   }
 }
 
-/** Leyenda de la banda: qué suman las atendidas (L2: por grupo). */
-const BANDA = {
-  estandar:
-    'Comparación anual: gestiones recibidas contra atendidas (cerradas + canceladas)',
-  grupos:
-    'Comparación anual: gestiones recibidas contra atendidas (cerradas sin contrato + de contrato + canceladas en Maximo)',
-};
+/** Leyenda de la banda: qué suman las atendidas. */
+const BANDA =
+  'Comparación anual: gestiones recibidas contra atendidas (cerradas + canceladas)';
 
-function banda(doc: Doc, y: number, texto: string = BANDA.estandar) {
+function banda(doc: Doc, y: number, texto: string = BANDA) {
   const grad = doc.linearGradient(M, 0, W - M, 0);
   grad.stop(0, C.verdeOscuro).stop(0.5, C.verde).stop(1, C.verdeOscuro);
   doc.roundedRect(M, y, W - 2 * M, 22, 6).fill(grad);
@@ -711,50 +627,26 @@ function medidoresCard(
     '% atendido por año de recepción, al cierre de la semana',
   );
   const years = page.anual.slice(-4);
-  // L2: los mismos años por grupo (mismo orden que `anual`)
-  const porGrupo = page.grupos?.anual.slice(-4);
   const cellW = (w - 16) / 2;
   const cellH = (y + h - top - 4) / 2;
   years.forEach((c, i) => {
     const col = i % 2;
     const row = Math.floor(i / 2);
-    const grupos = porGrupo?.[i];
-    const geo = grupos ? MEDIDOR_GRUPOS : MEDIDOR;
+    const geo = MEDIDOR;
     const cx = x + 8 + col * cellW + cellW / 2;
     const cy = top + row * cellH + geo.centro;
     ring(doc, cx, cy, geo.inner, geo.outer, -Math.PI / 2, Math.PI / 2, C.track);
-    if (grupos) {
-      // L2: el arco de atendidas por grupo (cerradas sin contrato, de
-      // contrato y canceladas en Maximo); lo que falta son las abiertas
-      let desde = -Math.PI / 2;
-      for (const g of grupos.grupos) {
-        if (g.clave === 'abiertas' || grupos.recibidas === 0) continue;
-        const sweep = Math.PI * (g.valor / grupos.recibidas);
-        ring(
-          doc,
-          cx,
-          cy,
-          geo.inner,
-          geo.outer,
-          desde,
-          desde + sweep,
-          GRUPO_COLOR[g.clave],
-        );
-        desde += sweep;
-      }
-    } else {
-      const pct = c.atendidas_pct ?? 0;
-      ring(
-        doc,
-        cx,
-        cy,
-        geo.inner,
-        geo.outer,
-        -Math.PI / 2,
-        -Math.PI / 2 + Math.PI * Math.min(1, pct / 100),
-        GAUGE_COLORS[i] ?? C.verde,
-      );
-    }
+    const pct = c.atendidas_pct ?? 0;
+    ring(
+      doc,
+      cx,
+      cy,
+      geo.inner,
+      geo.outer,
+      -Math.PI / 2,
+      -Math.PI / 2 + Math.PI * Math.min(1, pct / 100),
+      GAUGE_COLORS[i] ?? C.verde,
+    );
     text(
       doc,
       c.recibidas === 0 ? '—' : fmtPct(c.atendidas_pct),
@@ -774,20 +666,16 @@ function medidoresCard(
       width: 52,
       align: 'center',
     });
-    // L2: con grupos, un renglón por grupo, con su nombre completo
     const detalle =
       c.recibidas === 0
         ? 'Sin gestiones'
-        : grupos
-          ? gruposEnRenglones(grupos)
-          : `${fmtInt(c.cerradas)} cerradas · ${fmtInt(c.canceladas)} canceladas\n${fmtInt(c.abiertas)} abiertas`;
+        : `${fmtInt(c.cerradas)} cerradas · ${fmtInt(c.canceladas)} canceladas\n${fmtInt(c.abiertas)} abiertas`;
     text(doc, detalle, cx - cellW / 2 + 2, cy + geo.detalle, {
       size: 6.3,
       color: C.grisTexto,
       width: cellW - 4,
       align: 'center',
       height: geo.alto,
-      ...(grupos ? { lineGap: MEDIDOR_GRUPOS.lineGap } : {}),
     });
   });
 }
@@ -1001,45 +889,19 @@ function barrasCard(
   h: number,
 ) {
   const top = card(doc, x, y, w, h, 'Recibidas contra atendidas por año');
-  const porGrupo = page.grupos?.anual;
-  // L2: con grupos, la barra de atendidas va apilada (cerradas sin contrato,
-  // de contrato y canceladas en Maximo, de abajo hacia arriba) y la leyenda
-  // los nombra
-  const legend = page.grupos
-    ? [
-        { label: 'Recibidas', color: C.verdeOscuro },
-        ...page.grupos.estado_anio.grupos
-          .filter((g) => g.clave !== 'abiertas')
-          .map((g) => ({ label: g.etiqueta, color: GRUPO_COLOR[g.clave] })),
-      ]
-    : [
-        { label: 'Recibidas', color: C.verdeOscuro },
-        { label: 'Atendidas', color: C.verdeClaro },
-      ];
+  const legend = [
+    { label: 'Recibidas', color: C.verdeOscuro },
+    { label: 'Atendidas', color: C.verdeClaro },
+  ];
   let lx = x + 20;
-  let renglonesLeyenda = 1;
   for (const l of legend) {
-    if (porGrupo) {
-      // L2: la leyenda fluye y baja de renglón si no cabe en la tarjeta
-      doc.font(F.r).fontSize(7.2);
-      const ancho = 10 + doc.widthOfString(l.label);
-      if (lx > x + 20 && lx + ancho > x + w - 14) {
-        lx = x + 20;
-        renglonesLeyenda += 1;
-      }
-      const ly = top + (renglonesLeyenda - 1) * 11;
-      doc.roundedRect(lx, ly + 1, 7, 7, 1.5).fill(l.color);
-      text(doc, l.label, lx + 10, ly - 1, { size: 7.2, color: C.grisTexto });
-      lx += ancho + 12;
-      continue;
-    }
     doc.roundedRect(lx, top + 1, 7, 7, 1.5).fill(l.color);
     text(doc, l.label, lx + 10, top - 1, { size: 7.2, color: C.grisTexto });
     lx += 62;
   }
   const chartX = x + 14;
   const chartW = w - 28;
-  const chartTop = top + 22 + (renglonesLeyenda - 1) * 11;
+  const chartTop = top + 22;
   const chartBottom = y + h - 20;
   const chartH = chartBottom - chartTop;
   const years = page.anual;
@@ -1054,34 +916,13 @@ function barrasCard(
     .stroke();
   years.forEach((c, i) => {
     const gx = chartX + i * groupW + groupW / 2;
-    const bars: Array<{
-      v: number;
-      color: string;
-      bx: number;
-      grupos?: GruposConteo;
-    }> = [
+    const bars: Array<{ v: number; color: string; bx: number }> = [
       { v: c.recibidas, color: C.verdeOscuro, bx: gx - barW - 1.5 },
-      {
-        v: c.atendidas,
-        color: C.verdeClaro,
-        bx: gx + 1.5,
-        grupos: porGrupo?.[i],
-      },
+      { v: c.atendidas, color: C.verdeClaro, bx: gx + 1.5 },
     ];
     for (const b of bars) {
       const bh = (b.v / max) * (chartH - 12);
-      if (bh > 0 && b.grupos) {
-        // L2: los tramos suman las atendidas (mismo alto que la barra sola)
-        let base = chartBottom;
-        for (const g of b.grupos.grupos) {
-          if (g.clave === 'abiertas') continue;
-          const gh = (g.valor / max) * (chartH - 12);
-          if (gh > 0) {
-            doc.rect(b.bx, base - gh, barW, gh).fill(GRUPO_COLOR[g.clave]);
-          }
-          base -= gh;
-        }
-      } else if (bh > 0) {
+      if (bh > 0) {
         doc.rect(b.bx, chartBottom - bh, barW, bh).fill(b.color);
       }
       text(doc, fmtInt(b.v), b.bx - 8, chartBottom - bh - 10, {
@@ -1165,7 +1006,7 @@ function drawPage(doc: Doc, page: AvancePage, index: number, total: number) {
   });
   donaCard(doc, page, xs[3], upperY, widths[3], upperH);
 
-  banda(doc, 326, page.grupos ? BANDA.grupos : BANDA.estandar);
+  banda(doc, 326);
 
   const lowerY = 356;
   const lowerH = 198;

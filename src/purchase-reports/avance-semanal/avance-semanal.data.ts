@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { estadoDeRfq } from '../../common/maximo/maximo-rfq-status';
 import {
   CURRENT_MAXIMO_POS,
   CURRENT_MAXIMO_PRS,
@@ -8,12 +9,17 @@ import {
 } from '../../common/sql/erp-views.sql';
 import type {
   AvanceData,
+  CambioEstado,
   Gestion,
   MaximoNoRecibida,
   OrdenMonto,
   TiposCambio,
 } from './avance-semanal.engine';
-import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
+import {
+  AVANCE_REGLAS,
+  type AvanceGestionMaximo,
+  type AvanceReglas,
+} from './avance-semanal.reglas';
 
 /**
  * H1 — Carga de datos del reporte de avance semanal: TODO de una vez (unos
@@ -41,6 +47,12 @@ import { AVANCE_REGLAS, type AvanceReglas } from './avance-semanal.reglas';
  *    contrato. Tipos de cambio: pesos por dólar de cada día de Maximo (1 /
  *    el EXCHANGERATE promedio de sus OC en pesos de ese día) y el de
  *    referencia de SAP por moneda y mes (promedio de DocTotal / DocTotalFc).
+ *  - O2 (2026-11-17), solo si se piden (`{ rq: true }`): las RQ vigentes de
+ *    AB_COTIZACIONES con la creación de su primera OC vigente no cancelada
+ *    (por el PONUM de sus líneas), su historial RFQSTATUS con fecha y si ya
+ *    terminó en `success` alguna corrida de RQ. Con 'rq', las gestiones de
+ *    Maximo salen de ahí y no de las PR, pero no mientras corre la primera
+ *    corrida (las RQ estarían a medias).
  */
 
 type Queryable = {
@@ -103,6 +115,35 @@ export interface AvanceRows {
   maximoTcDia: Array<{ dia: string; tc: unknown }>;
   /** O1: pesos por unidad de USD o EUR por mes ('YYYY-MM'), de SAP. */
   sapTcMes: Array<{ moneda: string; mes: string; tc: unknown }>;
+  /**
+   * O2: las RQ vigentes (sin las obsoletas), con la creación de su primera
+   * OC vigente no cancelada; ausente si no se pidieron.
+   */
+  maximoRfqs?: Array<{
+    id: string;
+    rfqnum: string;
+    status: string | null;
+    status_date: Date | null;
+    enter_date: Date | null;
+    primera_oc: Date | null;
+  }>;
+  /** O2: su historial RFQSTATUS con fecha, por RQ y en orden (`seq`). */
+  maximoRfqHistory?: Array<{
+    rfq_id: string;
+    status: string;
+    change_date: Date;
+  }>;
+  /**
+   * O2: ya terminó en `success` alguna corrida de RQ. Mientras corre la
+   * primera (unos minutos tras prender el flag) las RQ están a medias y la
+   * página sigue con las PR. Ausente = sí (pruebas).
+   */
+  maximoRfqsCompletas?: boolean;
+}
+
+/** O2: qué más se carga (las RQ solo con la página de Maximo sobre RQ). */
+export interface AvanceCarga {
+  rq?: boolean;
 }
 
 /**
@@ -112,7 +153,10 @@ export interface AvanceRows {
 const TC_PESO_MIN = 0.01;
 const TC_PESO_MAX = 0.5;
 
-export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
+export async function loadAvanceRows(
+  prisma: Queryable,
+  carga: AvanceCarga = {},
+): Promise<AvanceRows> {
   const [
     sapRequests,
     sapFirstPo,
@@ -123,6 +167,7 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
     festivos,
     maximoTcDia,
     sapTcMes,
+    rq,
   ] = await Promise.all([
     prisma.$queryRaw<AvanceRows['sapRequests']>(Prisma.sql`
       SELECT doc_entry, doc_num, doc_date, document_status, cancelled,
@@ -208,8 +253,10 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
       WHERE s.currency IN ('USD', 'EUR') AND s.doc_date IS NOT NULL
         AND t.fc > 0 AND t.total > 0
       GROUP BY 1, 2`),
+    // O2: las RQ, solo si se piden (a la par de lo demás)
+    carga.rq ? loadRqRows(prisma) : null,
   ]);
-  return {
+  const rows: AvanceRows = {
     sapRequests,
     sapFirstPo,
     sapOrders,
@@ -219,6 +266,61 @@ export async function loadAvanceRows(prisma: Queryable): Promise<AvanceRows> {
     festivos,
     maximoTcDia,
     sapTcMes,
+  };
+  return rq ? { ...rows, ...rq } : rows;
+}
+
+/** O2: las RQ vigentes, su historial con fecha y si ya hubo corrida completa. */
+async function loadRqRows(
+  prisma: Queryable,
+): Promise<
+  Required<
+    Pick<AvanceRows, 'maximoRfqs' | 'maximoRfqHistory' | 'maximoRfqsCompletas'>
+  >
+> {
+  const [maximoRfqs, maximoRfqHistory, [completas]] = await Promise.all([
+    // La primera OC de cada RQ = la creación más antigua de las OC vigentes
+    // no canceladas de sus líneas (PONUM). Se agrega por RQ fuera de un
+    // LATERAL: dentro, Postgres rehacía el GROUP BY de las OC por cada RQ
+    // (cuadrático: ~40 s con 12k OC y 4.7k RQ, contra ~70 ms así).
+    prisma.$queryRaw<NonNullable<AvanceRows['maximoRfqs']>>(Prisma.sql`
+      WITH oc AS (
+        SELECT p.ponum, min(p.created_at_source) AS creada
+        FROM (${CURRENT_MAXIMO_POS}) p
+        WHERE coalesce(p.status, '') NOT IN ('CAN', 'CANCEL')
+          AND p.created_at_source IS NOT NULL
+        GROUP BY p.ponum
+      ),
+      f AS (
+        SELECT q.id, min(oc.creada) AS primera_oc
+        FROM maximo_rfqs q
+        CROSS JOIN LATERAL unnest(q.po_nums) AS u(ponum)
+        JOIN oc ON oc.ponum = u.ponum
+        WHERE q.superseded_at IS NULL
+        GROUP BY q.id
+      )
+      SELECT q.id, q.rfqnum, q.status, q.status_date, q.enter_date,
+             f.primera_oc
+      FROM maximo_rfqs q
+      LEFT JOIN f ON f.id = q.id
+      WHERE q.superseded_at IS NULL
+      ORDER BY q.rfqnum, q.siteid`),
+    prisma.$queryRaw<NonNullable<AvanceRows['maximoRfqHistory']>>(Prisma.sql`
+      SELECT h.rfq_id, h.status, h.change_date
+      FROM maximo_rfq_status_history h
+      JOIN maximo_rfqs q ON q.id = h.rfq_id
+      WHERE q.superseded_at IS NULL AND h.change_date IS NOT NULL
+      ORDER BY h.rfq_id, h.seq`),
+    // alguna corrida de RQ ya terminó completa (la primera tarda minutos)
+    prisma.$queryRaw<Array<{ hay: boolean }>>(Prisma.sql`
+      SELECT EXISTS (
+        SELECT 1 FROM maximo_sync_runs
+        WHERE target = 'rfqs' AND status = 'success') AS hay`),
+  ]);
+  return {
+    maximoRfqs,
+    maximoRfqHistory,
+    maximoRfqsCompletas: completas?.hay === true,
   };
 }
 
@@ -248,16 +350,61 @@ export function tiposDeCambio(
 }
 
 /**
+ * O2 (2026-11-17): la línea de tiempo de estados de una RQ (historial
+ * RFQSTATUS con fecha, ya en orden). Respaldo: si el estatus de la cabecera
+ * (cerrada, cancelada o abierta) no es el último del historial — falta la
+ * fila —, se agrega AL FINAL (es el estatus vigente) con la fecha de su
+ * estatus (STATUSDATE) o, en una cerrada sin esa fecha, con la de su primera
+ * OC; si esa fecha es anterior al último cambio, con la del último cambio.
+ * Sin estatus en la cabecera, o sin ninguna de esas fechas, el historial
+ * queda como viene: no se inventa la fecha.
+ */
+export function historialDeRq(
+  rq: NonNullable<AvanceRows['maximoRfqs']>[number],
+  cambios: Array<{ status: string; change_date: Date }>,
+): CambioEstado[] {
+  const linea: CambioEstado[] = cambios.map((c) => ({
+    fecha: c.change_date,
+    estado: estadoDeRfq(c.status),
+  }));
+  if (!rq.status?.trim()) return linea;
+  const actual = estadoDeRfq(rq.status);
+  const ultimo = linea.at(-1);
+  if (actual === (ultimo?.estado ?? 'abierta')) return linea;
+  const fecha = rq.status_date ?? (actual === 'cerrada' ? rq.primera_oc : null);
+  if (!fecha) return linea;
+  linea.push({
+    fecha:
+      ultimo && ultimo.fecha.getTime() > fecha.getTime() ? ultimo.fecha : fecha,
+    estado: actual,
+  });
+  return linea;
+}
+
+/**
  * Filas → gestiones y OC del motor (pura, para probarla con fixtures). Con
  * `reglas.recibida`/`reglas.dias_desde` (default = AVANCE_REGLAS) elige la
  * recibida y el inicio de los días de las PR de Maximo; el motor debe
  * armar la página con las mismas reglas.
+ *
+ * O2 (2026-11-17): con `gestion='rq'`, RQ cargadas y una corrida de RQ ya
+ * completa, las gestiones de Maximo son las RQ (recibida = creación; estado
+ * con su historial; días hasta la creación de su primera OC o hasta la
+ * cancelación). Si no (flag apagado, sin datos o la primera corrida en
+ * curso), las PR, como hasta O1; `maximo_gestion` dice cuál quedó.
  */
 export function buildAvanceData(
   rows: AvanceRows,
   reglas: AvanceReglas = AVANCE_REGLAS,
+  gestion: AvanceGestionMaximo = 'pr',
 ): AvanceData {
   const gestiones: Gestion[] = [];
+  // O2: con RQ solo si hay RQ y ya terminó una corrida completa
+  const conRq =
+    gestion === 'rq' &&
+    rows.maximoRfqs !== undefined &&
+    rows.maximoRfqs.length > 0 &&
+    rows.maximoRfqsCompletas !== false;
 
   // SAP
   const sapFirstPo = new Map(
@@ -294,7 +441,43 @@ export function buildAvanceData(
     inicio: AvanceReglas['recibida'],
   ) => (inicio === 'aprobacion' ? r.pr_approved_at : r.pr_issue_date);
   const noRecibidas: MaximoNoRecibida[] = [];
-  for (const r of rows.maximoPrs) {
+  if (conRq) {
+    // O2: las RQ. La que no trae su creación (Maximo siempre la pone) no
+    // tiene semana: va a `maximo_no_recibidas` sin fecha, así que la página
+    // no la cuenta y solo sale en la conciliación (`no_recibidas`).
+    const cambios = new Map<
+      string,
+      Array<{ status: string; change_date: Date }>
+    >();
+    for (const h of rows.maximoRfqHistory ?? []) {
+      const lista = cambios.get(h.rfq_id) ?? [];
+      lista.push(h);
+      cambios.set(h.rfq_id, lista);
+    }
+    for (const r of rows.maximoRfqs ?? []) {
+      if (!r.enter_date) {
+        noRecibidas.push({
+          prnum: r.rfqnum,
+          emision: null,
+          pr_status: r.status,
+        });
+        continue;
+      }
+      gestiones.push({
+        sistema: 'maximo',
+        folio: r.rfqnum,
+        recibida: r.enter_date,
+        fecha_origen: 'rq',
+        inicio_dias: r.enter_date,
+        primera_oc: r.primera_oc,
+        cierre_sin_oc: null,
+        cancelada: null,
+        de_contrato: false,
+        historial: historialDeRq(r, cambios.get(r.id) ?? []),
+      });
+    }
+  }
+  for (const r of conRq ? [] : rows.maximoPrs) {
     const recibida = fechaDe(r, reglas.recibida);
     if (!recibida) {
       noRecibidas.push({
@@ -358,5 +541,6 @@ export function buildAvanceData(
     sap_desde: sapDesde,
     festivos: rows.festivos.map((f) => f.dia),
     tipos_cambio: tiposDeCambio(rows.maximoTcDia, rows.sapTcMes),
+    maximo_gestion: conRq ? 'rq' : 'pr',
   };
 }

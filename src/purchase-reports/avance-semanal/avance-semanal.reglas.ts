@@ -5,9 +5,8 @@
  * como parámetro (default = estas constantes) para que la conciliación
  * (`GET /compras/reportes/avance-semanal/conciliacion`) pruebe variantes.
  *
- * L2 (2026-10-08): `AVANCE_GRUPOS_MAXIMO` (grupos de la página de Maximo)
- * va aparte de `AvanceOpciones` para que, sin el parámetro, el JSON de la
- * página (que trae `opciones`) no cambie.
+ * O2 (2026-11-17): sale la vista previa de L2 (`grupos=contrato`): las PR de
+ * contrato no pasan por RQ y, con las RQ, ya no hace falta separarlas.
  *
  * Solo el avance lee estas constantes: los pendientes del tablero, Reportes
  * y los listados ubican la PR por su llegada a Compras FIJA
@@ -110,24 +109,19 @@ export type AvancePromedioTitulo = 'anio' | 'semana';
 export const AVANCE_PROMEDIO_TITULO: AvancePromedioTitulo = 'anio';
 
 /**
- * L2 (2026-10-08) — Grupos de las recibidas en la página de Maximo (dona,
- * medidores por año y barras). Las "canceladas" de Jorge se parecen a
- * nuestras PR de contrato cerradas (OC automática), no a las CAN de Maximo
- * (diagnóstico del 5-oct, H2):
- *  - 'estandar': cerradas · canceladas · abiertas (como hasta hoy);
- *  - 'contrato': las PR de contrato cerradas van aparte ("De contrato (OC
- *    automática)"), las canceladas se llaman "Canceladas en Maximo" (CAN del
- *    historial) y las cerradas que quedan son las sin contrato.
- * Solo presentación: los KPIs, sus nombres y la página de SAP no cambian.
+ * O2 (2026-11-17) — De qué salen las gestiones de la página de Maximo:
+ *  - 'pr': las PR aprobadas (la aproximación de K5/O1, con su leyenda);
+ *  - 'rq': las solicitudes de cotización de AB_COTIZACIONES, como el reporte
+ *    de Compras: recibida = creación de la RQ; cerrada y cancelada con su
+ *    historial RFQSTATUS; días hasta la creación de su primera OC (PONUM de
+ *    sus líneas) o hasta la cancelación.
+ * No es una constante: la decide el flag del sync (`MAXIMO_RFQS_ENABLED`) y
+ * que haya RQ. Apagado o sin datos, 'pr', como hasta O1. La conciliación
+ * puede pedir cualquiera de las dos.
  */
-export type AvanceGrupos = 'estandar' | 'contrato';
+export type AvanceGestionMaximo = 'pr' | 'rq';
 
-// Vista previa para la reunión con Ingrid (8-oct); el default espera a
-// Jorge/Ingrid. Si aprueban 'contrato', se cambia esta constante y nada más;
-// el parámetro `grupos` del JSON y del PDF del avance la sobreescribe.
-export const AVANCE_GRUPOS_MAXIMO: AvanceGrupos = 'estandar';
-
-export const AVANCE_GRUPOS: AvanceGrupos[] = ['estandar', 'contrato'];
+export const AVANCE_GESTIONES_MAXIMO: AvanceGestionMaximo[] = ['pr', 'rq'];
 
 /** Lo que reciben el motor y la conciliación (default = las constantes). */
 export interface AvanceOpciones {

@@ -1,4 +1,5 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   AvanceConciliacionDto,
@@ -25,10 +26,9 @@ import {
 } from './avance-semanal.engine';
 import { renderAvancePdf } from './avance-semanal.pdf';
 import {
-  AVANCE_GRUPOS_MAXIMO,
   AVANCE_OPCIONES,
   AVANCE_REGLAS,
-  type AvanceGrupos,
+  type AvanceGestionMaximo,
   type AvanceReglas,
 } from './avance-semanal.reglas';
 
@@ -47,9 +47,10 @@ import {
  * (defaults); la conciliación contra la serie de Jorge prueba variantes con
  * los mismos datos y el mismo motor.
  *
- * L2 (2026-10-08, vista previa): `grupos` (default AVANCE_GRUPOS_MAXIMO) en
- * el JSON y en el PDF, de una semana o del acumulado: con 'contrato', las
- * páginas de Maximo traen sus grupos; sin el parámetro, todo sale igual.
+ * O2 (2026-11-17): con `MAXIMO_RFQS_ENABLED=true` y RQ sincronizadas, la
+ * página de Maximo cuenta las solicitudes de cotización (AB_COTIZACIONES);
+ * con el flag apagado o sin datos, las PR, como hasta O1. Sale la vista
+ * previa de L2 (`grupos`).
  */
 
 /** Tope del acumulado: poco más de un año de semanas. */
@@ -57,10 +58,29 @@ const MAX_WEEKS = 60;
 
 @Injectable()
 export class AvanceSemanalService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    // O2: el flag de las RQ (opcional para las pruebas y los scripts)
+    @Optional() private readonly config?: ConfigService,
+  ) {}
 
-  async loadData(reglas: AvanceReglas = AVANCE_REGLAS): Promise<AvanceData> {
-    return buildAvanceData(await loadAvanceRows(this.prisma), reglas);
+  /**
+   * O2: de qué salen las gestiones de Maximo si nadie lo pide: RQ con el
+   * flag prendido (si no hay RQ, `buildAvanceData` regresa a las PR).
+   */
+  gestionMaximo(): AvanceGestionMaximo {
+    const value = this.config?.get<boolean | string>('MAXIMO_RFQS_ENABLED');
+    const on =
+      value === true || (typeof value === 'string' && value.trim() === 'true');
+    return on ? 'rq' : 'pr';
+  }
+
+  async loadData(
+    reglas: AvanceReglas = AVANCE_REGLAS,
+    gestion: AvanceGestionMaximo = this.gestionMaximo(),
+  ): Promise<AvanceData> {
+    const rows = await loadAvanceRows(this.prisma, { rq: gestion === 'rq' });
+    return buildAvanceData(rows, reglas, gestion);
   }
 
   /**
@@ -71,10 +91,10 @@ export class AvanceSemanalService {
     const [lunes] = this.resolveWeeks({ semana: dto.semana });
     const data = await this.loadData();
     const now = new Date();
-    const grupos = this.grupos(dto);
+    const gestion = data.maximo_gestion ?? 'pr';
     const paginas = fuentesDelReporte(this.reporte(dto)).map((fuente) => ({
-      ...buildAvancePage(data, lunes, fuente, now, AVANCE_OPCIONES, grupos),
-      definiciones: avanceDefiniciones(fuente, AVANCE_OPCIONES, grupos),
+      ...buildAvancePage(data, lunes, fuente, now, AVANCE_OPCIONES),
+      definiciones: avanceDefiniciones(fuente, AVANCE_OPCIONES, gestion),
     }));
     return paginas.length === 1 ? paginas[0] : { paginas };
   }
@@ -87,10 +107,9 @@ export class AvanceSemanalService {
     const weeks = this.resolveWeeks(dto);
     const data = await this.loadData();
     const now = new Date();
-    const grupos = this.grupos(dto);
     return fuentesDelReporte(this.reporte(dto)).flatMap((fuente) =>
       weeks.map((lunes) =>
-        buildAvancePage(data, lunes, fuente, now, AVANCE_OPCIONES, grupos),
+        buildAvancePage(data, lunes, fuente, now, AVANCE_OPCIONES),
       ),
     );
   }
@@ -101,19 +120,12 @@ export class AvanceSemanalService {
     const pages = await this.getPaginas(dto);
     const buffer = await renderAvancePdf(pages);
     const reporte = this.reporte(dto);
-    // L2: solo si el parámetro pide otros grupos que el default y el reporte
-    // trae la página de Maximo (las dos versiones se descargan lado a lado
-    // sin pisarse; SAP y la combinada no cambian con los grupos)
-    const grupos = this.grupos(dto);
-    const conGrupos =
-      grupos !== AVANCE_GRUPOS_MAXIMO &&
-      fuentesDelReporte(reporte).includes('maximo');
     const suffix =
-      (reporte === 'ambos'
+      reporte === 'ambos'
         ? ''
         : reporte === 'todas'
           ? '_combinado'
-          : `_${reporte}`) + (conGrupos ? `_grupos_${grupos}` : '');
+          : `_${reporte}`;
     const lunes = pages.map((p) => p.semana.lunes).sort();
     const oldest = lunes[0];
     const newest = lunes[lunes.length - 1];
@@ -127,14 +139,18 @@ export class AvanceSemanalService {
   /**
    * K5.7: conciliación de la página de Maximo contra la serie de Jorge con
    * la variante pedida (lo que no viene = default). Solo lectura; la corre
-   * el principal en prod para decidir los defaults.
+   * el principal en prod para decidir los defaults. O2: `gestion` (PR o RQ)
+   * pide la variante; sin ella, la de la página (el flag).
    */
   async getConciliacion(
     dto: AvanceConciliacionDto,
   ): Promise<ConciliacionAvance & { duracion_ms: number }> {
     const t0 = Date.now();
     const opciones = opcionesConciliacion(dto);
-    const data = await this.loadData(opciones.reglas);
+    const data = await this.loadData(
+      opciones.reglas,
+      dto.gestion ?? this.gestionMaximo(),
+    );
     return {
       ...conciliarAvance(data, opciones, new Date()),
       duracion_ms: Date.now() - t0,
@@ -143,11 +159,6 @@ export class AvanceSemanalService {
 
   private reporte(dto: AvanceSemanalDto): AvanceReporte {
     return dto.fuente ?? 'ambos';
-  }
-
-  /** L2: grupos de la página de Maximo; el parámetro sobreescribe la constante. */
-  private grupos(dto: AvanceSemanalDto): AvanceGrupos {
-    return dto.grupos ?? AVANCE_GRUPOS_MAXIMO;
   }
 
   /**

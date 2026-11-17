@@ -721,7 +721,7 @@ describe('WeeklyReportService', () => {
     expect(sapPage.has('OC de contrato 2026 (no suman)')).toBe(false);
   });
 
-  it('L2: con el default el Excel no cambia; si la página trae grupos (la constante pasa a contrato), "Atendidas de {año}" los usa con sus nombres', () => {
+  it('O2: "Atendidas de {año}" es el renglón de siempre (sin L2); con las RQ, la nota de las recibidas ya no lleva la leyenda de la aproximación', () => {
     const { service } = makeService();
     type Fila = { indicador: string; valor: unknown; nota?: string };
     const filas = (page: AvancePage) =>
@@ -762,37 +762,64 @@ describe('WeeklyReportService', () => {
     };
     const lunes = new Date('2026-09-21T00:00:00Z');
     const now = new Date('2026-09-30T18:00:00Z');
-    // default (AVANCE_GRUPOS_MAXIMO = 'estandar'): el renglón de siempre
-    const estandar = filas(buildAvancePage(data, lunes, 'maximo', now));
-    const atendidas = (lista: Fila[]) =>
-      lista.find((f) => f.indicador === 'Atendidas de 2026');
-    expect(atendidas(estandar)).toEqual({
+    const fila = (lista: Fila[], indicador: string) =>
+      lista.find((f) => f.indicador === indicador);
+    const conPr = filas(buildAvancePage(data, lunes, 'maximo', now));
+    expect(fila(conPr, 'Atendidas de 2026')).toEqual({
       indicador: 'Atendidas de 2026',
       valor: 3,
       nota: '75% · 2 cerradas · 1 canceladas · 1 abiertas',
     });
-    // con grupos: los cuatro, con los nombres del PDF y del JSON
-    const conGrupos = buildAvancePage(
-      data,
-      lunes,
-      'maximo',
-      now,
-      AVANCE_OPCIONES,
-      'contrato',
+    expect(fila(conPr, 'Gestiones recibidas en 2026')?.nota).toContain(
+      'Recibidas = PR aprobadas (aproximación)',
     );
-    expect(conGrupos.grupos?.modo).toBe('contrato');
-    const grupos = filas(conGrupos);
-    expect(atendidas(grupos)).toEqual({
-      indicador: 'Atendidas de 2026',
-      valor: 3,
-      nota: '75% · 1 cerradas sin contrato · 1 de contrato (OC automática) · 1 canceladas en Maximo · 1 abiertas',
+    // O2: las mismas cuatro gestiones como RQ (estado por su historial)
+    const rq = (
+      folio: string,
+      historial: Array<[string, 'cerrada' | 'cancelada' | 'abierta']>,
+      primeraOc: string | null = null,
+    ): AvanceData['gestiones'][number] => ({
+      ...pr(folio, {}),
+      fecha_origen: 'rq',
+      primera_oc: primeraOc ? new Date(primeraOc) : null,
+      historial: [
+        { fecha: recibida, estado: 'abierta' },
+        ...historial.map(([fecha, estado]) => ({
+          fecha: new Date(fecha),
+          estado,
+        })),
+      ],
     });
-    // los demás renglones (indicadores, valores y notas) no cambian
-    const resto = (lista: Fila[]) =>
-      lista.filter((f) => !f.indicador.startsWith('Atendidas de '));
-    expect(resto(grupos)).toEqual(resto(estandar));
-    expect(grupos.map((f) => [f.indicador, f.valor])).toEqual(
-      estandar.map((f) => [f.indicador, f.valor]),
+    const conRq = filas(
+      buildAvancePage(
+        {
+          ...data,
+          maximo_gestion: 'rq',
+          gestiones: [
+            rq(
+              'RQ1',
+              [['2026-09-02T16:00:00Z', 'cerrada']],
+              '2026-09-02T15:00:00Z',
+            ),
+            rq('RQ2', [['2026-09-03T15:00:00Z', 'cancelada']]),
+            rq(
+              'RQ3',
+              [['2026-09-08T16:00:00Z', 'cerrada']],
+              '2026-09-08T15:00:00Z',
+            ),
+            rq('RQ4', []),
+          ],
+        },
+        lunes,
+        'maximo',
+        now,
+      ),
+    );
+    expect(fila(conRq, 'Atendidas de 2026')).toEqual(
+      fila(conPr, 'Atendidas de 2026'),
+    );
+    expect(fila(conRq, 'Gestiones recibidas en 2026')?.nota ?? '').not.toMatch(
+      /aproximación/,
     );
   });
 });

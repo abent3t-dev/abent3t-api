@@ -6,14 +6,14 @@ import {
 import {
   AVANCE_CORTES,
   AVANCE_DIAS_TIPOS,
-  AVANCE_GRUPOS,
+  AVANCE_GESTIONES_MAXIMO,
   AVANCE_INICIOS,
   AVANCE_MONTOS_FUENTES,
   AVANCE_PROMEDIOS_TITULO,
   AVANCE_TIPOS_CAMBIO,
   type AvanceCorte,
   type AvanceDiasTipo,
-  type AvanceGrupos,
+  type AvanceGestionMaximo,
   type AvanceInicio,
   type AvanceMontosFuente,
   type AvancePromedioTitulo,
@@ -25,8 +25,8 @@ import {
  * toma su lunes; default: la última semana completa). `desde`/`hasta` = una
  * página por semana (el "acumulado"). I3: `fuente` default `ambos` (una
  * página de Maximo y una de SAP por semana); `maximo`, `sap` o `todas` (las
- * dos sumadas, solo API) dan una página por semana. L2: `grupos` (vista
- * previa) arma la página de Maximo por grupo.
+ * dos sumadas, solo API) dan una página por semana. O2: sale `grupos` (la
+ * vista previa de L2); el ValidationPipe (whitelist) lo descarta si llega.
  */
 export class AvanceSemanalDto {
   @IsISO8601()
@@ -44,18 +44,6 @@ export class AvanceSemanalDto {
   @IsIn(AVANCE_REPORTES)
   @IsOptional()
   fuente?: AvanceReporte;
-
-  /**
-   * L2 (vista previa, 2026-10-08): 'contrato' = la página de Maximo con "De
-   * contrato (OC automática)" y "Canceladas en Maximo" aparte en la dona, los
-   * medidores y las barras; 'estandar' = cerradas · canceladas · abiertas.
-   * Sin el parámetro, AVANCE_GRUPOS_MAXIMO. La página de SAP no cambia.
-   * Declarado aquí porque el ValidationPipe (whitelist) descarta en silencio
-   * lo no declarado.
-   */
-  @IsIn(AVANCE_GRUPOS)
-  @IsOptional()
-  grupos?: AvanceGrupos;
 }
 
 /**
@@ -106,4 +94,14 @@ export class AvanceConciliacionDto {
   @IsIn(AVANCE_PROMEDIOS_TITULO)
   @IsOptional()
   promedio_titulo?: AvancePromedioTitulo;
+
+  /**
+   * O2: las gestiones de Maximo de la variante: 'pr' (PR aprobadas) o 'rq'
+   * (solicitudes de cotización). Sin el parámetro, las de la página (el
+   * flag MAXIMO_RFQS_ENABLED); con 'rq' y sin RQ sincronizadas, salen las PR
+   * y la respuesta lo dice (`gestion_maximo`).
+   */
+  @IsIn(AVANCE_GESTIONES_MAXIMO)
+  @IsOptional()
+  gestion?: AvanceGestionMaximo;
 }

@@ -1516,3 +1516,241 @@ describe('O1: la última semana completa con el corte', () => {
     );
   });
 });
+
+describe('O2: la página de Maximo sobre las RQ (AB_COTIZACIONES)', () => {
+  type Estado = 'cerrada' | 'cancelada' | 'abierta';
+  /** Una RQ con su historial ([fecha ISO, estado], en orden). */
+  const rq = (
+    folio: string,
+    creada: string,
+    cambios: Array<[string, Estado]>,
+    primeraOc: string | null = null,
+  ): Gestion =>
+    maximo({
+      folio,
+      fecha_origen: 'rq',
+      recibida: T(creada),
+      inicio_dias: T(creada),
+      primera_oc: primeraOc ? T(primeraOc) : null,
+      historial: [
+        { fecha: T(creada), estado: 'abierta' },
+        ...cambios.map(([fecha, estado]) => ({ fecha: T(fecha), estado })),
+      ],
+    });
+  const conRq = (gestiones: Gestion[]): AvanceData => ({
+    ...data(gestiones),
+    maximo_gestion: 'rq',
+  });
+  const habiles: CuentaDias = { tipo: 'habiles', festivos: [] };
+
+  it('estado al corte con el historial: abierta, cerrada desde su CLOSE (con OC antes del corte), reabierta y cerrada otra vez', () => {
+    const g = rq(
+      'RQ1',
+      '2026-10-01T15:00:00Z',
+      [
+        ['2026-10-02T16:00:00Z', 'abierta'], // SENT
+        ['2026-10-10T22:00:00Z', 'cerrada'],
+        ['2026-10-12T16:00:00Z', 'abierta'], // se reabrió
+        ['2026-10-20T18:00:00Z', 'cerrada'],
+      ],
+      '2026-10-09T18:00:00Z',
+    );
+    expect(estadoAl(g, T('2026-10-05T06:00:00Z').getTime())).toEqual({
+      estado: 'abierta',
+      fecha: null,
+      con_oc: false,
+      fin_dias: null,
+    });
+    expect(estadoAl(g, T('2026-10-11T06:00:00Z').getTime())).toEqual({
+      estado: 'cerrada',
+      fecha: T('2026-10-10T22:00:00Z').getTime(),
+      con_oc: true,
+      fin_dias: T('2026-10-09T18:00:00Z'),
+    });
+    expect(estadoAl(g, T('2026-10-15T06:00:00Z').getTime()).estado).toBe(
+      'abierta',
+    );
+    expect(estadoAl(g, T('2026-10-25T06:00:00Z').getTime())).toMatchObject({
+      estado: 'cerrada',
+      fecha: T('2026-10-20T18:00:00Z').getTime(),
+    });
+  });
+
+  it('dos CLOSE seguidos cuentan desde el primero; cancelada va a su cancelación; cerrada sin OC no tiene días; un cambio antes de la recepción cuenta desde ella', () => {
+    const fin = T('2026-11-01T06:00:00Z').getTime();
+    expect(
+      estadoAl(
+        rq('RQ2', '2026-10-01T15:00:00Z', [
+          ['2026-10-05T15:00:00Z', 'cerrada'],
+          ['2026-10-07T15:00:00Z', 'cerrada'],
+        ]),
+        fin,
+      ),
+    ).toEqual({
+      estado: 'cerrada',
+      fecha: T('2026-10-05T15:00:00Z').getTime(),
+      con_oc: false,
+      fin_dias: null,
+    });
+    expect(
+      estadoAl(
+        rq('RQ3', '2026-10-01T15:00:00Z', [
+          ['2026-10-03T20:00:00Z', 'cancelada'],
+        ]),
+        fin,
+      ),
+    ).toEqual({
+      estado: 'cancelada',
+      fecha: T('2026-10-03T20:00:00Z').getTime(),
+      con_oc: false,
+      fin_dias: T('2026-10-03T20:00:00Z'),
+    });
+    const retro = rq('RQ4', '2026-10-05T15:00:00Z', [
+      ['2026-10-01T15:00:00Z', 'cerrada'],
+    ]);
+    expect(estadoAl(retro, fin).fecha).toBe(
+      T('2026-10-05T15:00:00Z').getTime(),
+    );
+  });
+
+  it('la semana del cierre es la de su CLOSE (no la de la OC); los días de cierre van de la creación de la RQ a la creación de su OC (hábiles)', () => {
+    // creada el lunes 5-oct 09:00 de México; OC el jueves 8-oct 12:00;
+    // CLOSE el miércoles 14-oct
+    const g = rq(
+      'RQ5',
+      '2026-10-05T15:00:00Z',
+      [['2026-10-14T22:00:00Z', 'cerrada']],
+      '2026-10-08T18:00:00Z',
+    );
+    const semana5 = semanaStats([g], D('2026-10-05'), 'viernes', habiles);
+    expect(semana5).toMatchObject({ nuevas: 1, cerradas: 0 });
+    const semana12 = semanaStats([g], D('2026-10-12'), 'viernes', habiles);
+    expect(semana12).toMatchObject({ nuevas: 0, cerradas: 1, canceladas: 0 });
+    // lunes 09:00 → jueves 12:00 = 3 días y 3 horas hábiles
+    expect(semana12.dias_cierre).toEqual({
+      promedio_dias: 3.1,
+      mediana_dias: 3.1,
+      total: 1,
+    });
+    expect(diasHasta(g, g.primera_oc, habiles)).toBeCloseTo(3.125, 6);
+  });
+
+  it('con corte el viernes, la RQ creada el sábado 17-oct (09:30 de México) es nueva de la semana del 19-oct; con corte el domingo, de la del 12-oct', () => {
+    const sabado = rq('RQ990105', '2026-10-17T15:30:00Z', []);
+    expect(
+      semanaStats([sabado], D('2026-10-19'), 'viernes', habiles).nuevas,
+    ).toBe(1);
+    expect(
+      semanaStats([sabado], D('2026-10-12'), 'viernes', habiles).nuevas,
+    ).toBe(0);
+    expect(
+      semanaStats([sabado], D('2026-10-12'), 'domingo', habiles).nuevas,
+    ).toBe(1);
+  });
+
+  it('el estado al 16 y al 20-oct sale del historial (para el informe de RQ de Jorge)', () => {
+    const datos = conRq([
+      rq('RQ6', '2026-10-01T15:00:00Z', [['2026-10-18T17:00:00Z', 'cerrada']]),
+      rq('RQ7', '2026-10-01T15:00:00Z', [
+        ['2026-10-19T17:00:00Z', 'cancelada'],
+      ]),
+      rq('RQ8', '2026-10-02T15:00:00Z', [['2026-10-15T17:00:00Z', 'cerrada']]),
+      rq('RQ9', '2026-10-19T15:00:00Z', []),
+    ]);
+    const al16 = cohorteAlDia(datos, D('2026-10-16'), 'maximo');
+    expect(al16).toMatchObject({
+      recibidas: 3,
+      cerradas: 1,
+      canceladas: 0,
+      abiertas: 2,
+    });
+    const al20 = cohorteAlDia(datos, D('2026-10-20'), 'maximo');
+    expect(al20).toMatchObject({
+      recibidas: 4,
+      cerradas: 2,
+      canceladas: 1,
+      abiertas: 1,
+    });
+  });
+
+  it('la página: sin la leyenda de la aproximación, sus subtítulos y su nota hablan de RQ, y dice de qué salen sus gestiones', () => {
+    const datos = conRq([
+      rq(
+        'RQ10',
+        '2026-09-01T15:00:00Z',
+        [['2026-09-09T15:00:00Z', 'cerrada']],
+        '2026-09-08T15:00:00Z',
+      ),
+      // cerrada sin OC
+      rq('RQ11', '2026-09-02T15:00:00Z', [['2026-09-10T15:00:00Z', 'cerrada']]),
+      rq('RQ12', '2026-09-03T15:00:00Z', [
+        ['2026-09-04T15:00:00Z', 'cancelada'],
+      ]),
+      rq('RQ13', '2026-09-22T15:00:00Z', []),
+      sap({ recibida: D('2026-09-02') }),
+    ]);
+    const lunes = D('2026-09-21');
+    const now = T('2026-09-30T18:00:00Z');
+    const page = buildAvancePage(datos, lunes, 'maximo', now);
+    expect(page.gestion_maximo).toBe('rq');
+    expect(page.avance.leyenda).toBeNull();
+    expect(page.cierre.nota).toBe('De la creación de la RQ a su primera OC');
+    expect(page.cancelacion.nota).toBe(
+      'De la creación de la RQ a su cancelación',
+    );
+    expect(page.estado_anio).toMatchObject({
+      recibidas: 4,
+      cerradas: 2,
+      cerradas_sin_oc: 1,
+      canceladas: 1,
+      abiertas: 1,
+    });
+    expect(page.notas).toContain(
+      '1 RQ cerrada sin OC: cuenta como cerrada, sin días.',
+    );
+    expect(page.notas.join(' ')).not.toMatch(/PR /);
+    // la combinada nombra las dos; la de SAP no dice nada de Maximo
+    const todas = buildAvancePage(datos, lunes, 'todas', now);
+    expect(todas.cierre.nota).toBe(
+      'De la solicitud (SAP) o la creación de la RQ (Maximo) a su primera OC',
+    );
+    expect(todas.gestion_maximo).toBe('rq');
+    expect(buildAvancePage(datos, lunes, 'sap', now)).not.toHaveProperty(
+      'gestion_maximo',
+    );
+    // con las PR, la página sigue con su leyenda y sin la llave (O1)
+    const conPr = buildAvancePage(
+      data([maximo({ recibida: T('2026-09-01T15:00:00Z') })]),
+      lunes,
+      'maximo',
+      now,
+    );
+    expect(conPr).not.toHaveProperty('gestion_maximo');
+    expect(conPr.avance.leyenda).toMatch(/aproximación/);
+  });
+
+  it('definiciones: con RQ, Maximo habla de la solicitud de cotización y la página de SAP la describe así; con PR no cambian', () => {
+    const maximoRq = avanceDefiniciones('maximo', AVANCE_OPCIONES, 'rq');
+    expect(maximoRq.gestion).toBe(
+      'Gestión = solicitud de cotización (RQ) de Maximo, como el reporte de Compras.',
+    );
+    expect(maximoRq.recibida).toBe('Recibida = creación de la RQ (ENTERDATE).');
+    expect(maximoRq.cerrada).toMatch(/CLOSE.*historial/);
+    expect(maximoRq.abierta).toMatch(/INPRG.*SENT.*WREV/);
+    expect(maximoRq.dias).toMatch(
+      /creación de la RQ a la creación de su primera OC \(ligada por el PONUM de sus líneas\)/,
+    );
+    expect(maximoRq.homologacion).toMatch(/la RQ cuenta desde su creación/);
+    const sapRq = avanceDefiniciones('sap', AVANCE_OPCIONES, 'rq');
+    expect(sapRq.homologacion).toMatch(/solicitud de cotización \(RQ\)/);
+    // lo demás de SAP no cambia
+    const sapPr = avanceDefiniciones('sap');
+    expect({ ...sapRq, homologacion: '' }).toEqual({
+      ...sapPr,
+      homologacion: '',
+    });
+    expect(avanceDefiniciones('maximo').gestion).toBe(
+      'Gestión = PR de Maximo (solicitud de compra).',
+    );
+  });
+});

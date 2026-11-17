@@ -3,6 +3,7 @@ import PDFDocument from 'pdfkit';
 import { BadRequestException, ValidationPipe } from '@nestjs/common';
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { ROLES_KEY } from '../../common/decorators/roles.decorator';
+import type { ConfigService } from '@nestjs/config';
 import type { PrismaService } from '../../prisma/prisma.service';
 import { AvanceConciliacionDto } from '../dto/avance-semanal.dto';
 import { PurchaseReportsController } from '../purchase-reports.controller';
@@ -440,6 +441,47 @@ describe('K5.7: conciliación contra la serie de Jorge', () => {
         BadRequestException,
       );
     }
+  });
+
+  it('O2: el flag MAXIMO_RFQS_ENABLED decide de qué salen las gestiones de Maximo; la conciliación puede pedir cualquiera', async () => {
+    const config = (valor: unknown) =>
+      ({ get: jest.fn(() => valor) }) as unknown as ConfigService;
+    const prisma = { $queryRaw: jest.fn().mockResolvedValue([]) };
+    const apagado = new AvanceSemanalService(
+      prisma as unknown as PrismaService,
+      config(false),
+    );
+    expect(apagado.gestionMaximo()).toBe('pr');
+    // sin config (scripts y pruebas): apagado
+    expect(
+      new AvanceSemanalService(
+        prisma as unknown as PrismaService,
+      ).gestionMaximo(),
+    ).toBe('pr');
+    const prendido = new AvanceSemanalService(
+      prisma as unknown as PrismaService,
+      config('true'),
+    );
+    expect(prendido.gestionMaximo()).toBe('rq');
+    // con el flag prendido se cargan las RQ (tres consultas más); sin RQ
+    // sincronizadas, la página sale con las PR
+    const data = await prendido.loadData();
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(12);
+    expect(data.maximo_gestion).toBe('pr');
+    // la conciliación con gestion=pr no las carga aunque el flag esté prendido
+    prisma.$queryRaw.mockClear();
+    const conc = await prendido.getConciliacion({ gestion: 'pr' });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(9);
+    expect(conc.gestion_maximo).toBe('pr');
+    // y el DTO acepta gestion=rq|pr y rechaza otro valor
+    const pipe = new ValidationPipe({ whitelist: true, transform: true });
+    const meta = { type: 'query' as const, metatype: AvanceConciliacionDto };
+    await expect(pipe.transform({ gestion: 'rq' }, meta)).resolves.toEqual(
+      expect.objectContaining({ gestion: 'rq' }),
+    );
+    await expect(
+      pipe.transform({ gestion: 'otra' }, meta),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('sin datos: 38 semanas, el criterio no se cumple y los parámetros cambian solo su regla', async () => {

@@ -433,3 +433,243 @@ describe('loadAvanceRows', () => {
     expect(sql).toContain('WHERE s.cancelled IS DISTINCT FROM true');
   });
 });
+
+describe('O2: las gestiones de Maximo sobre las RQ (AB_COTIZACIONES)', () => {
+  type RfqRow = NonNullable<AvanceRows['maximoRfqs']>[number];
+  type RfqCambio = NonNullable<AvanceRows['maximoRfqHistory']>[number];
+  const rq = (rfqnum: string, o: Partial<RfqRow> = {}): RfqRow => ({
+    id: `id-${rfqnum}`,
+    rfqnum,
+    status: 'INPRG',
+    status_date: null,
+    enter_date: T('2026-10-05T15:10:00Z'),
+    primera_oc: null,
+    ...o,
+  });
+  const cambio = (rfqnum: string, status: string, iso: string): RfqCambio => ({
+    rfq_id: `id-${rfqnum}`,
+    status,
+    change_date: T(iso),
+  });
+
+  it("con 'rq' y RQ cargadas: una gestión por RQ (creación, primera OC e historial); las PR no entran", () => {
+    const rows: AvanceRows = {
+      ...empty(),
+      maximoPrs: [pr('PR1')],
+      maximoFirstPo: [{ prnum: 'PR1', primera_oc: T('2026-09-20T15:00:00Z') }],
+      maximoRfqs: [
+        rq('RQ1', {
+          status: 'CLOSE',
+          status_date: T('2026-10-14T22:40:00Z'),
+          primera_oc: T('2026-10-13T18:00:00Z'),
+        }),
+        rq('RQ2', { status: 'CANCEL', enter_date: T('2026-10-08T14:20:00Z') }),
+      ],
+      maximoRfqHistory: [
+        cambio('RQ1', 'INPRG', '2026-10-05T15:10:00Z'),
+        cambio('RQ1', 'SENT', '2026-10-06T16:00:00Z'),
+        cambio('RQ1', 'CLOSE', '2026-10-14T22:40:00Z'),
+        cambio('RQ2', 'INPRG', '2026-10-08T14:20:00Z'),
+        cambio('RQ2', 'CANCEL', '2026-10-09T20:00:00Z'),
+      ],
+    };
+    const data = buildAvanceData(rows, AVANCE_REGLAS, 'rq');
+    expect(data.maximo_gestion).toBe('rq');
+    const maximo = data.gestiones.filter((g) => g.sistema === 'maximo');
+    expect(maximo.map((g) => g.folio)).toEqual(['RQ1', 'RQ2']);
+    expect(maximo[0]).toMatchObject({
+      fecha_origen: 'rq',
+      recibida: T('2026-10-05T15:10:00Z'),
+      inicio_dias: T('2026-10-05T15:10:00Z'),
+      primera_oc: T('2026-10-13T18:00:00Z'),
+      cierre_sin_oc: null,
+      cancelada: null,
+      de_contrato: false,
+    });
+    expect(maximo[0].historial).toEqual([
+      { fecha: T('2026-10-05T15:10:00Z'), estado: 'abierta' },
+      { fecha: T('2026-10-06T16:00:00Z'), estado: 'abierta' },
+      { fecha: T('2026-10-14T22:40:00Z'), estado: 'cerrada' },
+    ]);
+    expect(maximo[1].historial?.map((h) => h.estado)).toEqual([
+      'abierta',
+      'cancelada',
+    ]);
+    // sin PR: la PR1 no es gestión
+    expect(maximo.some((g) => g.folio === 'PR1')).toBe(false);
+  });
+
+  it('respaldo: cerrada sin su fila CLOSE → STATUSDATE o, sin ella, su primera OC; reabierta sin su fila → STATUSDATE; sin fecha o sin estatus, se queda el historial', () => {
+    const rows: AvanceRows = {
+      ...empty(),
+      maximoRfqs: [
+        // CLOSE sin fila: STATUSDATE
+        rq('RQ3', {
+          status: 'CLOSE',
+          status_date: T('2026-10-02T23:00:00Z'),
+          enter_date: T('2026-09-28T15:00:00Z'),
+        }),
+        // CLOSE sin fila ni STATUSDATE: la primera OC
+        rq('RQ4', {
+          status: 'CLOSE',
+          enter_date: T('2026-09-28T15:00:00Z'),
+          primera_oc: T('2026-09-30T18:00:00Z'),
+        }),
+        // INPRG con el historial cerrado (se reabrió y falta la fila)
+        rq('RQ5', {
+          status: 'INPRG',
+          status_date: T('2026-10-10T15:00:00Z'),
+          enter_date: T('2026-10-01T15:00:00Z'),
+        }),
+        // CANCEL sin fila ni STATUSDATE: no hay fecha, queda como venía
+        rq('RQ6', { status: 'CANCEL', enter_date: T('2026-10-01T15:00:00Z') }),
+        // CLOSE sin fila ni STATUSDATE, con la OC ANTES del último cambio
+        // (WREV): queda al final, con la fecha de ese cambio
+        rq('RQ9', {
+          status: 'CLOSE',
+          enter_date: T('2026-10-01T15:00:00Z'),
+          primera_oc: T('2026-10-03T15:00:00Z'),
+        }),
+        // CANCEL con STATUSDATE anterior al último cambio: igual, al final
+        rq('RQ10', {
+          status: 'CANCEL',
+          status_date: T('2026-10-02T15:00:00Z'),
+          enter_date: T('2026-10-01T15:00:00Z'),
+        }),
+        // sin estatus en la cabecera: no reabre la cerrada
+        rq('RQ11', {
+          status: null,
+          status_date: T('2026-10-10T15:00:00Z'),
+          enter_date: T('2026-10-01T15:00:00Z'),
+        }),
+      ],
+      maximoRfqHistory: [
+        cambio('RQ3', 'INPRG', '2026-09-28T15:00:00Z'),
+        cambio('RQ3', 'SENT', '2026-09-29T16:00:00Z'),
+        cambio('RQ5', 'INPRG', '2026-10-01T15:00:00Z'),
+        cambio('RQ5', 'CLOSE', '2026-10-05T15:00:00Z'),
+        cambio('RQ6', 'INPRG', '2026-10-01T15:00:00Z'),
+        cambio('RQ9', 'INPRG', '2026-10-01T15:00:00Z'),
+        cambio('RQ9', 'WREV', '2026-10-05T15:00:00Z'),
+        cambio('RQ10', 'INPRG', '2026-10-01T15:00:00Z'),
+        cambio('RQ10', 'SENT', '2026-10-04T15:00:00Z'),
+        cambio('RQ11', 'INPRG', '2026-10-01T15:00:00Z'),
+        cambio('RQ11', 'CLOSE', '2026-10-05T15:00:00Z'),
+      ],
+    };
+    const data = buildAvanceData(rows, AVANCE_REGLAS, 'rq');
+    const de = (folio: string) =>
+      data.gestiones.find((g) => g.folio === folio)?.historial;
+    expect(de('RQ3')?.at(-1)).toEqual({
+      fecha: T('2026-10-02T23:00:00Z'),
+      estado: 'cerrada',
+    });
+    expect(de('RQ4')).toEqual([
+      { fecha: T('2026-09-30T18:00:00Z'), estado: 'cerrada' },
+    ]);
+    expect(de('RQ5')?.map((h) => h.estado)).toEqual([
+      'abierta',
+      'cerrada',
+      'abierta',
+    ]);
+    expect(de('RQ6')?.map((h) => h.estado)).toEqual(['abierta']);
+    expect(de('RQ9')).toEqual([
+      { fecha: T('2026-10-01T15:00:00Z'), estado: 'abierta' },
+      { fecha: T('2026-10-05T15:00:00Z'), estado: 'abierta' },
+      { fecha: T('2026-10-05T15:00:00Z'), estado: 'cerrada' },
+    ]);
+    expect(de('RQ10')?.at(-1)).toEqual({
+      fecha: T('2026-10-04T15:00:00Z'),
+      estado: 'cancelada',
+    });
+    expect(de('RQ11')?.map((h) => h.estado)).toEqual(['abierta', 'cerrada']);
+  });
+
+  it('la RQ sin creación (ENTERDATE) no es gestión: va sin fecha a maximo_no_recibidas (solo la cuenta la conciliación)', () => {
+    const rows: AvanceRows = {
+      ...empty(),
+      maximoRfqs: [rq('RQ7'), rq('RQ8', { enter_date: null, status: 'SENT' })],
+      maximoRfqHistory: [],
+    };
+    const data = buildAvanceData(rows, AVANCE_REGLAS, 'rq');
+    expect(data.gestiones.map((g) => g.folio)).toEqual(['RQ7']);
+    expect(data.maximo_no_recibidas).toEqual([
+      { prnum: 'RQ8', emision: null, pr_status: 'SENT' },
+    ]);
+  });
+
+  it("con 'rq' pero sin RQ (flag prendido y aún sin sincronizar) salen las PR, y los datos lo dicen", () => {
+    const sinRq = buildAvanceData(
+      {
+        ...empty(),
+        maximoPrs: [pr('PR1')],
+        maximoRfqs: [],
+        maximoRfqHistory: [],
+      },
+      AVANCE_REGLAS,
+      'rq',
+    );
+    expect(sinRq.maximo_gestion).toBe('pr');
+    expect(sinRq.gestiones.map((g) => g.folio)).toEqual(['PR1']);
+    // sin pedirlas, las PR (como hasta O1)
+    const pr1 = buildAvanceData({ ...empty(), maximoPrs: [pr('PR1')] });
+    expect(pr1.maximo_gestion).toBe('pr');
+  });
+
+  it('mientras corre la primera corrida de RQ (sin ninguna completa) siguen las PR; con una completa, las RQ', () => {
+    const filas = (completas: boolean | undefined): AvanceRows => ({
+      ...empty(),
+      maximoPrs: [pr('PR1')],
+      maximoRfqs: [rq('RQ1')],
+      maximoRfqHistory: [],
+      maximoRfqsCompletas: completas,
+    });
+    const aMedias = buildAvanceData(filas(false), AVANCE_REGLAS, 'rq');
+    expect(aMedias.maximo_gestion).toBe('pr');
+    expect(aMedias.gestiones.map((g) => g.folio)).toEqual(['PR1']);
+    expect(
+      buildAvanceData(filas(true), AVANCE_REGLAS, 'rq').gestiones.map(
+        (g) => g.folio,
+      ),
+    ).toEqual(['RQ1']);
+  });
+
+  it('loadAvanceRows: con { rq: true }, tres consultas más (las RQ vigentes con su primera OC por PONUM, su historial con fecha y si ya hay una corrida completa); sin, las 9 de siempre', async () => {
+    const queries: Prisma.Sql[] = [];
+    const prisma = {
+      $queryRaw: jest.fn((query: Prisma.Sql) => {
+        queries.push(query);
+        return Promise.resolve([]);
+      }),
+    };
+    const sinRq = await loadAvanceRows(
+      prisma as unknown as Parameters<typeof loadAvanceRows>[0],
+    );
+    expect(queries).toHaveLength(9);
+    expect(sinRq.maximoRfqs).toBeUndefined();
+    const conRq = await loadAvanceRows(
+      prisma as unknown as Parameters<typeof loadAvanceRows>[0],
+      { rq: true },
+    );
+    expect(queries).toHaveLength(9 + 12);
+    const sql = queries
+      .slice(18)
+      .map((q) => q.sql)
+      .join(' ');
+    expect(sql).toContain('FROM maximo_rfqs q');
+    expect(sql).toContain('unnest(q.po_nums)');
+    // la primera OC se agrega por RQ fuera de un LATERAL (no cuadrático)
+    expect(sql).toContain('LEFT JOIN f ON f.id = q.id');
+    expect(sql).not.toContain('LEFT JOIN LATERAL');
+    expect(sql).toContain('q.superseded_at IS NULL');
+    expect(sql).toContain("NOT IN ('CAN', 'CANCEL')");
+    expect(sql).toContain('FROM maximo_rfq_status_history h');
+    expect(sql).toContain('h.change_date IS NOT NULL');
+    expect(sql).toContain('ORDER BY h.rfq_id, h.seq');
+    expect(sql).toContain("target = 'rfqs' AND status = 'success'");
+    expect(conRq.maximoRfqs).toEqual([]);
+    expect(conRq.maximoRfqHistory).toEqual([]);
+    // sin filas de la corrida (el mock da []): no hay corrida completa
+    expect(conRq.maximoRfqsCompletas).toBe(false);
+  });
+});

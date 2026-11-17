@@ -7,6 +7,7 @@ import {
   type NuestraSemana,
   opcionesConciliacion,
   RQ_OCTUBRE_NOTA,
+  RQ_OCTUBRE_NOTA_RQ,
   rqOctubre,
   validezPagina,
 } from './avance-semanal.conciliacion';
@@ -668,6 +669,71 @@ describe('O1.5: montos con los dos tipos de cambio y el informe de RQ de octubre
       puntos: [dia16, dia20],
     });
     expect(RQ_OCTUBRE_NOTA).toContain('PR que no llegan a RQ');
+    // O2: sin RQ, la conciliación dice que salió de las PR
+    expect(conc.gestion_maximo).toBe('pr');
+  });
+
+  it('O2: con las RQ, el estado de cada una al 16 y al 20-oct sale de su historial y la nota anota las 30 que faltan', () => {
+    const creada = new Date('2026-10-01T15:00:00Z');
+    const rq = (
+      folio: string,
+      cambios: Array<[string, 'cerrada' | 'cancelada' | 'abierta']>,
+      creadaEl: Date = creada,
+    ): AvanceData['gestiones'][number] => ({
+      sistema: 'maximo',
+      folio,
+      recibida: creadaEl,
+      fecha_origen: 'rq',
+      inicio_dias: creadaEl,
+      primera_oc: null,
+      cierre_sin_oc: null,
+      cancelada: null,
+      de_contrato: false,
+      historial: [
+        { fecha: creadaEl, estado: 'abierta' },
+        ...cambios.map(([fecha, estado]) => ({
+          fecha: new Date(fecha),
+          estado,
+        })),
+      ],
+    });
+    const data: AvanceData = {
+      gestiones: [
+        // cerrada el sábado 17: abierta al 16, cerrada al 20
+        rq('RQ1', [['2026-10-17T18:00:00Z', 'cerrada']]),
+        // cancelada el lunes 19
+        rq('RQ2', [['2026-10-19T18:00:00Z', 'cancelada']]),
+        // cerrada el 10 y reabierta el 18: cerrada al 16, abierta al 20
+        rq('RQ3', [
+          ['2026-10-10T18:00:00Z', 'cerrada'],
+          ['2026-10-18T18:00:00Z', 'abierta'],
+        ]),
+        // creada el 19: solo cuenta al 20
+        rq('RQ4', [], new Date('2026-10-19T16:00:00Z')),
+      ],
+      ordenes: [],
+      maximo_no_recibidas: [],
+      sap_desde: null,
+      maximo_gestion: 'rq',
+    };
+    const [dia16, dia20] = rqOctubre(data, opcionesConciliacion({}), generado);
+    expect(dia16.nuestro).toMatchObject({
+      recibidas: 3,
+      cerradas: 1,
+      canceladas: 0,
+      abiertas: 2,
+    });
+    expect(dia20.nuestro).toMatchObject({
+      recibidas: 4,
+      cerradas: 1,
+      canceladas: 1,
+      abiertas: 2,
+    });
+    const conc = conciliarAvance(data, opcionesConciliacion({}), generado);
+    expect(conc.gestion_maximo).toBe('rq');
+    expect(conc.maximo.gestiones).toBe(4);
+    expect(conc.rq_octubre.nota).toBe(RQ_OCTUBRE_NOTA_RQ);
+    expect(RQ_OCTUBRE_NOTA_RQ).toContain('30 RQ menos que Jorge');
   });
 });
 
