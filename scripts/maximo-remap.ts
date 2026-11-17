@@ -4,8 +4,8 @@
  * de cambiar reglas de mapeo (p. ej. cuando Isaac confirme
  * CONTRACTREFNUM/CONTRACTVALUE).
  *
- * USO:  npm run maximo:remap            (ambos targets)
- *       npm run maximo:remap -- purchase_orders | contracts
+ * USO:  npm run maximo:remap            (todos los targets)
+ *       npm run maximo:remap -- purchase_orders | contracts | rfqs
  */
 import { PrismaService } from '../src/prisma/prisma.service';
 import { MaximoRemapService } from '../src/integrations/maximo/sync/maximo-remap.service';
@@ -20,7 +20,7 @@ async function main(): Promise<void> {
       : MAXIMO_SYNC_TARGETS.filter((t) => t === arg);
   if (targets.length === 0) {
     console.error(
-      `Target inválido "${arg}". Usa: purchase_orders | contracts (o sin argumento para ambos).`,
+      `Target inválido "${arg}". Usa: purchase_orders | contracts | rfqs (o sin argumento para todos).`,
     );
     process.exitCode = 1;
     return;

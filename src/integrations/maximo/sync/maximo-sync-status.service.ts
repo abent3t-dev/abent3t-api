@@ -23,28 +23,40 @@ export class MaximoSyncStatusService {
   ) {}
 
   async getStatus() {
-    const [lastPoRun, lastContractRun, poCount, contractCount] =
-      await Promise.all([
-        this.lastRun('purchase_orders'),
-        this.lastRun('contracts'),
-        this.prisma.maximo_purchase_orders.count(),
-        // K8: sin las revisiones obsoletas (las vistas también las excluyen)
-        this.prisma.maximo_contracts.count({ where: { superseded_at: null } }),
-      ]);
+    const [
+      lastPoRun,
+      lastContractRun,
+      lastRfqRun,
+      poCount,
+      contractCount,
+      rfqCount,
+    ] = await Promise.all([
+      this.lastRun('purchase_orders'),
+      this.lastRun('contracts'),
+      this.lastRun('rfqs'),
+      this.prisma.maximo_purchase_orders.count(),
+      // K8: sin las revisiones obsoletas (las vistas también las excluyen)
+      this.prisma.maximo_contracts.count({ where: { superseded_at: null } }),
+      // O2: sin las RQ que dejaron de venir
+      this.prisma.maximo_rfqs.count({ where: { superseded_at: null } }),
+    ]);
 
     return {
       enabled: this.syncConfig.enabled,
       contractsEnabled: this.maximoConfig.contractsEnabled,
+      rfqsEnabled: this.maximoConfig.rfqsEnabled,
       intervalMinutes: this.syncConfig.intervalMinutes,
       pageSize: this.syncConfig.pageSize,
       running: MAXIMO_SYNC_TARGETS.filter((t) => this.syncService.isRunning(t)),
       lastRuns: {
         purchase_orders: lastPoRun,
         contracts: lastContractRun,
+        rfqs: lastRfqRun,
       },
       counts: {
         purchase_orders: poCount,
         contracts: contractCount,
+        rfqs: rfqCount,
       },
     };
   }

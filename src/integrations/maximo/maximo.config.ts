@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 /**
  * Configuración del cliente Maximo (Fase INT-2). Solo lee las env vars ya
  * declaradas en `env.validation.ts`: MAXIMO_BASE_URL, MAXIMO_OSLC_URL,
- * MAXIMO_AUTH_TOKEN y MAXIMO_CONTRACTS_ENABLED.
+ * MAXIMO_AUTH_TOKEN, MAXIMO_CONTRACTS_ENABLED y (O2) MAXIMO_RFQS_ENABLED.
  *
  * NO lee la bandera de sincronización (MAXIMO_SYNC_*, es de Int-3): este módulo no sincroniza nada.
  * Si las URLs/token están vacíos (dev), el módulo arranca igual y los
@@ -18,6 +18,8 @@ export interface MaximoConfig {
   authToken: string | null;
   /** `MAXIMO_CONTRACTS_ENABLED` (default false, §20.2). */
   contractsEnabled: boolean;
+  /** O2: `MAXIMO_RFQS_ENABLED` (default false): AB_COTIZACIONES. */
+  rfqsEnabled: boolean;
   /** Timeout por intento. 60s como el cliente de Crehana (redes lentas). */
   timeoutMs: number;
   maxRetries: number;
@@ -50,6 +52,9 @@ export function loadMaximoConfig(config: ConfigService): MaximoConfig {
     authToken: emptyToNull(config.get<string>('MAXIMO_AUTH_TOKEN')),
     contractsEnabled: parseBoolean(
       config.get<boolean | string>('MAXIMO_CONTRACTS_ENABLED'),
+    ),
+    rfqsEnabled: parseBoolean(
+      config.get<boolean | string>('MAXIMO_RFQS_ENABLED'),
     ),
     timeoutMs: MAXIMO_DEFAULT_TIMEOUT_MS,
     maxRetries: MAXIMO_DEFAULT_MAX_RETRIES,

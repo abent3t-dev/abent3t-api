@@ -87,8 +87,14 @@ export interface MaximoOslcErrorEnvelope {
   };
 }
 
-/** Object Structures de Maximo consumidas por ABENT (solo lectura). */
-export type MaximoObjectStructure = 'AB_COMPRAS' | 'AB_CONTRATOS';
+/**
+ * Object Structures de Maximo consumidas por ABENT (solo lectura). O2
+ * (2026-11-17): AB_COTIZACIONES, las solicitudes de cotización (raíz RFQ).
+ */
+export type MaximoObjectStructure =
+  | 'AB_COMPRAS'
+  | 'AB_CONTRATOS'
+  | 'AB_COTIZACIONES';
 
 /** API usada para una lectura concreta. */
 export type MaximoApi = 'legacy' | 'oslc';

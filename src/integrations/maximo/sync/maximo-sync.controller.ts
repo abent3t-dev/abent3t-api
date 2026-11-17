@@ -21,6 +21,7 @@ import {
 } from './maximo-sync.errors';
 import {
   isSyncSkipped,
+  MAXIMO_SYNC_TARGETS,
   MaximoSyncSkipped,
   MaximoSyncTarget,
 } from './maximo-sync.types';
@@ -65,7 +66,7 @@ export class MaximoSyncController {
     }
     const requested = dto.target ?? 'all';
     const targets: MaximoSyncTarget[] =
-      requested === 'all' ? ['purchase_orders', 'contracts'] : [requested];
+      requested === 'all' ? [...MAXIMO_SYNC_TARGETS] : [requested];
 
     // Pre-chequeo de mutex para responder 409 sin crear ninguna corrida
     // (el service vuelve a validar: la carrera real también termina en 409).
@@ -91,10 +92,11 @@ export class MaximoSyncController {
             ),
           });
         } else {
-          const result = await this.syncService.startContracts(
-            'manual',
-            user.id,
-          );
+          // contratos y (O2) RQ: con su flag apagado, skip en el 202
+          const result =
+            target === 'contracts'
+              ? await this.syncService.startContracts('manual', user.id)
+              : await this.syncService.startRfqs('manual', user.id);
           if (typeof result === 'string') {
             runs.push({ target, run_id: result });
           } else if (isSyncSkipped(result)) {

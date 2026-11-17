@@ -4,10 +4,12 @@ import { PrismaService } from '../../../../prisma/prisma.service';
 import type { LoggerLike } from '../../../common';
 import { MaximoFetchResult } from '../../maximo.client';
 import { MaximoPurchaseOrderDto } from '../../dto/maximo-po.dto';
+import { MaximoRfqDto } from '../../dto/maximo-rfq.dto';
 import {
   parseLegacyEnvelope,
   parseOslcEnvelope,
   toPurchaseOrder,
+  toRfq,
 } from '../../maximo.mapper';
 
 /**
@@ -17,7 +19,8 @@ import {
  * efecto: nada de producción lo importa.)
  *
  * Filtros `where` que entiende la tabla falsa: igualdad, `{ in: [...] }`,
- * `{ lt }` sobre fechas (solo `updateMany`) y `{ campo: null }` = IS NULL.
+ * `{ lt }` sobre fechas (solo `updateMany` y, O2, `count`) y
+ * `{ campo: null }` = IS NULL.
  * K8 (2026-10-05): IS NULL también acepta una fila que nunca escribió ese
  * campo (aquí `undefined`), igual que Postgres, donde una columna omitida en
  * el INSERT vale NULL; así `count({ where: { superseded_at: null } })` cuenta
@@ -141,9 +144,10 @@ class FakeTable {
     },
   );
 
+  // O2: con `{ lt }` (las RQ que no se ven desde la corrida anterior)
   count = jest.fn((args: { where?: Record<string, unknown> } = {}) =>
     Promise.resolve(
-      this.rows.filter((r) => matches(r, args.where ?? {})).length,
+      this.rows.filter((r) => matchesExtended(r, args.where ?? {})).length,
     ),
   );
 
@@ -185,6 +189,9 @@ export class FakePrisma {
   maximo_contracts = new FakeTable();
   maximo_po_status_history = new FakeTable();
   maximo_pr_status_history = new FakeTable();
+  // O2: RQ de AB_COTIZACIONES y su historial
+  maximo_rfqs = new FakeTable();
+  maximo_rfq_status_history = new FakeTable();
 
   /**
    * Forma "batch" de Prisma: las operaciones ya se dispararon al construir
@@ -226,6 +233,34 @@ export function poPageFromLegacyFixture(
     objectStructure: 'AB_COMPRAS',
     api: 'legacy',
     records: records.map(toPurchaseOrder),
+    raw: records,
+    legacyPage: page,
+    oslcPage: null,
+    filterCheck: {
+      kind: 'none',
+      applied: true,
+      violations: 0,
+      unverifiable: 0,
+      description: 'sin filtro',
+    },
+    http: { status: 200, durationMs: 1, attempts: 1 },
+    ...overrides,
+  };
+}
+
+/** O2: página de AB_COTIZACIONES desde un fixture legacy (sin red). */
+export function rfqPageFromFixture(
+  name: string,
+  overrides: Partial<MaximoFetchResult<MaximoRfqDto>> = {},
+): MaximoFetchResult<MaximoRfqDto> {
+  const { records, page } = parseLegacyEnvelope(
+    fixture(name),
+    'AB_COTIZACIONES',
+  );
+  return {
+    objectStructure: 'AB_COTIZACIONES',
+    api: 'legacy',
+    records: records.map(toRfq),
     raw: records,
     legacyPage: page,
     oslcPage: null,

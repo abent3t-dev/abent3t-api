@@ -15,8 +15,10 @@ import {
   MaximoContractsDisabledError,
   MaximoFilterNotAppliedError,
   MaximoInvalidArgumentError,
+  MaximoMappingError,
   MaximoNotConfiguredError,
   MaximoResponseShapeError,
+  MaximoRfqsDisabledError,
 } from './maximo.errors';
 
 /**
@@ -82,6 +84,7 @@ function makeClient(
     oslcUrl: OSLC,
     authToken: FAKE_TOKEN,
     contractsEnabled: true,
+    rfqsEnabled: true,
     timeoutMs: 1_000,
     maxRetries: 0,
     ...configOverrides,
@@ -305,6 +308,59 @@ describe('MaximoClient', () => {
         client.fetchPurchaseOrderByNumber(''),
       ).rejects.toBeInstanceOf(MaximoInvalidArgumentError);
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('AB_COTIZACIONES (O2, 2026-11-17)', () => {
+    it('con MAXIMO_RFQS_ENABLED=false fetchRfqs falla tipado SIN red', async () => {
+      const { client, fetchMock } = makeClient([], { rfqsEnabled: false });
+      await expect(client.fetchRfqs()).rejects.toBeInstanceOf(
+        MaximoRfqsDisabledError,
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('fetchRfqs: la Object Structure de CIISA por el REST legacy paginado (nunca /rest/mbo/), con la RQ mapeada', async () => {
+      const { client, url, lines } = makeClient([
+        jsonResponse(fixture('ab-cotizaciones.legacy-nested.SYNTHETIC.json')),
+      ]);
+      const res = await client.fetchRfqs({ maxItems: 50, rsStart: 100 });
+      const u = url();
+      expect(u.origin + u.pathname).toBe(`${LEGACY}/AB_COTIZACIONES`);
+      expect(u.pathname).not.toMatch(/\/mbo\//);
+      expect(u.searchParams.get('_format')).toBe('json');
+      expect(u.searchParams.get('_maxItems')).toBe('50');
+      expect(u.searchParams.get('_rsStart')).toBe('100');
+      expect(res.objectStructure).toBe('AB_COTIZACIONES');
+      expect(res.records).toHaveLength(8);
+      expect(res.raw).toHaveLength(8);
+      expect(res.records[0]).toMatchObject({
+        rfqnum: 'RQ990101',
+        enterBy: 'USR051',
+        poNums: ['PO990101'],
+      });
+      expect(res.legacyPage?.rsTotal).toBe(8);
+      expect(lines.join('\n')).toMatch(/AB_COTIZACIONES legacy .*rsTotal=8/);
+    });
+
+    it('fetchRfqs: la RQ que no mapea (sin RFQNUM) llega como su error en su lugar; las demás, mapeadas', async () => {
+      const body = fixture('ab-cotizaciones.legacy-nested.SYNTHETIC.json') as {
+        QueryAB_COTIZACIONESResponse: {
+          AB_COTIZACIONESSet: {
+            RFQ: Array<{ Attributes: Record<string, unknown> }>;
+          };
+        };
+      };
+      delete body.QueryAB_COTIZACIONESResponse.AB_COTIZACIONESSet.RFQ[1]
+        .Attributes.RFQNUM;
+      const { client } = makeClient([jsonResponse(body)]);
+      const res = await client.fetchRfqs();
+      expect(res.records).toHaveLength(8);
+      expect(res.raw).toHaveLength(8);
+      expect(res.records[1]).toBeInstanceOf(MaximoMappingError);
+      expect((res.records[1] as Error).message).toMatch(/RFQNUM/);
+      expect(res.records[0]).toMatchObject({ rfqnum: 'RQ990101' });
+      expect(res.records[2]).toMatchObject({ rfqnum: 'RQ990103' });
     });
   });
 

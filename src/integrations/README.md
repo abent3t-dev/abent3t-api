@@ -131,6 +131,7 @@ Lo que `MaximoClient` lee se persiste en PostgreSQL (`prisma/sql/0005_maximo_sta
 |---|---|
 | `maximo_purchase_orders` | Staging AB_COMPRAS, una fila por revisión. Clave natural `(ponum, siteid, revisionnum)` |
 | `maximo_contracts` | Staging AB_CONTRATOS, una fila por revisión de PURCHVIEW (T3). Clave `(prnum, contractnum, revisionnum)` |
+| `maximo_rfqs` | O2 (0023): staging AB_COTIZACIONES, una fila por solicitud de cotización (RQ). Clave `(rfqnum, siteid)`; su historial RFQSTATUS en `maximo_rfq_status_history` |
 | `maximo_sync_runs` | Bitácora de corridas (`cron` \| `manual` \| `seed`) con contadores y `filter_warnings` |
 
 Cada fila conserva el registro **crudo original** en `raw` JSONB + `mapper_version`
@@ -160,6 +161,22 @@ manual**: el primer full del sync re-mapea lo ya guardado como `remapped`. Si
 hace falta forzarlo, un full manual: `POST /integrations/maximo/sync
 {"target":"all"}` (409 = hay una corrida en curso: esperar y reintentar).
 
+**RQ (O2, 2026-11-17).** El target `rfqs` lee AB_COTIZACIONES (la Object
+Structure de CIISA, por el REST legacy como AB_COMPRAS; nunca la tabla directa
+`/maxrest/rest/mbo/RFQ`, que solo sirvió para diagnosticar con maxadmin) con su
+flag, `MAXIMO_RFQS_ENABLED` (default false: con false la corrida se omite,
+como contratos). Sigue el patrón de la OC (rowstamp de la raíz, hash y
+mapper) y reescribe el historial RFQSTATUS en la misma transacción. Una RQ
+que no mapea (p. ej. sin RFQNUM) cuenta como registro fallido y no tumba su
+página. Al terminar una corrida **completa** (total cubierto, sin fallas),
+marca `superseded_at` en las RQ que dejaron de venir en dos corridas
+completas seguidas; si serían más de max(25, 5% de las vigentes), no marca
+ninguna (lo más probable es que cambió la estructura o CIISA le puso un
+filtro). Las marcadas y ese aviso quedan en las advertencias de la corrida
+(`filter_warnings`, a la vista en Integraciones) y el aviso, también en el
+log. La página de Maximo del avance usa las RQ desde que una corrida de RQ
+termina en `success`; antes (o si todas quedan `partial`), sigue con las PR.
+
 `npm run maximo:remap` (re-deriva las columnas desde el `raw`, sin red) queda
 **para dev y emergencias**, nunca en un deploy y **nunca con una corrida del
 sync en curso**: el delete + createMany del historial choca con el UNIQUE
@@ -178,9 +195,9 @@ sin tocar la red.
 también `executive`):
 
 ```
-POST /integrations/maximo/sync    body { target?: purchase_orders|contracts|all }
+POST /integrations/maximo/sync    body { target?: purchase_orders|contracts|rfqs|all }
                                   → 202 {runs:[{target,run_id}],skipped} · 409 corrida en curso · 503 flag apagado
-GET  /integrations/maximo/status  → { enabled, contractsEnabled, intervalMinutes, pageSize,
+GET  /integrations/maximo/status  → { enabled, contractsEnabled, rfqsEnabled, intervalMinutes, pageSize,
                                       running[], lastRuns{...}, counts{...} }
 GET  /integrations/maximo/runs    ?target=&page=&limit= → historial paginado
 ```
@@ -206,6 +223,9 @@ CONTRACTVALUE=TOTALCOST y CONTRACTREFNUM=CONTRACTNUM ya en el mapper
    - `MAXIMO_AUTH_TOKEN` → el token del header `MAXAUTH` (Base64), tal cual.
    - `MAXIMO_CONTRACTS_ENABLED=true` (default false: sin esto la corrida de
      contratos falla con `MaximoContractsDisabledError`).
+   - O2: `MAXIMO_RFQS_ENABLED=true` para leer AB_COTIZACIONES (default false;
+     necesita la `0023` en el servidor B). Con el flag prendido y RQ
+     sincronizadas, la página de Maximo del avance semanal cuenta RQ.
    - `MAXIMO_SYNC_ENABLED=true` (con true, Joi exige las 3 primeras — el boot
      falla temprano si falta alguna, a propósito).
    - Opcionales: `MAXIMO_SYNC_INTERVAL_MINUTES` (default 60),

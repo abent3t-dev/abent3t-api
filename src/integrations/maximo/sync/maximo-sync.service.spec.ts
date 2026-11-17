@@ -1,10 +1,12 @@
 import { MaximoClient, MaximoFetchResult } from '../maximo.client';
 import { MaximoConfig } from '../maximo.config';
 import { MaximoPurchaseOrderDto } from '../dto/maximo-po.dto';
+import { MaximoRfqDto } from '../dto/maximo-rfq.dto';
 import {
   MAXIMO_MAPPER_VERSION,
   parseOslcEnvelope,
   toPurchaseOrder,
+  toRfq,
 } from '../maximo.mapper';
 import { MaximoStagingService, maximoRawHash } from './maximo-staging.service';
 import { MaximoSyncService } from './maximo-sync.service';
@@ -19,6 +21,7 @@ import {
   FakePrisma,
   fixture,
   poPageFromLegacyFixture,
+  rfqPageFromFixture,
   silentLogger,
 } from './testing/maximo-sync.testkit';
 
@@ -36,6 +39,7 @@ interface Harness {
   client: {
     fetchPurchaseOrders: jest.Mock;
     fetchContracts: jest.Mock;
+    fetchRfqs: jest.Mock;
   };
   lines: string[];
 }
@@ -51,6 +55,7 @@ function makeService(
   const client = {
     fetchPurchaseOrders: jest.fn(),
     fetchContracts: jest.fn(),
+    fetchRfqs: jest.fn(),
   };
   const syncConfig: MaximoSyncConfig = {
     enabled: true,
@@ -63,6 +68,7 @@ function makeService(
     oslcUrl: 'http://maximo.test/oslc',
     authToken: 'fake',
     contractsEnabled: true,
+    rfqsEnabled: true,
     timeoutMs: 1000,
     maxRetries: 0,
     ...overrides.maximo,
@@ -1271,5 +1277,280 @@ describe('K3/K8 — AB_CONTRATOS: historial de la PR y filas obsoletas', () => {
       'PR-K8A',
       'PR-K8B',
     ]);
+  });
+});
+
+describe('MaximoSyncService — AB_COTIZACIONES (O2, 2026-11-17)', () => {
+  const RFQ_FIXTURE = 'ab-cotizaciones.legacy-nested.SYNTHETIC.json';
+  type RfqPage = ReturnType<typeof rfqPageFromFixture>;
+
+  /** La página del fixture sin las RQ indicadas (con su total ajustado). */
+  const pageSin = (...faltan: string[]): RfqPage => {
+    const all = rfqPageFromFixture(RFQ_FIXTURE);
+    const keep = all.records.map((r) => !faltan.includes(r.rfqnum));
+    const records = all.records.filter((_, i) => keep[i]);
+    return {
+      ...all,
+      records,
+      raw: all.raw.filter((_, i) => keep[i]),
+      legacyPage: {
+        rsStart: 0,
+        rsCount: records.length,
+        rsTotal: records.length,
+      },
+    };
+  };
+
+  /**
+   * Fija el inicio de una corrida de RQ y el "visto" de las RQ que tocó (en
+   * la base los pone now(); en la tabla falsa no hay defaults).
+   */
+  const fijarTiempos = (
+    prisma: FakePrisma,
+    run: number,
+    startedAt: string,
+    vistas: string,
+  ) => {
+    const runs = prisma.maximo_sync_runs.rows.filter(
+      (r) => r.target === 'rfqs',
+    );
+    runs[run].started_at = new Date(startedAt);
+    for (const rq of prisma.maximo_rfqs.rows) {
+      if (rq.last_sync_run_id === runs[run].id) {
+        rq.last_seen_at = new Date(vistas);
+      }
+    }
+  };
+
+  it('con MAXIMO_RFQS_ENABLED=false: skip con su razón, sin corrida ni red', async () => {
+    const { service, prisma, client } = makeService({
+      maximo: { rfqsEnabled: false },
+    });
+    const result = await service.syncRfqs('cron');
+    expect(isSyncSkipped(result)).toBe(true);
+    expect(result).toMatchObject({ target: 'rfqs' });
+    expect((result as { reason: string }).reason).toContain(
+      'MAXIMO_RFQS_ENABLED=false',
+    );
+    expect(client.fetchRfqs).not.toHaveBeenCalled();
+    expect(prisma.maximo_sync_runs.rows).toHaveLength(0);
+  });
+
+  it('la primera corrida inserta las RQ con su historial; la idéntica las deja unchanged', async () => {
+    const { service, prisma, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchRfqs.mockResolvedValue(rfqPageFromFixture(RFQ_FIXTURE));
+
+    const first = await service.syncRfqs('cron');
+    expect(isSyncSkipped(first)).toBe(false);
+    expect(summaryOf(first as MaximoSyncRunSummary)).toEqual({
+      status: 'success',
+      inserted: 8,
+      updated: 0,
+      remapped: 0,
+      unchanged: 0,
+      failed: 0,
+    });
+    expect(client.fetchRfqs).toHaveBeenCalledWith({
+      maxItems: 100,
+      rsStart: 0,
+    });
+    const rq = prisma.maximo_rfqs.rows.find((r) => r.rfqnum === 'RQ990101')!;
+    expect(rq).toMatchObject({
+      siteid: 'A3T',
+      status: 'CLOSE',
+      enter_by: 'USR051',
+      requested_by: 'USR060',
+      po_nums: ['PO990101'],
+      closed_by: 'USR050',
+      mapper_version: MAXIMO_MAPPER_VERSION,
+      superseded_at: null,
+    });
+    expect((rq.enter_date as Date).toISOString()).toBe(
+      '2026-10-05T15:10:00.000Z',
+    );
+    expect((rq.closed_at as Date).toISOString()).toBe(
+      '2026-10-14T22:40:00.000Z',
+    );
+    const historial = prisma.maximo_rfq_status_history.rows
+      .filter((h) => h.rfq_id === rq.id)
+      .sort((a, b) => (a.seq as number) - (b.seq as number));
+    expect(historial.map((h) => h.status)).toEqual([
+      'INPRG',
+      'SENT',
+      'INPRG',
+      'SENT',
+      'WREV',
+      'CLOSE',
+    ]);
+    // 6 + 2 + 1 + 2 + 2 + 4 + 4 + 2 cambios en el fixture
+    expect(prisma.maximo_rfq_status_history.rows).toHaveLength(23);
+
+    const second = (await service.syncRfqs('cron')) as MaximoSyncRunSummary;
+    expect(summaryOf(second)).toEqual({
+      status: 'success',
+      inserted: 0,
+      updated: 0,
+      remapped: 0,
+      unchanged: 8,
+      failed: 0,
+    });
+    expect(prisma.maximo_rfq_status_history.rows).toHaveLength(23);
+  });
+
+  it('un rowstamp nuevo (la RQ se cerró en Maximo) es cambio real: updated, last_changed_at e historial reescrito', async () => {
+    const { service, prisma, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchRfqs.mockResolvedValueOnce(pageSin());
+    await service.syncRfqs('cron');
+
+    // RQ990103 pasa de INPRG a CLOSE: nueva cabecera y un cambio más
+    const page = pageSin();
+    const i = page.records.findIndex((r) => r.rfqnum === 'RQ990103');
+    const raw = structuredClone(page.raw[i]) as {
+      rowstamp: string;
+      Attributes: Record<string, { content: unknown }>;
+      RelatedMbos: { RFQSTATUS: unknown[] };
+    };
+    raw.rowstamp = '999999999';
+    raw.Attributes.STATUS = { content: 'CLOSE' };
+    raw.Attributes.STATUSDATE = { content: '2026-10-21T20:00:00+00:00' };
+    raw.RelatedMbos.RFQSTATUS.push({
+      Attributes: {
+        STATUS: { content: 'CLOSE' },
+        CHANGEDATE: { content: '2026-10-21T20:00:00+00:00' },
+        CHANGEBY: { content: 'USR050' },
+        RFQSTATUSSEQ: { content: 2 },
+      },
+    });
+    page.raw[i] = raw;
+    page.records[i] = toRfq(raw);
+    client.fetchRfqs.mockResolvedValueOnce(page);
+    const second = (await service.syncRfqs('cron')) as MaximoSyncRunSummary;
+    expect(summaryOf(second)).toMatchObject({ updated: 1, unchanged: 7 });
+    const rq = prisma.maximo_rfqs.rows.find((r) => r.rfqnum === 'RQ990103')!;
+    expect(rq.status).toBe('CLOSE');
+    // Dates de otro realm (structuredClone del testkit): sin instanceof
+    expect(rq.last_changed_at).not.toBeNull();
+    expect(rq.last_changed_at).toBeDefined();
+    expect(
+      prisma.maximo_rfq_status_history.rows
+        .filter((h) => h.rfq_id === rq.id)
+        .map((h) => h.status),
+    ).toEqual(['INPRG', 'CLOSE']);
+  });
+
+  it('la RQ que deja de venir se marca obsoleta solo tras DOS corridas completas sin ella; si reaparece, se limpia', async () => {
+    const { service, prisma, client, lines } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchRfqs.mockResolvedValueOnce(pageSin());
+    await service.syncRfqs('cron');
+    fijarTiempos(prisma, 0, '2026-11-01T10:00:00Z', '2026-11-01T10:01:00Z');
+
+    // 2a corrida sin RQ990108: la corrida completa anterior sí la vio
+    client.fetchRfqs.mockResolvedValueOnce(pageSin('RQ990108'));
+    await service.syncRfqs('cron');
+    const rq8 = () =>
+      prisma.maximo_rfqs.rows.find((r) => r.rfqnum === 'RQ990108')!;
+    expect(rq8().superseded_at).toBeNull();
+    fijarTiempos(prisma, 1, '2026-11-01T11:00:00Z', '2026-11-01T11:01:00Z');
+
+    // 3a corrida sin ella: no se ve desde antes de la 2a → obsoleta
+    client.fetchRfqs.mockResolvedValueOnce(pageSin('RQ990108'));
+    await service.syncRfqs('cron');
+    expect(rq8().superseded_at).not.toBeNull();
+    expect(rq8().superseded_at).toBeDefined();
+    expect(
+      prisma.maximo_rfqs.rows.filter((r) => r.superseded_at == null),
+    ).toHaveLength(7);
+    expect(lines.join(' | ')).toMatch(
+      /\(rfqs, cron\) → success: .* superseded=1 /,
+    );
+    // y queda a la vista en las advertencias de la corrida (Integraciones)
+    expect(prisma.maximo_sync_runs.rows.at(-1)?.filter_warnings).toEqual([
+      {
+        kind: 'obsoletas',
+        marcadas: 1,
+        description:
+          '1 RQ dejó de venir en dos corridas completas: se marcó como obsoleta',
+      },
+    ]);
+
+    // reaparece: se limpia
+    client.fetchRfqs.mockResolvedValueOnce(pageSin());
+    await service.syncRfqs('cron');
+    expect(rq8().superseded_at).toBeNull();
+  });
+
+  it('una corrida con una página fallida no marca obsoletas; tampoco si serían más que el tope (avisa)', async () => {
+    const { service, prisma, client, lines } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchRfqs.mockResolvedValueOnce(pageSin());
+    await service.syncRfqs('cron');
+    fijarTiempos(prisma, 0, '2026-11-01T10:00:00Z', '2026-11-01T10:01:00Z');
+    // 30 RQ viejas que ya no vienen (más que el tope de 25)
+    for (let n = 0; n < 30; n++) {
+      prisma.maximo_rfqs.rows.push({
+        id: `rq-vieja-${n}`,
+        rfqnum: `RQ80${String(n).padStart(4, '0')}`,
+        last_seen_at: new Date('2026-10-01T00:00:00Z'),
+        superseded_at: null,
+      });
+    }
+    const marcadas = () =>
+      prisma.maximo_rfqs.rows.filter((r) => r.superseded_at != null);
+
+    // la página falla: corrida fallida, nada se marca
+    client.fetchRfqs.mockRejectedValueOnce(new Error('timeout'));
+    const fallida = (await service.syncRfqs('cron')) as MaximoSyncRunSummary;
+    expect(fallida.status).toBe('failed');
+    expect(marcadas()).toHaveLength(0);
+
+    // completa, pero 30 > tope: no marca ninguna y lo dice (log y corrida)
+    client.fetchRfqs.mockResolvedValueOnce(pageSin());
+    const completa = (await service.syncRfqs('cron')) as MaximoSyncRunSummary;
+    expect(completa.status).toBe('success');
+    expect(marcadas()).toHaveLength(0);
+    expect(lines.join(' | ')).toMatch(/30 RQ dejaron de venir .*tope 25/);
+    expect(completa.filterWarnings).toEqual([
+      expect.objectContaining({
+        kind: 'obsoletas',
+        marcadas: 0,
+        description: expect.stringMatching(
+          /^30 RQ dejaron de venir .*tope 25.*revisar AB_COTIZACIONES$/,
+        ) as unknown,
+      }),
+    ]);
+  });
+
+  it('una RQ que no mapea cuenta como registro fallido y la página sigue (sin marcar obsoletas)', async () => {
+    const { service, prisma, client } = makeService({
+      sync: { pageSize: 100 },
+    });
+    client.fetchRfqs.mockResolvedValueOnce(pageSin());
+    await service.syncRfqs('cron');
+
+    const page: MaximoFetchResult<MaximoRfqDto | Error> = pageSin();
+    page.records = [...page.records];
+    page.records[2] = new Error('RFQNUM ausente');
+    client.fetchRfqs.mockResolvedValueOnce(page);
+    const run = (await service.syncRfqs('cron')) as MaximoSyncRunSummary;
+    expect(summaryOf(run)).toEqual({
+      status: 'partial',
+      inserted: 0,
+      updated: 0,
+      remapped: 0,
+      unchanged: 7,
+      failed: 1,
+    });
+    expect(run.errorSummary).toContain('mapeo de RQ: RFQNUM ausente');
+    // corrida no completa: nadie se marca
+    expect(
+      prisma.maximo_rfqs.rows.filter((r) => r.superseded_at != null),
+    ).toHaveLength(0);
   });
 });

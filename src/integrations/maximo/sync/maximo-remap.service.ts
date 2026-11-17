@@ -6,6 +6,7 @@ import {
   MAXIMO_MAPPER_VERSION,
   toContracts,
   toPurchaseOrder,
+  toRfq,
 } from '../maximo.mapper';
 import { MaximoSyncTarget } from './maximo-sync.types';
 import { poMappedColumns, replacePoStatusHistory } from './maximo-po-history';
@@ -13,6 +14,10 @@ import {
   contractMappedColumns,
   replacePrStatusHistory,
 } from './maximo-pr-history';
+import {
+  replaceRfqStatusHistory,
+  rfqMappedColumns,
+} from './maximo-rfq-history';
 import { maximoRawHash } from './maximo-staging.service';
 
 export interface MaximoRemapResult {
@@ -58,6 +63,8 @@ interface ContractCandidate {
  *     el recorrido va por `id`, un uuid al azar.
  *   - No correrlo con una corrida del sync en curso: el delete + createMany
  *     del historial concurrente choca con el UNIQUE (prnum, seq).
+ * O2 (2026-11-17): también las RQ (`rfqs`), con su historial RFQSTATUS; como
+ * en la OC, no toca `superseded_at`.
  */
 @Injectable()
 export class MaximoRemapService {
@@ -80,7 +87,8 @@ export class MaximoRemapService {
       errors: [],
     };
     if (target === 'purchase_orders') await this.remapPurchaseOrders(result);
-    else await this.remapContracts(result);
+    else if (target === 'contracts') await this.remapContracts(result);
+    else await this.remapRfqs(result);
 
     this.logger.log(
       `remapAll(${target}) → mapper ${MAXIMO_MAPPER_VERSION}: scanned=${result.scanned} remapped=${result.remapped} failed=${result.failed}`,
@@ -115,6 +123,43 @@ export class MaximoRemapService {
               },
             }),
             ...replacePoStatusHistory(this.prisma, row.id, dto),
+          ]);
+          result.remapped += 1;
+        } catch (error: unknown) {
+          this.recordFailure(result, row.id, error);
+        }
+      }
+    }
+  }
+
+  /** O2: las RQ desde su raw, con su historial, en lotes por id. */
+  private async remapRfqs(result: MaximoRemapResult): Promise<void> {
+    let cursor: string | null = null;
+    for (;;) {
+      const rows: Array<{ id: string; raw: unknown }> =
+        await this.prisma.maximo_rfqs.findMany({
+          take: BATCH_SIZE,
+          ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+          orderBy: { id: 'asc' },
+          select: { id: true, raw: true },
+        });
+      if (rows.length === 0) break;
+      cursor = rows[rows.length - 1].id;
+
+      for (const row of rows) {
+        result.scanned += 1;
+        try {
+          const dto = toRfq(row.raw);
+          await this.prisma.$transaction([
+            this.prisma.maximo_rfqs.update({
+              where: { id: row.id },
+              data: {
+                ...rfqMappedColumns(dto),
+                raw_hash: maximoRawHash(row.raw),
+                mapper_version: MAXIMO_MAPPER_VERSION,
+              },
+            }),
+            ...replaceRfqStatusHistory(this.prisma, row.id, dto),
           ]);
           result.remapped += 1;
         } catch (error: unknown) {

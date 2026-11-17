@@ -14,7 +14,8 @@ completa (`skipped`).
 - Sin headers de autenticación ni tokens (las capturas solo guardan el cuerpo).
 - Datos personales de `PERSON` y usuarios: `DISPLAYNAME`/`FIRSTNAME`/`LASTNAME`
   → `Persona Demo N` / `NombreN` / `ApellidoN`; `PERSONID`, `REQUESTEDBY`,
-  `PURCHASEAGENT`, `CHANGEBY`, `SUPERVISOR`, `DELEGATE` → `USRnnn` (mapa
+  `PURCHASEAGENT`, `CHANGEBY`, `SUPERVISOR`, `DELEGATE` y (O2) `ENTERBY` →
+  `USRnnn` (mapa
   determinista; la cuenta de sistema `MAXADMIN` se conserva). Dentro de
   `PERSON` también se reemplazan los cuasi-identificadores: `TITLE` →
   `Puesto demo`, `PERSONUID` → 90NN, `STATUSDATE` → fecha fija dummy.
@@ -54,6 +55,7 @@ proveedores, artículos y descripciones de demo.
 | `ab-compras.oslc.page.SYNTHETIC.json` | construido sobre C1 (2 miembros) | OSLC | **SINTÉTICO**: `responseInfo.nextPage`/`totalCount` (paginación OSLC NO validada en prod) |
 | `ab-compras.legacy-nested.po5-linecost.SYNTHETIC.json` | construido a mano (bloque K, 2026-10-05) | legacy anidado | **SINTÉTICO** (K2/K6): PO104896, la OC que se busca en dev (copia en SAP: 6337, EUR). INPRG, `PO5`=PROCESADO, `RECEIPTS`=COMPLETE, EUR, `TOTALCOST` 1755.00 = Σ `POLINE.LINECOST` (OC exenta). `POLINE` llega en orden 3, 1, 2, con `RECEIVEDQTY`, `RECEIPTSCOMPLETE` y `PRNUM`: la línea 3 es de PR990007 (USR022) y las 1 y 2 de PR990001 (USR021), así que `prnum`/`requestedBy` deben salir de la línea 1. `POSTATUS` desordenado |
 | `ab-compras.legacy-nested.rq-tc-contrato.SYNTHETIC.json` | construido a mano (bloque O, 2026-10-26) | legacy anidado | **SINTÉTICO** (O1/O3): lo que CIISA agregó el 26-oct. PO990101 (MXN) con dos `RFQSTATUS` en la raíz, desordenados (gana el de `RFQSTATUSSEQ` más alto, USR041); PO990102 (USD) con `RFQSTATUS` debajo de la línea y una `PERSON` de otra persona (sin nombre); PO990103 de contrato por `CONTRACTREFNUM` en la cabecera; PO990104 (EUR, `EXCHANGERATE` 1.19) con `CONTRACTREFNUM` vacío y `"~null~"` (no es de contrato); PO990105 de contrato por la línea; PO990106 con `RFQSTATUS` debajo de `RFQLINE` (hija de la cabecera; dos líneas de la misma RQ, gana el `RFQSTATUSSEQ` más alto, USR045), **que es la forma de prod** (diagnóstico del 26-oct: las 3,843 OC con RQ lo traen ahí y en ningún otro nivel). `EXCHANGERATE` contra el dólar en todas |
+| `ab-cotizaciones.legacy-nested.SYNTHETIC.json` | construido a mano (O2, 2026-11-17) con la forma vista en prod el 17-nov (Bitácora del HANDOFF) | legacy anidado | **SINTÉTICO** (O2): AB_COTIZACIONES, raíz `RFQ` con `RFQSTATUS` colgado de la cabecera (historial completo) y `RFQLINE` con el `PONUM` de su OC. RQ990101 CLOSE con INPRG › SENT › INPRG › SENT › WREV › CLOSE desordenado (lo cierra USR050; ENTERBY USR051, distinto del comprador de RFQSTATUS de PO990101 en AB_COMPRAS); RQ990102 CANCEL con `MEMO` y `PONUM` `"~null~"`; RQ990103 INPRG sin `PONUM`; RQ990104 CLOSE sin fila CLOSE (respaldo por `STATUSDATE`) y dos OC, una con espacios; RQ990105 SENT creada el sábado 17-oct, sin `DESCRIPTION` ni `REQUIREDDATE`; RQ990106 WREV y CLOSE en el mismo segundo (desempata `RFQSTATUSSEQ`); RQ990107 cerrada, reabierta y cerrada otra vez; RQ990108 creada en 2025 y cerrada en 2026. Proveedores `P00009nn`, artículos `ART-DEMO-nn` |
 | `ab-contratos.legacy-nested.prstatus.SYNTHETIC.json` | construido a mano (bloque K, 2026-10-05) | legacy anidado | **SINTÉTICO** (K3): 7 PR con `STATUS`, `STATUSDATE`, `ISSUEDATE` y `TOTALCOST` en la raíz y `PRSTATUS` desordenado. Ver la tabla de abajo |
 | `ab-contratos.legacy-compact.prstatus.SYNTHETIC.json` | el mismo contenido que el anterior | legacy compacto | **SINTÉTICO** (K3): par compacto del anidado; las dos formas dan los mismos DTO y el mismo `raw_hash` |
 | `oslc.error.bmxaa8781e.json` | `resultados_v2/C3_oslc_contratos_contractrefnum.json` | OSLC | Error `BMXAA8781E` (propiedad inválida en `oslc.where`) |
@@ -67,7 +69,7 @@ la evidencia. Al regenerar, volver a verificar:
    `USRnnn`/`MAXADMIN` — el test "sanidad de los fixtures" de
    `maximo.mapper.spec.ts` lo automatiza.
 4. Usuarios (`PERSONID`, `REQUESTEDBY`, `PURCHASEAGENT`, `CHANGEBY`,
-   `SUPERVISOR`, `DELEGATE`) en `USRnnn`/`MAXADMIN`, `DISPLAYNAME` en
+   `SUPERVISOR`, `DELEGATE`, `ENTERBY`) en `USRnnn`/`MAXADMIN`, `DISPLAYNAME` en
    `Persona Demo N` y `MEMO` en `Comentario de prueba…`, en las tres formas —
    también lo automatiza "sanidad de los fixtures".
 

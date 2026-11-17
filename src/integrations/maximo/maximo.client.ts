@@ -11,6 +11,7 @@ import type {
 import { MaximoContractDto } from './dto/maximo-contract.dto';
 import { MaximoPurchaseOrderDto } from './dto/maximo-po.dto';
 import { MaximoApi, MaximoObjectStructure } from './dto/maximo-raw.types';
+import { MaximoRfqDto } from './dto/maximo-rfq.dto';
 import { MAXIMO_CONFIG, MAXIMO_LOGGER } from './maximo.config';
 import type { MaximoConfig } from './maximo.config';
 import {
@@ -18,6 +19,7 @@ import {
   MaximoFilterNotAppliedError,
   MaximoInvalidArgumentError,
   MaximoNotConfiguredError,
+  MaximoRfqsDisabledError,
 } from './maximo.errors';
 import {
   MaximoLegacyPageInfo,
@@ -26,6 +28,7 @@ import {
   parseOslcEnvelope,
   toContract,
   toPurchaseOrder,
+  toRfq,
 } from './maximo.mapper';
 
 /**
@@ -94,6 +97,9 @@ export interface FetchContractsParams {
   maxItems?: number;
   rsStart?: number;
 }
+
+/** O2: página legacy de AB_COTIZACIONES. */
+export type FetchRfqsParams = FetchContractsParams;
 
 const DEFAULT_MAX_ITEMS = 100;
 const IDENTIFIER_RE = /^[A-Za-z0-9._-]{1,50}$/;
@@ -199,11 +205,39 @@ export class MaximoClient {
   }
 
   // -------------------------------------------------------------------------
+  // AB_COTIZACIONES (O2; deshabilitable vía MAXIMO_RFQS_ENABLED)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Lista las solicitudes de cotización (raíz RFQ, con RFQSTATUS y RFQLINE).
+   * REST legacy paginado, como AB_COMPRAS: es una Object Structure de CIISA.
+   * Nunca la tabla directa (`/maxrest/rest/mbo/RFQ`): solo sirvió para
+   * diagnosticar con maxadmin y un usuario de servicio limitado a las
+   * estructuras de CIISA no la vería. El registro que no mapea (p. ej. sin
+   * RFQNUM) llega como su error, en su lugar: no tumba la página y el sync
+   * lo cuenta como registro fallido.
+   */
+  async fetchRfqs(
+    params: FetchRfqsParams = {},
+  ): Promise<MaximoFetchResult<MaximoRfqDto | Error>> {
+    this.assertRfqsEnabled();
+    const result = await this.getLegacy('AB_COTIZACIONES', {
+      _maxItems: params.maxItems ?? DEFAULT_MAX_ITEMS,
+      _rsStart: params.rsStart ?? 0,
+    });
+    return this.finish(result, porRegistro(toRfq), noFilter());
+  }
+
+  // -------------------------------------------------------------------------
   // Internos
   // -------------------------------------------------------------------------
 
   private assertContractsEnabled(): void {
     if (!this.config.contractsEnabled) throw new MaximoContractsDisabledError();
+  }
+
+  private assertRfqsEnabled(): void {
+    if (!this.config.rfqsEnabled) throw new MaximoRfqsDisabledError();
   }
 
   private ensureClient(api: MaximoApi): IntegrationHttpClient {
@@ -334,6 +368,19 @@ interface RawFetch {
 
 function fmt(value: number | null): string {
   return value === null ? '-' : String(value);
+}
+
+/** O2: el registro que no mapea regresa su error en lugar de lanzarlo. */
+function porRegistro<T>(
+  mapper: (raw: unknown) => T,
+): (raw: unknown) => T | Error {
+  return (raw) => {
+    try {
+      return mapper(raw);
+    } catch (error: unknown) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  };
 }
 
 function noFilter(): () => MaximoFilterCheck {

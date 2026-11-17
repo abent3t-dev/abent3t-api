@@ -1,14 +1,16 @@
 /**
  * Tipos compartidos del sync de Maximo (Fase INT-3). Los literales espejan
- * los enums de Postgres creados en `prisma/sql/0005_maximo_staging.sql`.
+ * los enums de Postgres creados en `prisma/sql/0005_maximo_staging.sql`
+ * (O2: 'rfqs' en la 0023).
  */
-export type MaximoSyncTarget = 'purchase_orders' | 'contracts';
+export type MaximoSyncTarget = 'purchase_orders' | 'contracts' | 'rfqs';
 export type MaximoSyncTrigger = 'cron' | 'manual' | 'seed';
 export type MaximoSyncRunStatus = 'running' | 'success' | 'partial' | 'failed';
 
 export const MAXIMO_SYNC_TARGETS: readonly MaximoSyncTarget[] = [
   'purchase_orders',
   'contracts',
+  'rfqs',
 ];
 
 /**
@@ -34,7 +36,10 @@ export interface MaximoUpsertResult {
   outcome: MaximoUpsertOutcome;
   /** Solo con 'remapped': 'mapper' si cambió la versión, si no 'hash'. */
   reason?: MaximoRemapReason;
-  /** Clave natural legible: `ponum|siteid|rev` o `prnum|contractnum|rev`. */
+  /**
+   * Clave natural legible: `ponum|siteid|rev`, `prnum|contractnum|rev` o
+   * (O2) `rfqnum|siteid`.
+   */
   key: string;
 }
 
@@ -60,7 +65,10 @@ export interface MaximoSyncRunSummary extends MaximoSyncCounters {
   errorSummary: string | null;
 }
 
-/** Resultado de syncContracts cuando MAXIMO_CONTRACTS_ENABLED=false. */
+/**
+ * Resultado de syncContracts cuando MAXIMO_CONTRACTS_ENABLED=false (O2: y de
+ * syncRfqs con MAXIMO_RFQS_ENABLED=false).
+ */
 export interface MaximoSyncSkipped {
   skipped: true;
   target: MaximoSyncTarget;

@@ -22,7 +22,8 @@ import { isSyncSkipped } from './maximo-sync.types';
  * runtime de @nestjs/schedule que usan reminders/platforms). Gate absoluto
  * por `MAXIMO_SYNC_ENABLED`: con false NO se registra nada y `tick()` retorna
  * sin llamar al service. Jitter inicial (15-45 s) para no sincronizar en el
- * segundo cero del deploy. Orden por corrida: POs, luego contratos.
+ * segundo cero del deploy. Orden por corrida: POs, luego contratos y (O2) las
+ * solicitudes de cotización, cada uno con su flag.
  */
 export const MAXIMO_SYNC_TIMEOUT_NAME = 'maximo-sync-initial';
 export const MAXIMO_SYNC_INTERVAL_NAME = 'maximo-sync-interval';
@@ -66,7 +67,7 @@ export class MaximoSyncScheduler implements OnApplicationBootstrap {
     );
   }
 
-  /** Una pasada del cron: POs y luego contratos. Nunca lanza. */
+  /** Una pasada del cron: POs, contratos y RQ (O2). Nunca lanza. */
   async tick(): Promise<void> {
     if (!this.config.enabled) return;
     await this.run('purchase_orders', () =>
@@ -74,6 +75,10 @@ export class MaximoSyncScheduler implements OnApplicationBootstrap {
     );
     await this.run('contracts', async () => {
       const result = await this.syncService.syncContracts('cron');
+      if (isSyncSkipped(result)) return; // ya logueado por el service
+    });
+    await this.run('rfqs', async () => {
+      const result = await this.syncService.syncRfqs('cron');
       if (isSyncSkipped(result)) return; // ya logueado por el service
     });
   }

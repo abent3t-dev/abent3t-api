@@ -25,6 +25,7 @@ describe('loadMaximoConfig', () => {
       oslcUrl: null,
       authToken: null,
       contractsEnabled: false,
+      rfqsEnabled: false,
       timeoutMs: MAXIMO_DEFAULT_TIMEOUT_MS,
       maxRetries: MAXIMO_DEFAULT_MAX_RETRIES,
     });
@@ -51,6 +52,15 @@ describe('loadMaximoConfig', () => {
       loadMaximoConfig(stubConfigService({ MAXIMO_CONTRACTS_ENABLED: 'si' }))
         .contractsEnabled,
     ).toBe(false);
+    // O2: AB_COTIZACIONES, con la misma lectura del booleano
+    expect(
+      loadMaximoConfig(stubConfigService({ MAXIMO_RFQS_ENABLED: 'true' }))
+        .rfqsEnabled,
+    ).toBe(true);
+    expect(
+      loadMaximoConfig(stubConfigService({ MAXIMO_RFQS_ENABLED: true }))
+        .rfqsEnabled,
+    ).toBe(true);
   });
 
   it('no lee la bandera de sincronización MAXIMO_SYNC_* (es de Int-3)', () => {
@@ -69,6 +79,7 @@ describe('loadMaximoConfig', () => {
       'MAXIMO_BASE_URL',
       'MAXIMO_CONTRACTS_ENABLED',
       'MAXIMO_OSLC_URL',
+      'MAXIMO_RFQS_ENABLED',
     ]);
   });
 });

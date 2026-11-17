@@ -4,7 +4,7 @@
  * `triggered_by='seed'` en `last_sync_run_id`). Las corridas quedan en la
  * bitácora. Una fila sembrada que luego tocó una corrida real se conserva.
  * K3: el historial PRSTATUS (sin FK) se borra por prnum, solo de las PR que
- * ya no conservan ninguna fila.
+ * ya no conservan ninguna fila. O2: también las RQ sembradas y su historial.
  *
  * USO:  npm run maximo:seed-clear
  * SOLO desarrollo: aborta si NODE_ENV=production.
@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   try {
     const result = await seed.clearSeeds();
     console.log(
-      `Seed retirado: ${result.purchaseOrders} PO(s), ${result.contracts} contrato(s) y ${result.prStatusHistory} cambio(s) de historial de PR`,
+      `Seed retirado: ${result.purchaseOrders} PO(s), ${result.contracts} contrato(s), ${result.prStatusHistory} cambio(s) de historial de PR, ${result.rfqs} RQ y ${result.rfqStatusHistory} cambio(s) de su historial`,
     );
   } finally {
     await prisma.$disconnect();

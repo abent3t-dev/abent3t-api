@@ -4,6 +4,7 @@ import { join } from 'path';
 import { PrismaService } from '../../../prisma/prisma.service';
 import type { LoggerLike } from '../../common';
 import { MaximoContractDto } from '../dto/maximo-contract.dto';
+import type { MaximoObjectStructure } from '../dto/maximo-raw.types';
 import { MAXIMO_LOGGER } from '../maximo.config';
 import {
   MAXIMO_MAPPER_VERSION,
@@ -11,6 +12,7 @@ import {
   parseOslcEnvelope,
   toContracts,
   toPurchaseOrder,
+  toRfq,
 } from '../maximo.mapper';
 import { MaximoStagingService } from './maximo-staging.service';
 import { MaximoSeedProductionError } from './maximo-sync.errors';
@@ -43,12 +45,14 @@ import { MaximoSyncTarget, MaximoUpsertResult } from './maximo-sync.types';
  *   conexión a Maximo; cuando haya conexión, el mismo flujo recibe datos
  *   reales. `maximo:seed-clear` retira lo sembrado.
  * - Solo dev/ts-node: los fixtures no se copian a `dist`.
+ * - O2 (2026-11-17): también las RQ de AB_COTIZACIONES (fixture sintético),
+ *   con la misma regla de no pisar datos reales.
  */
 
 interface FixtureSpec {
   file: string;
   api: 'legacy' | 'oslc';
-  os: 'AB_COMPRAS' | 'AB_CONTRATOS';
+  os: MaximoObjectStructure;
 }
 
 const PO_FIXTURES: FixtureSpec[] = [
@@ -126,6 +130,15 @@ const CONTRACT_FIXTURES: FixtureSpec[] = [
 ];
 // Excluido a propósito: oslc.error.bmxaa8781e.json (sobre de error, sin registros).
 
+// O2 (2026-11-17): RQ990101..RQ990108 con historial RFQSTATUS y RFQLINE
+const RFQ_FIXTURES: FixtureSpec[] = [
+  {
+    file: 'ab-cotizaciones.legacy-nested.SYNTHETIC.json',
+    api: 'legacy',
+    os: 'AB_COTIZACIONES',
+  },
+];
+
 export interface MaximoSeedTargetResult {
   target: MaximoSyncTarget;
   runId: string;
@@ -149,6 +162,8 @@ const SKIPPED_SAMPLE_KEYS = 5;
 export interface MaximoSeedResult {
   purchaseOrders: MaximoSeedTargetResult;
   contracts: MaximoSeedTargetResult;
+  /** O2: solicitudes de cotización. */
+  rfqs: MaximoSeedTargetResult;
 }
 
 @Injectable()
@@ -177,18 +192,23 @@ export class MaximoSeedService {
       dir,
       CONTRACT_FIXTURES,
     );
-    return { purchaseOrders, contracts };
+    const rfqs = await this.seedTarget('rfqs', dir, RFQ_FIXTURES);
+    return { purchaseOrders, contracts, rfqs };
   }
 
   /**
    * Borra las filas de staging cuyo last_sync_run_id pertenece a corridas
    * seed. K3: el historial PRSTATUS no tiene FK (es por PR), así que se borra
-   * aparte por prnum, solo de las PR que ya no conservan ninguna fila.
+   * aparte por prnum, solo de las PR que ya no conservan ninguna fila. O2: las
+   * RQ sembradas con su historial (por rfq_id, antes que la RQ; en la base
+   * también lo haría la cascada).
    */
   async clearSeeds(): Promise<{
     purchaseOrders: number;
     contracts: number;
     prStatusHistory: number;
+    rfqs: number;
+    rfqStatusHistory: number;
   }> {
     this.assertNotProduction('maximo:seed-clear');
     const seedRuns = await this.prisma.maximo_sync_runs.findMany({
@@ -197,7 +217,13 @@ export class MaximoSeedService {
     });
     const runIds = seedRuns.map((r) => r.id);
     if (runIds.length === 0) {
-      return { purchaseOrders: 0, contracts: 0, prStatusHistory: 0 };
+      return {
+        purchaseOrders: 0,
+        contracts: 0,
+        prStatusHistory: 0,
+        rfqs: 0,
+        rfqStatusHistory: 0,
+      };
     }
 
     // Nota: una fila sembrada que después tocó una corrida real (cron/manual)
@@ -236,13 +262,33 @@ export class MaximoSeedService {
         historyCount = history.count;
       }
     }
+    // O2: RQ sembradas y su historial
+    const seededRfqs = await this.prisma.maximo_rfqs.findMany({
+      where: { last_sync_run_id: { in: runIds } },
+      select: { id: true },
+    });
+    const rfqIds = seededRfqs.map((r) => r.id);
+    let rfqHistoryCount = 0;
+    let rfqCount = 0;
+    if (rfqIds.length > 0) {
+      const rfqHistory = await this.prisma.maximo_rfq_status_history.deleteMany(
+        { where: { rfq_id: { in: rfqIds } } },
+      );
+      rfqHistoryCount = rfqHistory.count;
+      const rfqs = await this.prisma.maximo_rfqs.deleteMany({
+        where: { id: { in: rfqIds } },
+      });
+      rfqCount = rfqs.count;
+    }
     this.logger.log(
-      `seed-clear: eliminadas ${pos.count} PO(s), ${contracts.count} contrato(s) y ${historyCount} cambio(s) de historial de PR sembrados`,
+      `seed-clear: eliminadas ${pos.count} PO(s), ${contracts.count} contrato(s), ${historyCount} cambio(s) de historial de PR, ${rfqCount} RQ y ${rfqHistoryCount} cambio(s) de su historial sembrados`,
     );
     return {
       purchaseOrders: pos.count,
       contracts: contracts.count,
       prStatusHistory: historyCount,
+      rfqs: rfqCount,
+      rfqStatusHistory: rfqHistoryCount,
     };
   }
 
@@ -337,6 +383,14 @@ export class MaximoSeedService {
               result,
               await this.staging.upsertPurchaseOrder(dto, raw, run.id),
             );
+          } else if (target === 'rfqs') {
+            // O2: la RQ que ya tiene una fila de una corrida real no se toca
+            const dto = toRfq(raw);
+            if (await this.rfqHasRealRows(dto.rfqnum, seedRunIds)) {
+              skip(dto.rfqnum);
+              continue;
+            }
+            this.count(result, await this.staging.upsertRfq(dto, raw, run.id));
           } else {
             const dtos = toContracts(raw);
             const realKey = await this.contractRealKey(dtos, seedRunIds);
@@ -403,6 +457,18 @@ export class MaximoSeedService {
   ): Promise<boolean> {
     const rows = await this.prisma.maximo_purchase_orders.findMany({
       where: { ponum },
+      select: { last_sync_run_id: true },
+    });
+    return rows.some((r) => !isSeedRow(r.last_sync_run_id, seedRunIds));
+  }
+
+  /** O2: true si la RQ tiene alguna fila que no es de una corrida seed. */
+  private async rfqHasRealRows(
+    rfqnum: string,
+    seedRunIds: ReadonlySet<string>,
+  ): Promise<boolean> {
+    const rows = await this.prisma.maximo_rfqs.findMany({
+      where: { rfqnum },
       select: { last_sync_run_id: true },
     });
     return rows.some((r) => !isSeedRow(r.last_sync_run_id, seedRunIds));

@@ -1,8 +1,10 @@
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { canonicalize } from '../../common/maximo/maximo-canonical';
+import { estadoDeRfq } from '../../common/maximo/maximo-rfq-status';
 import { MaximoContractDto } from './dto/maximo-contract.dto';
 import { MaximoPurchaseOrderDto } from './dto/maximo-po.dto';
+import type { MaximoObjectStructure } from './dto/maximo-raw.types';
 import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
 import {
   MAXIMO_MAPPER_VERSION,
@@ -14,6 +16,7 @@ import {
   toContract,
   toContracts,
   toPurchaseOrder,
+  toRfq,
 } from './maximo.mapper';
 
 /**
@@ -24,7 +27,7 @@ import {
 const fixture = (name: string): unknown =>
   JSON.parse(readFileSync(join(__dirname, '__fixtures__', name), 'utf8'));
 
-const legacyRecords = (name: string, os: 'AB_COMPRAS' | 'AB_CONTRATOS') =>
+const legacyRecords = (name: string, os: MaximoObjectStructure) =>
   parseLegacyEnvelope(fixture(name), os).records;
 const oslcRecords = (name: string) => parseOslcEnvelope(fixture(name)).records;
 
@@ -124,8 +127,8 @@ describe('canonicalize (common, K3.7)', () => {
 });
 
 describe('versión del mapper', () => {
-  it('2026.10.26-2: RFQSTATUS también debajo de RFQLINE (O3; 10.26-1: comprador de la RQ, tipo de cambio y referencia de contrato)', () => {
-    expect(MAXIMO_MAPPER_VERSION).toBe('2026.10.26-2');
+  it('2026.11.17-1: RQ de AB_COTIZACIONES (O2; 10.26-2: RFQSTATUS también debajo de RFQLINE, O3)', () => {
+    expect(MAXIMO_MAPPER_VERSION).toBe('2026.11.17-1');
   });
 });
 
@@ -683,6 +686,7 @@ describe('sanidad de los fixtures (sanitización)', () => {
   });
 
   it('usuarios, nombres y notas solo con valores dummy (reales y SYNTHETIC)', () => {
+    // O2: ENTERBY ("Introducido por" de la RQ) también es un usuario
     const userKeys = new Set([
       'PERSONID',
       'REQUESTEDBY',
@@ -690,6 +694,7 @@ describe('sanidad de los fixtures (sanitización)', () => {
       'CHANGEBY',
       'SUPERVISOR',
       'DELEGATE',
+      'ENTERBY',
     ]);
     const files = readdirSync(join(__dirname, '__fixtures__')).filter((f) =>
       f.endsWith('.json'),
@@ -721,6 +726,7 @@ describe('MaximoMapper (agrupador)', () => {
   it('expone las funciones puras', () => {
     expect(MaximoMapper.toPurchaseOrder).toBe(toPurchaseOrder);
     expect(MaximoMapper.toContract).toBe(toContract);
+    expect(MaximoMapper.toRfq).toBe(toRfq);
     expect(MaximoMapper.parseLegacyEnvelope).toBe(parseLegacyEnvelope);
     expect(MaximoMapper.parseOslcEnvelope).toBe(parseOslcEnvelope);
     expect(MaximoMapper.toCanonical).toBe(toCanonical);
@@ -1545,5 +1551,195 @@ describe('comprador de la RQ, tipo de cambio y contrato (O, 2026-10-26)', () => 
         ],
       }).rfqBuyer?.rfqNum,
     ).toBe('RQA');
+  });
+});
+
+describe('solicitudes de cotización de AB_COTIZACIONES (O2, 2026-11-17)', () => {
+  const RFQ_FIXTURE = 'ab-cotizaciones.legacy-nested.SYNTHETIC.json';
+  const rfqs = () =>
+    legacyRecords(RFQ_FIXTURE, 'AB_COTIZACIONES').map((raw) => toRfq(raw));
+  const rfq = (rfqnum: string) => {
+    const found = rfqs().find((r) => r.rfqnum === rfqnum);
+    if (!found) throw new Error(`falta ${rfqnum} en el fixture`);
+    return found;
+  };
+
+  it('el sobre legacy de AB_COTIZACIONES trae la raíz RFQ con sus contadores', () => {
+    const { records, page } = parseLegacyEnvelope(
+      fixture(RFQ_FIXTURE),
+      'AB_COTIZACIONES',
+    );
+    expect(records).toHaveLength(8);
+    expect(page).toEqual({ rsStart: 0, rsCount: 8, rsTotal: 8 });
+    for (const dto of rfqs()) expect(undefinedPaths(dto)).toEqual([]);
+  });
+
+  it('cabecera: creación, "Introducido por" (comprador), "Solicitado por" y estatus', () => {
+    expect(rfq('RQ990101')).toMatchObject({
+      erp: 'Maximo',
+      rfqnum: 'RQ990101',
+      siteId: 'A3T',
+      description: 'Solicitud de cotización de prueba 1',
+      status: 'CLOSE',
+      statusDate: '2026-10-14T22:40:00+00:00',
+      enterDate: '2026-10-05T15:10:00+00:00',
+      enterBy: 'USR051',
+      requestedBy: 'USR060',
+      requiredDate: '2026-10-30T00:00:00+00:00',
+      changeBy: 'USR050',
+      changeDate: '2026-10-14T22:40:00+00:00',
+    });
+    // Maximo omite los campos vacíos: salen null
+    expect(rfq('RQ990105')).toMatchObject({
+      description: null,
+      requiredDate: null,
+      status: 'SENT',
+    });
+  });
+
+  it('historial RFQSTATUS completo, ordenado por fecha aunque llegue desordenado; la cierra USR050', () => {
+    const dto = rfq('RQ990101');
+    expect(dto.statusHistory.map((h) => h.status)).toEqual([
+      'INPRG',
+      'SENT',
+      'INPRG',
+      'SENT',
+      'WREV',
+      'CLOSE',
+    ]);
+    expect(dto.statusHistory[5]).toEqual({
+      status: 'CLOSE',
+      changeDate: '2026-10-14T22:40:00+00:00',
+      changedBy: 'USR050',
+      memo: null,
+    });
+    expect(dto).toMatchObject({
+      closedDate: '2026-10-14T22:40:00+00:00',
+      closedBy: 'USR050',
+      cancelledDate: null,
+      cancelledBy: null,
+    });
+  });
+
+  it('en el mismo segundo desempata RFQSTATUSSEQ (WREV antes que CLOSE, aunque llegan al revés)', () => {
+    expect(rfq('RQ990106').statusHistory.map((h) => h.status)).toEqual([
+      'INPRG',
+      'SENT',
+      'WREV',
+      'CLOSE',
+    ]);
+  });
+
+  it('cancelada con el MEMO del cambio; reabierta y cerrada otra vez = el último CLOSE', () => {
+    expect(rfq('RQ990102')).toMatchObject({
+      status: 'CANCEL',
+      cancelledDate: '2026-10-09T20:00:00+00:00',
+      cancelledBy: 'USR052',
+      closedDate: null,
+    });
+    expect(rfq('RQ990102').statusHistory[1].memo).toBe(
+      'Comentario de prueba: se cambió el alcance',
+    );
+    const reabierta = rfq('RQ990107');
+    expect(reabierta.statusHistory.map((h) => h.status)).toEqual([
+      'INPRG',
+      'CLOSE',
+      'INPRG',
+      'CLOSE',
+    ]);
+    expect(reabierta.closedDate).toBe('2026-09-25T22:00:00+00:00');
+  });
+
+  it('STATUS CLOSE sin fila CLOSE en el historial: el mapper no la inventa (el avance usa STATUSDATE)', () => {
+    expect(rfq('RQ990104')).toMatchObject({
+      status: 'CLOSE',
+      statusDate: '2026-10-02T23:00:00+00:00',
+      closedDate: null,
+      closedBy: null,
+    });
+  });
+
+  it('líneas por RFQLINENUM; las OC de la RQ = PONUM de sus líneas, distintos, recortados y sin "~null~"', () => {
+    const conOc = rfq('RQ990101');
+    expect(conOc.lines.map((l) => l.lineNum)).toEqual([1, 2]);
+    expect(conOc.lines[0]).toEqual({
+      lineNum: 1,
+      ponum: 'PO990101',
+      poLineNum: 1,
+      poRevisionNum: 0,
+      vendor: 'P0000901',
+      itemNum: 'ART-DEMO-01',
+      orderQty: 2,
+      orderUnit: 'PZA',
+    });
+    expect(conOc.poNums).toEqual(['PO990101']);
+    // dos OC, una con espacios a los lados
+    expect(rfq('RQ990104').poNums).toEqual(['PO990102', 'PO990104']);
+    // "~null~" y el PONUM omitido: sin OC
+    expect(rfq('RQ990102').poNums).toEqual([]);
+    expect(rfq('RQ990103').poNums).toEqual([]);
+  });
+
+  it('la forma OSLC lean (minúsculas) da el mismo DTO que la legacy anidada', () => {
+    const nested = {
+      rowstamp: '1',
+      Attributes: {
+        RFQNUM: { content: 'RQ1' },
+        STATUS: { content: 'CLOSE' },
+        ENTERBY: { content: ' USR001 ' },
+        ENTERDATE: { content: '2026-10-01T15:00:00+00:00' },
+      },
+      RelatedMbos: {
+        RFQSTATUS: [
+          {
+            Attributes: {
+              STATUS: { content: 'CLOSE' },
+              CHANGEDATE: { content: '2026-10-02T15:00:00+00:00' },
+              CHANGEBY: { content: 'USR002' },
+              RFQSTATUSSEQ: { content: 2 },
+            },
+          },
+        ],
+        RFQLINE: [{ Attributes: { PONUM: { content: 'PO1' } } }],
+      },
+    };
+    const oslc = {
+      _rowstamp: '1',
+      href: 'http://maximo.example:9080/oslc/os/ab_cotizaciones/x',
+      rfqnum: 'RQ1',
+      status: 'CLOSE',
+      enterby: ' USR001 ',
+      enterdate: '2026-10-01T15:00:00+00:00',
+      rfqstatus: [
+        {
+          status: 'CLOSE',
+          changedate: '2026-10-02T15:00:00+00:00',
+          changeby: 'USR002',
+          rfqstatusseq: 2,
+        },
+      ],
+      rfqline: [{ ponum: 'PO1' }],
+    };
+    expect(toRfq(oslc)).toEqual(toRfq(nested));
+    expect(toRfq(nested)).toMatchObject({
+      enterBy: 'USR001',
+      closedDate: '2026-10-02T15:00:00+00:00',
+      poNums: ['PO1'],
+    });
+  });
+
+  it('sin RFQNUM el registro no se mapea (fetchRfqs lo devuelve como error y el sync lo cuenta como registro fallido)', () => {
+    expect(() =>
+      toRfq({ Attributes: { STATUS: { content: 'INPRG' } } }),
+    ).toThrow(MaximoMappingError);
+  });
+
+  it('estados de la RQ: CLOSE cerrada; CANCEL (o CAN) cancelada; INPRG, SENT, WREV y lo demás, abierta', () => {
+    expect(estadoDeRfq('CLOSE')).toBe('cerrada');
+    expect(estadoDeRfq('CANCEL')).toBe('cancelada');
+    expect(estadoDeRfq(' can ')).toBe('cancelada');
+    for (const s of ['INPRG', 'SENT', 'WREV', 'WAPPR', '', null, undefined]) {
+      expect(estadoDeRfq(s)).toBe('abierta');
+    }
   });
 });

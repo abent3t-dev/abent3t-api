@@ -16,6 +16,12 @@ function makeScheduler(enabled: boolean) {
       target: 'contracts',
       reason: 'x',
     }),
+    // O2: las RQ (con el flag apagado, skip)
+    syncRfqs: jest.fn().mockResolvedValue({
+      skipped: true,
+      target: 'rfqs',
+      reason: 'x',
+    }),
   };
   const registry = {
     addTimeout: jest.fn(),
@@ -46,9 +52,10 @@ describe('MaximoSyncScheduler', () => {
     await scheduler.tick();
     expect(syncService.syncPurchaseOrders).toHaveBeenCalledTimes(0);
     expect(syncService.syncContracts).toHaveBeenCalledTimes(0);
+    expect(syncService.syncRfqs).toHaveBeenCalledTimes(0);
   });
 
-  it('habilitado: registra timeout con jitter y el tick corre POs y luego contratos', async () => {
+  it('habilitado: registra timeout con jitter y el tick corre POs, contratos y RQ (O2), en ese orden', async () => {
     jest.useFakeTimers();
     try {
       const { scheduler, syncService, registry } = makeScheduler(true);
@@ -69,8 +76,13 @@ describe('MaximoSyncScheduler', () => {
         });
       });
 
+      syncService.syncRfqs.mockImplementation(() => {
+        order.push('rfqs');
+        return Promise.resolve({ status: 'success' });
+      });
+
       await scheduler.tick();
-      expect(order).toEqual(['po', 'contracts']);
+      expect(order).toEqual(['po', 'contracts', 'rfqs']);
     } finally {
       jest.useRealTimers();
     }
@@ -84,6 +96,8 @@ describe('MaximoSyncScheduler', () => {
     syncService.syncContracts.mockRejectedValueOnce(new Error('BD caída'));
 
     await expect(scheduler.tick()).resolves.toBeUndefined();
+    // los errores de antes no impiden la corrida de las RQ
+    expect(syncService.syncRfqs).toHaveBeenCalledWith('cron');
     const joined = lines.join('\n');
     expect(joined).toContain('aún en curso');
     expect(joined).toContain('BD caída');

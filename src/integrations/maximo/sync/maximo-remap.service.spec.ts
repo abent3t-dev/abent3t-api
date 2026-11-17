@@ -22,6 +22,31 @@ async function seededPrisma(): Promise<FakePrisma> {
 }
 
 describe('MaximoRemapService', () => {
+  it('O2: las RQ se re-derivan de su raw con su historial RFQSTATUS', async () => {
+    const prisma = await seededPrisma();
+    const rq = prisma.maximo_rfqs.rows.find((r) => r.rfqnum === 'RQ990101')!;
+    rq.mapper_version = '2000.01.01-0';
+    rq.enter_by = 'DESALINEADO';
+    rq.po_nums = [];
+    prisma.maximo_rfq_status_history.rows =
+      prisma.maximo_rfq_status_history.rows.filter((h) => h.rfq_id !== rq.id);
+
+    const remap = new MaximoRemapService(prisma.asService(), silentLogger());
+    const result = await remap.remapAll('rfqs');
+    expect(result).toMatchObject({
+      target: 'rfqs',
+      scanned: 8,
+      remapped: 8,
+      failed: 0,
+    });
+    expect(rq.mapper_version).toBe(MAXIMO_MAPPER_VERSION);
+    const fresh = prisma.maximo_rfqs.rows.find((r) => r.rfqnum === 'RQ990101')!;
+    expect(fresh).toMatchObject({ enter_by: 'USR051', po_nums: ['PO990101'] });
+    expect(
+      prisma.maximo_rfq_status_history.rows.filter((h) => h.rfq_id === rq.id),
+    ).toHaveLength(6);
+  });
+
   it('actualiza columnas mapeadas y mapper_version desde raw, sin red', async () => {
     const prisma = await seededPrisma();
     // Simula filas escritas por un mapper anterior con datos desalineados

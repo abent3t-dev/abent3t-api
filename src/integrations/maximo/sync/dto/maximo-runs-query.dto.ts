@@ -4,8 +4,8 @@ import { Type } from 'class-transformer';
 /** Query de GET /integrations/maximo/runs (mismo shape que PaginationDto). */
 export class MaximoRunsQueryDto {
   @IsOptional()
-  @IsIn(['purchase_orders', 'contracts'])
-  target?: 'purchase_orders' | 'contracts';
+  @IsIn(['purchase_orders', 'contracts', 'rfqs'])
+  target?: 'purchase_orders' | 'contracts' | 'rfqs';
 
   @IsOptional()
   @Type(() => Number)

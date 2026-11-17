@@ -1,0 +1,1490 @@
+{
+  "QueryAB_COTIZACIONESResponse": {
+    "rsStart": 0,
+    "rsCount": 8,
+    "rsTotal": 8,
+    "AB_COTIZACIONESSet": {
+      "RFQ": [
+        {
+          "rowstamp": "470000163",
+          "Attributes": {
+            "AB_ASDIRECTA": {
+              "content": false
+            },
+            "CHANGEBY": {
+              "content": "USR050"
+            },
+            "CHANGEDATE": {
+              "content": "2026-10-14T22:40:00+00:00"
+            },
+            "DESCRIPTION": {
+              "content": "Solicitud de cotización de prueba 1"
+            },
+            "ENTERBY": {
+              "content": "USR051"
+            },
+            "ENTERDATE": {
+              "content": "2026-10-05T15:10:00+00:00"
+            },
+            "ORGID": {
+              "content": "N28"
+            },
+            "REQUESTEDBY": {
+              "content": "USR060"
+            },
+            "REQUIREDDATE": {
+              "content": "2026-10-30T00:00:00+00:00"
+            },
+            "RFQNUM": {
+              "content": "RQ990101"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "STATUSDATE": {
+              "content": "2026-10-14T22:40:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "RFQSTATUS": [
+              {
+                "rowstamp": "470000128",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-07T18:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 4
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "SENT"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90104,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000107",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-05T15:10:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 1
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90101,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000142",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR050"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-14T22:40:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 6
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90106,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000114",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-06T16:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 2
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "SENT"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90102,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000135",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-12T19:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 5
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "WREV"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90105,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000121",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-07T17:30:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 3
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90103,
+                    "resourceid": true
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "470000149",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-02"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 3
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PONUM": {
+                    "content": "PO990101"
+                  },
+                  "POLINENUM": {
+                    "content": 2
+                  },
+                  "POREVISIONNUM": {
+                    "content": 0
+                  },
+                  "RFQLINENUM": {
+                    "content": 2
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000901"
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000156",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-01"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 2
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PONUM": {
+                    "content": "PO990101"
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "POREVISIONNUM": {
+                    "content": 0
+                  },
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990101"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000901"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "470000191",
+          "Attributes": {
+            "AB_ASDIRECTA": {
+              "content": false
+            },
+            "CHANGEBY": {
+              "content": "USR052"
+            },
+            "CHANGEDATE": {
+              "content": "2026-10-09T20:00:00+00:00"
+            },
+            "DESCRIPTION": {
+              "content": "Solicitud de cotización de prueba 2"
+            },
+            "ENTERBY": {
+              "content": "USR052"
+            },
+            "ENTERDATE": {
+              "content": "2026-10-08T14:20:00+00:00"
+            },
+            "ORGID": {
+              "content": "N28"
+            },
+            "REQUESTEDBY": {
+              "content": "USR061"
+            },
+            "REQUIREDDATE": {
+              "content": "2026-10-20T00:00:00+00:00"
+            },
+            "RFQNUM": {
+              "content": "RQ990102"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CANCEL"
+            },
+            "STATUSDATE": {
+              "content": "2026-10-09T20:00:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "RFQSTATUS": [
+              {
+                "rowstamp": "470000170",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR052"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-09T20:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990102"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 2
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "CANCEL"
+                  },
+                  "MEMO": {
+                    "content": "Comentario de prueba: se cambió el alcance"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90202,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000177",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR052"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-08T14:20:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990102"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 1
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90201,
+                    "resourceid": true
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "470000184",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-03"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 1
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PONUM": {
+                    "content": "~null~"
+                  },
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990102"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000902"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "470000212",
+          "Attributes": {
+            "AB_ASDIRECTA": {
+              "content": false
+            },
+            "CHANGEBY": {
+              "content": "USR053"
+            },
+            "CHANGEDATE": {
+              "content": "2026-10-16T21:05:00+00:00"
+            },
+            "DESCRIPTION": {
+              "content": "Solicitud de cotización de prueba 3"
+            },
+            "ENTERBY": {
+              "content": "USR053"
+            },
+            "ENTERDATE": {
+              "content": "2026-10-16T21:05:00+00:00"
+            },
+            "ORGID": {
+              "content": "N28"
+            },
+            "REQUESTEDBY": {
+              "content": "USR062"
+            },
+            "REQUIREDDATE": {
+              "content": "2026-11-06T00:00:00+00:00"
+            },
+            "RFQNUM": {
+              "content": "RQ990103"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "INPRG"
+            },
+            "STATUSDATE": {
+              "content": "2026-10-16T21:05:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "RFQSTATUS": [
+              {
+                "rowstamp": "470000198",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR053"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-16T21:05:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990103"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 1
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90301,
+                    "resourceid": true
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "470000205",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-04"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 1
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990103"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000903"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "470000247",
+          "Attributes": {
+            "AB_ASDIRECTA": {
+              "content": false
+            },
+            "CHANGEBY": {
+              "content": "USR050"
+            },
+            "CHANGEDATE": {
+              "content": "2026-10-02T23:00:00+00:00"
+            },
+            "DESCRIPTION": {
+              "content": "Solicitud de cotización de prueba 4"
+            },
+            "ENTERBY": {
+              "content": "USR051"
+            },
+            "ENTERDATE": {
+              "content": "2026-09-28T15:00:00+00:00"
+            },
+            "ORGID": {
+              "content": "N28"
+            },
+            "REQUESTEDBY": {
+              "content": "USR060"
+            },
+            "REQUIREDDATE": {
+              "content": "2026-10-09T00:00:00+00:00"
+            },
+            "RFQNUM": {
+              "content": "RQ990104"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "STATUSDATE": {
+              "content": "2026-10-02T23:00:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "RFQSTATUS": [
+              {
+                "rowstamp": "470000219",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-29T16:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990104"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 2
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "SENT"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90402,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000226",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-28T15:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990104"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 1
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90401,
+                    "resourceid": true
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "470000233",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-05"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 1
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PONUM": {
+                    "content": "PO990104"
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "POREVISIONNUM": {
+                    "content": 0
+                  },
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990104"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000904"
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000240",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-06"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 1
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PONUM": {
+                    "content": " PO990102 "
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "POREVISIONNUM": {
+                    "content": 0
+                  },
+                  "RFQLINENUM": {
+                    "content": 2
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990104"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000905"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "470000275",
+          "Attributes": {
+            "AB_ASDIRECTA": {
+              "content": false
+            },
+            "CHANGEBY": {
+              "content": "USR052"
+            },
+            "CHANGEDATE": {
+              "content": "2026-10-19T17:00:00+00:00"
+            },
+            "ENTERBY": {
+              "content": "USR052"
+            },
+            "ENTERDATE": {
+              "content": "2026-10-17T15:30:00+00:00"
+            },
+            "ORGID": {
+              "content": "N28"
+            },
+            "REQUESTEDBY": {
+              "content": "USR061"
+            },
+            "RFQNUM": {
+              "content": "RQ990105"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "SENT"
+            },
+            "STATUSDATE": {
+              "content": "2026-10-19T17:00:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "RFQSTATUS": [
+              {
+                "rowstamp": "470000254",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR052"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-17T15:30:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990105"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 1
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000261",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR052"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-19T17:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990105"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 2
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "SENT"
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "470000268",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-07"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 1
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990105"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000906"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "470000317",
+          "Attributes": {
+            "AB_ASDIRECTA": {
+              "content": false
+            },
+            "CHANGEBY": {
+              "content": "USR050"
+            },
+            "CHANGEDATE": {
+              "content": "2026-10-20T18:00:00+00:00"
+            },
+            "DESCRIPTION": {
+              "content": "Solicitud de cotización de prueba 6"
+            },
+            "ENTERBY": {
+              "content": "USR053"
+            },
+            "ENTERDATE": {
+              "content": "2026-10-13T16:45:00+00:00"
+            },
+            "ORGID": {
+              "content": "N28"
+            },
+            "REQUESTEDBY": {
+              "content": "USR063"
+            },
+            "REQUIREDDATE": {
+              "content": "2026-10-27T00:00:00+00:00"
+            },
+            "RFQNUM": {
+              "content": "RQ990106"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "STATUSDATE": {
+              "content": "2026-10-20T18:00:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "RFQSTATUS": [
+              {
+                "rowstamp": "470000282",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR050"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-20T18:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990106"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 4
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000289",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR053"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-20T18:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990106"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 3
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "WREV"
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000296",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR053"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-14T15:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990106"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 2
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "SENT"
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000303",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR053"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-10-13T16:45:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990106"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 1
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "470000310",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-08"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 1
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PONUM": {
+                    "content": "PO990106"
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "POREVISIONNUM": {
+                    "content": 0
+                  },
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990106"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000907"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "470000359",
+          "Attributes": {
+            "AB_ASDIRECTA": {
+              "content": false
+            },
+            "CHANGEBY": {
+              "content": "USR050"
+            },
+            "CHANGEDATE": {
+              "content": "2026-09-25T22:00:00+00:00"
+            },
+            "DESCRIPTION": {
+              "content": "Solicitud de cotización de prueba 7"
+            },
+            "ENTERBY": {
+              "content": "USR051"
+            },
+            "ENTERDATE": {
+              "content": "2026-09-01T15:00:00+00:00"
+            },
+            "ORGID": {
+              "content": "N28"
+            },
+            "REQUESTEDBY": {
+              "content": "USR060"
+            },
+            "REQUIREDDATE": {
+              "content": "2026-09-15T00:00:00+00:00"
+            },
+            "RFQNUM": {
+              "content": "RQ990107"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "STATUSDATE": {
+              "content": "2026-09-25T22:00:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "RFQSTATUS": [
+              {
+                "rowstamp": "470000324",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-01T15:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990107"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 1
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90701,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000331",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR050"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-10T22:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990107"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 2
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90702,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000338",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR051"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-15T16:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990107"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 3
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90703,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000345",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR050"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-09-25T22:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990107"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 4
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90704,
+                    "resourceid": true
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "470000352",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-09"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 1
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PONUM": {
+                    "content": "PO990103"
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "POREVISIONNUM": {
+                    "content": 0
+                  },
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990107"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000908"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "rowstamp": "470000387",
+          "Attributes": {
+            "AB_ASDIRECTA": {
+              "content": false
+            },
+            "CHANGEBY": {
+              "content": "USR050"
+            },
+            "CHANGEDATE": {
+              "content": "2026-01-08T21:00:00+00:00"
+            },
+            "DESCRIPTION": {
+              "content": "Solicitud de cotización de prueba 8"
+            },
+            "ENTERBY": {
+              "content": "USR053"
+            },
+            "ENTERDATE": {
+              "content": "2025-12-15T17:00:00+00:00"
+            },
+            "ORGID": {
+              "content": "N28"
+            },
+            "REQUESTEDBY": {
+              "content": "USR062"
+            },
+            "REQUIREDDATE": {
+              "content": "2026-01-15T00:00:00+00:00"
+            },
+            "RFQNUM": {
+              "content": "RQ990108"
+            },
+            "SITEID": {
+              "content": "A3T"
+            },
+            "STATUS": {
+              "content": "CLOSE"
+            },
+            "STATUSDATE": {
+              "content": "2026-01-08T21:00:00+00:00"
+            }
+          },
+          "RelatedMbos": {
+            "RFQSTATUS": [
+              {
+                "rowstamp": "470000366",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR053"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2025-12-15T17:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990108"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 1
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "INPRG"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90801,
+                    "resourceid": true
+                  }
+                }
+              },
+              {
+                "rowstamp": "470000373",
+                "Attributes": {
+                  "CHANGEBY": {
+                    "content": "USR050"
+                  },
+                  "CHANGEDATE": {
+                    "content": "2026-01-08T21:00:00+00:00"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990108"
+                  },
+                  "RFQSTATUSSEQ": {
+                    "content": 2
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "STATUS": {
+                    "content": "CLOSE"
+                  },
+                  "RFQSTATUSID": {
+                    "content": 90802,
+                    "resourceid": true
+                  }
+                }
+              }
+            ],
+            "RFQLINE": [
+              {
+                "rowstamp": "470000380",
+                "Attributes": {
+                  "ITEMNUM": {
+                    "content": "ART-DEMO-10"
+                  },
+                  "LINECOST": {
+                    "content": 0
+                  },
+                  "ORDERQTY": {
+                    "content": 1
+                  },
+                  "ORDERUNIT": {
+                    "content": "PZA"
+                  },
+                  "ORGID": {
+                    "content": "N28"
+                  },
+                  "PONUM": {
+                    "content": "PO990105"
+                  },
+                  "POLINENUM": {
+                    "content": 1
+                  },
+                  "POREVISIONNUM": {
+                    "content": 0
+                  },
+                  "RFQLINENUM": {
+                    "content": 1
+                  },
+                  "RFQNUM": {
+                    "content": "RQ990108"
+                  },
+                  "SITEID": {
+                    "content": "A3T"
+                  },
+                  "UNITCOST": {
+                    "content": 0
+                  },
+                  "VENDOR": {
+                    "content": "P0000909"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

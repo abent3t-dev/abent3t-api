@@ -233,6 +233,10 @@ export const envValidationSchema = Joi.object({
   // CONTRACTVALUE con Isaac (CLAUDE_COMPRAS.md §20.2). Con false, los métodos
   // de contratos de MaximoClient fallan con error tipado sin tocar la red.
   MAXIMO_CONTRACTS_ENABLED: Joi.boolean().default(false),
+  // O2 (2026-11-17): solicitudes de cotización (AB_COTIZACIONES). Apagado por
+  // default: el sync no las lee y la página de Maximo del avance sigue con las
+  // PR. Solo aplica con MAXIMO_SYNC_ENABLED=true.
+  MAXIMO_RFQS_ENABLED: Joi.boolean().default(false),
   // Fase INT-3: sync a staging. Intervalo del cron (§20.A.3) y tamaño de
   // página del full scan legacy (T4). Solo aplican con MAXIMO_SYNC_ENABLED=true.
   // max 10080 (1 semana): sobre ~35 791 min el setInterval de Node desborda

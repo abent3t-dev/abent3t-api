@@ -17,6 +17,7 @@ function makeController(
     isRunning: jest.fn().mockReturnValue(false),
     startPurchaseOrders: jest.fn().mockResolvedValue('run-po-1'),
     startContracts: jest.fn().mockResolvedValue('run-ct-1'),
+    startRfqs: jest.fn().mockResolvedValue('run-rq-1'),
     ...overrides,
   };
   const statusService = {
@@ -44,9 +45,10 @@ describe('MaximoSyncController', () => {
     );
     expect(syncService.startPurchaseOrders).not.toHaveBeenCalled();
     expect(syncService.startContracts).not.toHaveBeenCalled();
+    expect(syncService.startRfqs).not.toHaveBeenCalled();
   });
 
-  it('POST /sync default all → 202 con run_id de ambos targets, disparo con usuario', async () => {
+  it('POST /sync default all → 202 con run_id de los tres targets (O2: RQ), disparo con usuario', async () => {
     const { controller, syncService } = makeController();
     const res = await controller.triggerSync({}, USER);
     expect(res).toEqual({
@@ -54,6 +56,7 @@ describe('MaximoSyncController', () => {
       runs: [
         { target: 'purchase_orders', run_id: 'run-po-1' },
         { target: 'contracts', run_id: 'run-ct-1' },
+        { target: 'rfqs', run_id: 'run-rq-1' },
       ],
       skipped: [],
       conflicts: [],
@@ -63,6 +66,33 @@ describe('MaximoSyncController', () => {
       'user-1',
     );
     expect(syncService.startContracts).toHaveBeenCalledWith('manual', 'user-1');
+    expect(syncService.startRfqs).toHaveBeenCalledWith('manual', 'user-1');
+  });
+
+  it('O2: target=rfqs con el flag apagado → 202 con skipped; con all, las demás corren', async () => {
+    const skippedRfqs = {
+      skipped: true,
+      target: 'rfqs',
+      reason:
+        'AB_COTIZACIONES deshabilitada (MAXIMO_RFQS_ENABLED=false) — corrida omitida',
+    };
+    const solo = makeController(true, {
+      startRfqs: jest.fn().mockResolvedValue(skippedRfqs),
+    });
+    const res = await solo.controller.triggerSync({ target: 'rfqs' }, USER);
+    expect(res.runs).toEqual([]);
+    expect(res.skipped).toEqual([skippedRfqs]);
+    expect(solo.syncService.startPurchaseOrders).not.toHaveBeenCalled();
+
+    const todos = makeController(true, {
+      startRfqs: jest.fn().mockResolvedValue(skippedRfqs),
+    });
+    const all = await todos.controller.triggerSync({}, USER);
+    expect(all.runs.map((r) => r.target)).toEqual([
+      'purchase_orders',
+      'contracts',
+    ]);
+    expect(all.skipped).toEqual([skippedRfqs]);
   });
 
   it('POST /sync target=contracts con contratos deshabilitados → 202 con skipped', async () => {
@@ -107,6 +137,7 @@ describe('MaximoSyncController', () => {
     const res = await controller.triggerSync({}, USER);
     expect(res.runs).toEqual([
       { target: 'purchase_orders', run_id: 'run-po-1' },
+      { target: 'rfqs', run_id: 'run-rq-1' },
     ]);
     expect(res.conflicts).toHaveLength(1);
     expect(res.conflicts[0].target).toBe('contracts');

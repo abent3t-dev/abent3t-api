@@ -106,6 +106,21 @@ describe('envValidationSchema', () => {
     },
   );
 
+  it('O2: MAXIMO_RFQS_ENABLED es booleano con default false', () => {
+    const byDefault = validate(baseEnv);
+    expect(byDefault.error).toBeUndefined();
+    expect(
+      (byDefault.value as Record<string, unknown>).MAXIMO_RFQS_ENABLED,
+    ).toBe(false);
+    const enabled = validate({ ...baseEnv, MAXIMO_RFQS_ENABLED: 'true' });
+    expect(enabled.error).toBeUndefined();
+    expect((enabled.value as Record<string, unknown>).MAXIMO_RFQS_ENABLED).toBe(
+      true,
+    );
+    const invalid = validate({ ...baseEnv, MAXIMO_RFQS_ENABLED: 'si' });
+    expect(invalid.error?.message).toContain('MAXIMO_RFQS_ENABLED');
+  });
+
   it('MAXIMO_CONTRACTS_ENABLED es booleano con default false (Fase INT-2)', () => {
     const asValues = (env: Record<string, string | undefined>) => {
       const result = validate(env);

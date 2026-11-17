@@ -1353,9 +1353,70 @@ model maximo_pr_status_history {
   @@index([changed_by], map: "idx_maximo_pr_hist_changed_by")
 }
 
+/// O2 (0023): staging de AB_COTIZACIONES, una fila por solicitud de cotización
+/// (RQ). Clave natural (rfqnum, siteid) con coalesce: índice de expresión que
+/// Prisma no modela (upsert por findFirst + create/update, como las demás).
+model maximo_rfqs {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  rfqnum           String    @db.VarChar(50)
+  siteid           String?   @db.VarChar(20)
+  description      String?
+  status           String?   @db.VarChar(30)
+  status_date      DateTime? @db.Timestamptz(6)
+  /// ENTERDATE: creación de la RQ (la "recibida" del avance).
+  enter_date       DateTime? @db.Timestamptz(6)
+  /// ENTERBY: "Introducido por" = el comprador.
+  enter_by         String?   @db.VarChar(100)
+  /// REQUESTEDBY: "Solicitado por" = el usuario del área.
+  requested_by     String?   @db.VarChar(100)
+  required_date    DateTime? @db.Timestamptz(6)
+  /// Último CLOSE del historial RFQSTATUS.
+  closed_at        DateTime? @db.Timestamptz(6)
+  closed_by        String?   @db.VarChar(100)
+  /// Último CANCEL del historial RFQSTATUS.
+  cancelled_at     DateTime? @db.Timestamptz(6)
+  cancelled_by     String?   @db.VarChar(100)
+  /// PONUM de las líneas (RFQLINE): la liga con sus OC.
+  po_nums          String[]  @default([])
+  raw_hash         String?   @db.VarChar(64)
+  rowstamp         String?   @db.VarChar(100)
+  raw              Json
+  mapper_version   String
+  first_seen_at    DateTime  @default(now()) @db.Timestamptz(6)
+  last_seen_at     DateTime  @default(now()) @db.Timestamptz(6)
+  last_changed_at  DateTime? @db.Timestamptz(6)
+  last_sync_run_id String?   @db.Uuid
+  /// La RQ dejó de venir en dos corridas completas seguidas; las vistas la excluyen.
+  superseded_at    DateTime? @db.Timestamptz(6)
+  status_history   maximo_rfq_status_history[]
+
+  @@index([status], map: "idx_maximo_rfq_status")
+  @@index([enter_date], map: "idx_maximo_rfq_enter_date")
+  @@index([po_nums], map: "idx_maximo_rfq_po_nums", type: Gin)
+}
+
+/// O2 (0023): RFQSTATUS de cada RQ de Maximo (lo reescriben staging y remap).
+model maximo_rfq_status_history {
+  id          String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  rfq_id      String      @db.Uuid
+  rfqnum      String      @db.VarChar(50)
+  siteid      String?     @db.VarChar(20)
+  seq         Int
+  status      String      @db.VarChar(30)
+  change_date DateTime?   @db.Timestamptz(6)
+  changed_by  String?     @db.VarChar(100)
+  memo        String?
+  rfq         maximo_rfqs @relation(fields: [rfq_id], references: [id], onDelete: Cascade)
+
+  @@unique([rfq_id, seq], map: "uq_maximo_rfq_status_history")
+  @@index([rfqnum], map: "idx_maximo_rfq_hist_rfqnum")
+  @@index([status, change_date], map: "idx_maximo_rfq_hist_status_date")
+}
+
 enum maximo_sync_target {
   purchase_orders
   contracts
+  rfqs
 }
 
 enum maximo_sync_trigger {

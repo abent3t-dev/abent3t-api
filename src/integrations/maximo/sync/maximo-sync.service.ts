@@ -53,6 +53,11 @@ import {
  *   llaves de ejemplo de las "por hash". En contratos, al terminar cada
  *   registro se marcan como obsoletas (`superseded_at`) las revisiones de la
  *   PR que ya no vienen.
+ * - O2 (2026-11-17): solicitudes de cotización (AB_COTIZACIONES, target
+ *   'rfqs') con su flag, `MAXIMO_RFQS_ENABLED` (apagado → skip, como
+ *   contratos). Al terminar una corrida COMPLETA se marcan como obsoletas las
+ *   RQ que dejaron de venir en dos corridas completas seguidas
+ *   (`supersedeMissingRfqs`).
  */
 
 const MAX_PAGES_GUARD = 1_000;
@@ -73,7 +78,10 @@ interface RunState extends MaximoSyncCounters {
   remappedByMapper: number;
   remappedByHash: number;
   remappedHashKeys: string[];
-  /** K8: revisiones de contrato marcadas como obsoletas en esta corrida. */
+  /**
+   * K8: revisiones de contrato marcadas como obsoletas en esta corrida (O2:
+   * o RQ que dejaron de venir).
+   */
   recordsSuperseded: number;
 }
 
@@ -173,6 +181,30 @@ export class MaximoSyncService implements OnModuleInit {
     return state.runId;
   }
 
+  /** O2: corrida completa de AB_COTIZACIONES, o skip si el flag está apagado. */
+  async syncRfqs(
+    trigger: MaximoSyncTrigger,
+    userId: string | null = null,
+  ): Promise<MaximoSyncRunSummary | MaximoSyncSkipped> {
+    const skipped = this.rfqsSkip();
+    if (skipped) return skipped;
+    const state = await this.beginRun('rfqs', trigger, userId);
+    return this.processRfqs(state);
+  }
+
+  async startRfqs(
+    trigger: MaximoSyncTrigger,
+    userId: string | null,
+  ): Promise<string | MaximoSyncSkipped> {
+    const skipped = this.rfqsSkip();
+    if (skipped) return skipped;
+    const state = await this.beginRun('rfqs', trigger, userId);
+    void this.processRfqs(state).catch((error: unknown) =>
+      this.failRunBestEffort(state, error),
+    );
+    return state.runId;
+  }
+
   /** Fire-and-forget: si el procesamiento revienta, la fila no queda `running`. */
   private async failRunBestEffort(
     state: RunState,
@@ -205,6 +237,14 @@ export class MaximoSyncService implements OnModuleInit {
       'AB_CONTRATOS deshabilitada (MAXIMO_CONTRACTS_ENABLED=false, §20.A.2) — corrida omitida';
     this.logger.log(reason);
     return { skipped: true, target: 'contracts', reason };
+  }
+
+  private rfqsSkip(): MaximoSyncSkipped | null {
+    if (this.maximoConfig.rfqsEnabled) return null;
+    const reason =
+      'AB_COTIZACIONES deshabilitada (MAXIMO_RFQS_ENABLED=false) — corrida omitida';
+    this.logger.log(reason);
+    return { skipped: true, target: 'rfqs', reason };
   }
 
   /** Gate por flag + mutex + fila `running` en maximo_sync_runs. */
@@ -326,8 +366,64 @@ export class MaximoSyncService implements OnModuleInit {
   }
 
   /**
+   * O2 (2026-11-17): AB_COTIZACIONES, una fila por RQ con su historial; la
+   * RQ que no mapea cuenta como registro fallido y la página sigue. Al
+   * terminar la corrida completa, las RQ que dejaron de venir: las marcadas
+   * (o el aviso del tope) quedan en las advertencias de la corrida, a la
+   * vista en Integraciones.
+   */
+  private async processRfqs(state: RunState): Promise<MaximoSyncRunSummary> {
+    return this.paginate(
+      state,
+      async (rsStart, pageSize) => {
+        const page = await this.client.fetchRfqs({
+          maxItems: pageSize,
+          rsStart,
+        });
+        for (let i = 0; i < page.records.length; i++) {
+          const rfq = page.records[i];
+          if (rfq instanceof Error) {
+            state.recordsFailed += 1;
+            this.pushError(state, `mapeo de RQ: ${rfq.message}`);
+            continue;
+          }
+          await this.upsertOne(state, () =>
+            this.staging.upsertRfq(rfq, page.raw[i], state.runId),
+          );
+        }
+        return page;
+      },
+      async () => {
+        const { marcadas, aviso } = await this.staging.supersedeMissingRfqs();
+        state.recordsSuperseded += marcadas;
+        if (marcadas > 0) {
+          state.filterWarnings.push({
+            kind: 'obsoletas',
+            marcadas,
+            description:
+              marcadas === 1
+                ? '1 RQ dejó de venir en dos corridas completas: se marcó como obsoleta'
+                : `${marcadas} RQ dejaron de venir en dos corridas completas: se marcaron como obsoletas`,
+          });
+        }
+        if (aviso) {
+          this.logger.warn(`Corrida ${state.runId} (rfqs): ${aviso}`);
+          state.filterWarnings.push({
+            kind: 'obsoletas',
+            marcadas: 0,
+            description: aviso,
+          });
+        }
+      },
+    );
+  }
+
+  /**
    * Full scan paginado (T4). `fetchPage` trae y persiste una página; el
    * genérico maneja contadores, tolerancia a fallo por página y fin de datos.
+   * O2: `alTerminarCompleta` corre solo si la corrida fue completa (total
+   * conocido y cubierto, algún registro y ninguna falla de página, de
+   * registro ni error); si lanza, la corrida queda 'partial'.
    */
   private async paginate(
     state: RunState,
@@ -335,6 +431,7 @@ export class MaximoSyncService implements OnModuleInit {
       rsStart: number,
       pageSize: number,
     ) => Promise<MaximoFetchResult<unknown>>,
+    alTerminarCompleta?: () => Promise<void>,
   ): Promise<MaximoSyncRunSummary> {
     const pageSize = this.syncConfig.pageSize;
     let rsStart = 0;
@@ -407,6 +504,20 @@ export class MaximoSyncService implements OnModuleInit {
           `MAX_PAGES_GUARD (${MAX_PAGES_GUARD}) alcanzado — corrida truncada en rsStart=${rsStart}`,
         );
         state.pagesFailed += 1;
+      }
+      const completa =
+        rsTotal !== null &&
+        state.recordsFetched >= rsTotal &&
+        state.recordsFetched > 0 &&
+        state.pagesFailed === 0 &&
+        state.recordsFailed === 0 &&
+        state.errors.length === 0;
+      if (alTerminarCompleta && completa) {
+        try {
+          await alTerminarCompleta();
+        } catch (error: unknown) {
+          this.pushError(state, `al terminar: ${message(error)}`);
+        }
       }
       return await this.finishRun(state);
     } finally {
@@ -488,7 +599,7 @@ export class MaximoSyncService implements OnModuleInit {
       ? ` ej.: ${state.remappedHashKeys.join(', ')}`
       : '';
     const superseded =
-      state.target === 'contracts'
+      state.target === 'contracts' || state.target === 'rfqs'
         ? ` superseded=${state.recordsSuperseded}`
         : '';
     this.logger.log(

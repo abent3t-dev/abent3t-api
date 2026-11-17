@@ -34,6 +34,15 @@ export class MaximoContractsDisabledError extends MaximoError {
   }
 }
 
+/** O2: `MAXIMO_RFQS_ENABLED=false`: AB_COTIZACIONES (RQ) deshabilitada. */
+export class MaximoRfqsDisabledError extends MaximoError {
+  constructor() {
+    super(
+      'Lectura de AB_COTIZACIONES deshabilitada (MAXIMO_RFQS_ENABLED=false)',
+    );
+  }
+}
+
 /**
  * H5: Maximo acepta parámetros inválidos EN SILENCIO. Tras cada lectura con
  * filtro de igualdad se verifica que lo recibido cumple lo pedido; si no,

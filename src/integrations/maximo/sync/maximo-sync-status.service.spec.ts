@@ -16,7 +16,10 @@ function makeStatus(runningTargets: string[] = []) {
     intervalMinutes: 60,
     pageSize: 100,
   };
-  const maximoConfig = { contractsEnabled: false } as MaximoConfig;
+  const maximoConfig = {
+    contractsEnabled: false,
+    rfqsEnabled: true,
+  } as MaximoConfig;
   const service = new MaximoSyncStatusService(
     prisma.asService(),
     syncService as unknown as MaximoSyncService,
@@ -50,6 +53,13 @@ describe('MaximoSyncStatusService', () => {
     await prisma.maximo_contracts.create({
       data: { prnum: 'PR0', superseded_at: new Date('2026-10-01T00:00:00Z') },
     });
+    // O2: las RQ vigentes; la que dejó de venir no cuenta
+    await seedRuns(prisma, 'rfqs', 1);
+    await prisma.maximo_rfqs.create({ data: { rfqnum: 'RQ1' } });
+    await prisma.maximo_rfqs.create({ data: { rfqnum: 'RQ2' } });
+    await prisma.maximo_rfqs.create({
+      data: { rfqnum: 'RQ0', superseded_at: new Date('2026-11-01T00:00:00Z') },
+    });
 
     const status = await service.getStatus();
     expect(Object.keys(status).sort()).toEqual([
@@ -59,16 +69,23 @@ describe('MaximoSyncStatusService', () => {
       'intervalMinutes',
       'lastRuns',
       'pageSize',
+      'rfqsEnabled',
       'running',
     ]);
     expect(status.enabled).toBe(false);
     expect(status.contractsEnabled).toBe(false);
+    expect(status.rfqsEnabled).toBe(true);
     expect(status.intervalMinutes).toBe(60);
     expect(status.pageSize).toBe(100);
     expect(status.running).toEqual(['purchase_orders']);
-    expect(status.counts).toEqual({ purchase_orders: 2, contracts: 1 });
+    expect(status.counts).toEqual({
+      purchase_orders: 2,
+      contracts: 1,
+      rfqs: 2,
+    });
     expect(status.lastRuns.purchase_orders).not.toBeNull();
     expect(status.lastRuns.contracts).toBeNull();
+    expect(status.lastRuns.rfqs).not.toBeNull();
   });
 
   it('getRuns pagina con la meta estándar del repo (total/totalPages/hasNext/hasPrev)', async () => {

@@ -5,6 +5,7 @@ import { PrismaService } from '../../../prisma/prisma.service';
 import { canonicalize } from '../../../common/maximo/maximo-canonical';
 import { MaximoContractDto } from '../dto/maximo-contract.dto';
 import { MaximoPurchaseOrderDto } from '../dto/maximo-po.dto';
+import { MaximoRfqDto } from '../dto/maximo-rfq.dto';
 import { MAXIMO_MAPPER_VERSION } from '../maximo.mapper';
 import {
   MaximoRemapReason,
@@ -16,6 +17,18 @@ import {
   contractMappedColumns,
   replacePrStatusHistory,
 } from './maximo-pr-history';
+import {
+  replaceRfqStatusHistory,
+  rfqMappedColumns,
+} from './maximo-rfq-history';
+
+/**
+ * O2: tope de RQ que una corrida puede marcar como obsoletas. Si dejaran de
+ * venir más que esto, lo más probable es que cambió la estructura (un filtro
+ * nuevo de CIISA), no que se borraron: no se marca ninguna y se avisa.
+ */
+const RFQ_SUPERSEDE_MIN_TOPE = 25;
+const RFQ_SUPERSEDE_FRACCION_TOPE = 0.05;
 
 /**
  * Upsert idempotente a staging (Fase INT-3, T3/T4). ÚNICO camino de escritura
@@ -54,6 +67,12 @@ import {
  * la misma transacción. Las cuatro ramas de contratos escriben
  * `superseded_at: null` (si la llave reaparece, se limpia) y
  * `supersedeMissingRevisions` marca las revisiones que ya no vienen.
+ *
+ * O2 (2026-11-17): las RQ de AB_COTIZACIONES (`maximo_rfqs`) siguen el
+ * patrón de la OC (rowstamp de la raíz, hash y mapper) y reescriben su
+ * historial RFQSTATUS en la misma transacción. Como en contratos, las cuatro
+ * ramas escriben `superseded_at: null`; `supersedeMissingRfqs` marca las RQ
+ * que dejaron de venir.
  */
 @Injectable()
 export class MaximoStagingService {
@@ -276,6 +295,143 @@ export class MaximoStagingService {
       data: { superseded_at: new Date() },
     });
     return count;
+  }
+
+  /**
+   * O2 (2026-11-17): upsert de una RQ de AB_COTIZACIONES. Clave natural
+   * (rfqnum, siteid) — la RQ no tiene revisiones —, con la misma
+   * normalización '' → null que la OC. Desenlaces de K8 sobre el rowstamp de
+   * la raíz: un cambio de estatus mueve la cabecera ('updated'); una línea
+   * que recibe su PONUM puede no moverla ('remapped' por hash, sin tocar
+   * `last_changed_at`), y el dato se reescribe igual.
+   */
+  async upsertRfq(
+    dto: MaximoRfqDto,
+    raw: unknown,
+    runId: string,
+  ): Promise<MaximoUpsertResult> {
+    const rawHash = maximoRawHash(raw);
+    const where = { rfqnum: dto.rfqnum, siteid: emptyToNull(dto.siteId) };
+    const key = `${where.rfqnum}|${where.siteid ?? ''}`;
+    const mapped = { ...rfqMappedColumns(dto), raw_hash: rawHash };
+
+    const attempt = async (): Promise<MaximoUpsertResult> => {
+      const existing = await this.prisma.maximo_rfqs.findFirst({
+        where,
+        select: {
+          id: true,
+          rowstamp: true,
+          raw_hash: true,
+          mapper_version: true,
+        },
+      });
+      if (!existing) {
+        // id generado aquí para escribir RQ + historial en una transacción
+        const id = randomUUID();
+        await this.prisma.$transaction([
+          this.prisma.maximo_rfqs.create({
+            data: {
+              id,
+              ...where,
+              ...mapped,
+              raw: raw as Prisma.InputJsonValue,
+              mapper_version: MAXIMO_MAPPER_VERSION,
+              last_sync_run_id: runId,
+              superseded_at: null,
+            },
+          }),
+          ...replaceRfqStatusHistory(this.prisma, id, dto),
+        ]);
+        return { outcome: 'inserted', key };
+      }
+      const sameRowstamp =
+        existing.rowstamp !== null && existing.rowstamp === dto.rowstamp;
+      const decision = existingOutcome(sameRowstamp, existing, rawHash);
+      const now = new Date();
+      if (decision.outcome === 'unchanged') {
+        await this.prisma.maximo_rfqs.update({
+          where: { id: existing.id },
+          data: {
+            last_seen_at: now,
+            last_sync_run_id: runId,
+            superseded_at: null,
+          },
+        });
+        return { ...decision, key };
+      }
+      await this.prisma.$transaction([
+        this.prisma.maximo_rfqs.update({
+          where: { id: existing.id },
+          data: {
+            ...mapped,
+            raw: raw as Prisma.InputJsonValue,
+            mapper_version: MAXIMO_MAPPER_VERSION,
+            last_seen_at: now,
+            // K8: solo un rowstamp nuevo es cambio real
+            ...(decision.outcome === 'updated' ? { last_changed_at: now } : {}),
+            last_sync_run_id: runId,
+            superseded_at: null,
+          },
+        }),
+        ...replaceRfqStatusHistory(this.prisma, existing.id, dto),
+      ]);
+      return { ...decision, key };
+    };
+
+    return this.withUniqueRaceRetry(attempt);
+  }
+
+  /**
+   * O2: marca `superseded_at` en las RQ que dejaron de venir en DOS corridas
+   * completas seguidas: las que no se ven desde antes de que empezara la
+   * corrida completa anterior (cron o manual, en `success`). Así un hueco de
+   * la paginación en una sola corrida no saca a nadie del avance. La llama el
+   * sync SOLO al terminar una corrida completa (todas las páginas, sin
+   * fallas); sin corrida completa anterior no marca nada.
+   *
+   * Tope de seguridad: si serían más de max(25, 5% de las RQ vigentes), no
+   * marca ninguna y regresa el aviso (lo más probable es que cambió la
+   * estructura, no que se borraron tantas RQ).
+   */
+  async supersedeMissingRfqs(): Promise<{
+    marcadas: number;
+    aviso: string | null;
+  }> {
+    // la corrida en curso sigue 'running': la última 'success' es la anterior
+    const previa = await this.prisma.maximo_sync_runs.findFirst({
+      where: {
+        target: 'rfqs',
+        status: 'success',
+        triggered_by: { in: ['cron', 'manual'] },
+      },
+      orderBy: { started_at: 'desc' },
+      select: { started_at: true },
+    });
+    if (!previa) return { marcadas: 0, aviso: null };
+    const where = {
+      superseded_at: null,
+      last_seen_at: { lt: previa.started_at },
+    };
+    const [faltan, vigentes] = await Promise.all([
+      this.prisma.maximo_rfqs.count({ where }),
+      this.prisma.maximo_rfqs.count({ where: { superseded_at: null } }),
+    ]);
+    if (faltan === 0) return { marcadas: 0, aviso: null };
+    const tope = Math.max(
+      RFQ_SUPERSEDE_MIN_TOPE,
+      Math.floor(vigentes * RFQ_SUPERSEDE_FRACCION_TOPE),
+    );
+    if (faltan > tope) {
+      return {
+        marcadas: 0,
+        aviso: `${faltan} RQ dejaron de venir en dos corridas completas (tope ${tope}): no se marcaron como obsoletas; revisar AB_COTIZACIONES`,
+      };
+    }
+    const { count } = await this.prisma.maximo_rfqs.updateMany({
+      where,
+      data: { superseded_at: new Date() },
+    });
+    return { marcadas: count, aviso: null };
   }
 
   /** Carrera de doble insert (índice único de expresión) → P2002 → reintento. */

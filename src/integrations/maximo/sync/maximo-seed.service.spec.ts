@@ -53,9 +53,18 @@ describe('MaximoSeedService', () => {
     );
     expect(prisma.maximo_contracts.rows.length).toBe(first.contracts.inserted);
 
-    // Corridas reales marcadas seed
+    // O2: las 8 RQ del fixture, con su historial
+    expect(first.rfqs).toMatchObject({ inserted: 8, failed: 0, skipped: 0 });
+    expect(prisma.maximo_rfqs.rows).toHaveLength(8);
+    expect(
+      prisma.maximo_rfq_status_history.rows.filter(
+        (h) => h.rfqnum === 'RQ990101',
+      ),
+    ).toHaveLength(6);
+
+    // Corridas reales marcadas seed (O2: tres, una por target)
     const runs = prisma.maximo_sync_runs.rows;
-    expect(runs).toHaveLength(2);
+    expect(runs).toHaveLength(3);
     expect(runs.every((r) => r.triggered_by === 'seed')).toBe(true);
     expect(runs.every((r) => r.status === 'success')).toBe(true);
 
@@ -66,6 +75,12 @@ describe('MaximoSeedService', () => {
     expect(second.contracts.inserted).toBe(0);
     expect(second.contracts.updated).toBe(0);
     expect(second.contracts.remapped).toBe(0);
+    expect(second.rfqs).toMatchObject({
+      inserted: 0,
+      updated: 0,
+      remapped: 0,
+      unchanged: 8,
+    });
     expect(second.purchaseOrders.unchanged).toBeGreaterThan(0);
     // lo sembrado antes es del seed: la segunda corrida no lo salta
     expect(first.purchaseOrders.skipped).toBe(0);
@@ -318,8 +333,32 @@ describe('MaximoSeedService', () => {
     // K3: el historial de las PR (sin FK) también se va
     expect(cleared.prStatusHistory).toBeGreaterThan(0);
     expect(prisma.maximo_pr_status_history.rows).toHaveLength(0);
+    // O2: las RQ sembradas y su historial también
+    expect(cleared.rfqs).toBe(8);
+    expect(cleared.rfqStatusHistory).toBeGreaterThan(0);
+    expect(prisma.maximo_rfqs.rows).toHaveLength(0);
+    expect(prisma.maximo_rfq_status_history.rows).toHaveLength(0);
     // Las corridas quedan en la bitácora
-    expect(prisma.maximo_sync_runs.rows).toHaveLength(2);
+    expect(prisma.maximo_sync_runs.rows).toHaveLength(3);
+  });
+
+  it('O2: no pisa una RQ con fila de una corrida real (la salta) y el clear la conserva', async () => {
+    process.env.NODE_ENV = 'test';
+    const { prisma, seed } = makeSeed();
+    prisma.maximo_rfqs.rows.push({
+      id: 'rq-real',
+      rfqnum: 'RQ990103',
+      siteid: 'A3T',
+      raw: { real: true },
+      last_sync_run_id: 'run-real-1',
+    });
+    const result = await seed.seedFixtures();
+    expect(result.rfqs).toMatchObject({ inserted: 7, skipped: 1, failed: 0 });
+    expect(
+      prisma.maximo_rfqs.rows.find((r) => r.rfqnum === 'RQ990103')?.raw,
+    ).toEqual({ real: true });
+    await seed.clearSeeds();
+    expect(prisma.maximo_rfqs.rows.map((r) => r.rfqnum)).toEqual(['RQ990103']);
   });
 
   it('K3: clearSeeds conserva el historial de una PR con alguna revisión tocada por una corrida real', async () => {

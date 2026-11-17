@@ -1,4 +1,5 @@
 import { canonicalize } from '../../common/maximo/maximo-canonical';
+import { estadoDeRfq } from '../../common/maximo/maximo-rfq-status';
 import { compareStatusChange } from '../../common/maximo/maximo-status-order';
 import {
   MAXIMO_CONTRACT_EXPENSE_TYPE,
@@ -20,6 +21,11 @@ import {
   MaximoCanonicalRecord,
   MaximoObjectStructure,
 } from './dto/maximo-raw.types';
+import {
+  MaximoRfqDto,
+  MaximoRfqLineDto,
+  MaximoRfqStatusChangeDto,
+} from './dto/maximo-rfq.dto';
 import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
 
 /**
@@ -42,8 +48,11 @@ import { MaximoMappingError, MaximoResponseShapeError } from './maximo.errors';
  * cambio y referencia de contrato) no tienen columna: se leen del `raw` (en
  * SQL, erp-views), que el sync ya guarda completo. La versión sube para que
  * el primer full los marque 'remapped' y no 'updated'.
+ * O2 (2026-11-17): `toRfq` (AB_COTIZACIONES). Las OC y los contratos no
+ * cambian: el primer full los marca 'remapped' por mapper, sin tocar
+ * `last_changed_at`.
  */
-export const MAXIMO_MAPPER_VERSION = '2026.10.26-2'; // 10.26-2: RFQSTATUS también debajo de RFQLINE (donde lo manda CIISA en prod, O3); 10.26-1: rfqBuyer/rfqNums (RFQSTATUS, O3) + exchangeRate + contractRefNum (O1); 10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas; 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
+export const MAXIMO_MAPPER_VERSION = '2026.11.17-1'; // 11.17-1: RQ de AB_COTIZACIONES (toRfq, O2) y desempate de historiales por RFQSTATUSSEQ; 10.26-2: RFQSTATUS también debajo de RFQLINE (donde lo manda CIISA en prod, O3); 10.26-1: rfqBuyer/rfqNums (RFQSTATUS, O3) + exchangeRate + contractRefNum (O1); 10.05-1: PO5 (K2) + PR raíz e historial (K3) + LINECOST/subtotal (K6) + líneas ordenadas; 10.01-1: receiptStatus (I1b); 28-1: prIssueDate = PR más antigua + prNums (G2/G3); 25-2: createdBy = CHANGEBY del primer estatus (F1); 25-1: comprador PURCHASEAGENT → PERSON (E4); 23-1: prStatus/prTotal/consumedValue (D2/D7/D8)
 
 /**
  * Capa ÚNICA de mapeo crudo → DTO interno (Fase INT-2).
@@ -247,7 +256,8 @@ interface StatusRow<T extends MaximoStatusChangeDto> {
  * Orden de cualquier historial de estatus: CHANGEDATE ascendente (nulos al
  * final). Maximo NO devuelve las filas ordenadas (86/100 POs de la evidencia
  * llegan desordenados) y hay cambios en el mismo segundo: el desempate es el
- * id monótono de la fila (POSTATUSID / CONTRACTSTATUSID / PRSTATUSID).
+ * id monótono de la fila (POSTATUSID / CONTRACTSTATUSID / PRSTATUSID; O2, en
+ * la RQ, RFQSTATUSSEQ o RFQSTATUSID).
  * H11: el comparador es común con el detalle de contrato.
  */
 function orderStatusRows<T extends MaximoStatusChangeDto>(
@@ -278,7 +288,9 @@ function statusRowOf(
     id:
       num(row, 'POSTATUSID') ??
       num(row, 'CONTRACTSTATUSID') ??
-      num(row, 'PRSTATUSID'),
+      num(row, 'PRSTATUSID') ??
+      num(row, 'RFQSTATUSSEQ') ??
+      num(row, 'RFQSTATUSID'),
   };
 }
 
@@ -438,11 +450,10 @@ function mapPurchaseOrderLine(
  * K3 (2026-10-05): líneas por POLINENUM ascendente, sin número al final.
  * Maximo no garantiza el orden de POLINE y de la primera línea salen `prnum`,
  * `requestedBy` y `prStatusDate` de la OC. El sort es estable: dos líneas sin
- * número conservan el orden de llegada.
+ * número conservan el orden de llegada. O2: también las líneas de la RQ
+ * (RFQLINENUM).
  */
-function sortLinesByNum(
-  lines: MaximoPurchaseOrderLineDto[],
-): MaximoPurchaseOrderLineDto[] {
+function sortLinesByNum<T extends { lineNum: number | null }>(lines: T[]): T[] {
   return [...lines].sort((a, b) => {
     if (a.lineNum === b.lineNum) return 0;
     if (a.lineNum === null) return 1;
@@ -820,6 +831,82 @@ function buildContractDto(
 }
 
 // ---------------------------------------------------------------------------
+// AB_COTIZACIONES → MaximoRfqDto (O2)
+// ---------------------------------------------------------------------------
+
+/** O2: una línea de la RQ (RFQLINE), con la OC que salió de ella. */
+function mapRfqLine(line: MaximoCanonicalRecord): MaximoRfqLineDto {
+  return {
+    lineNum: num(line, 'RFQLINENUM'),
+    ponum: textoComoSql(line, 'PONUM'),
+    poLineNum: num(line, 'POLINENUM'),
+    poRevisionNum: num(line, 'POREVISIONNUM'),
+    vendor: textoComoSql(line, 'VENDOR'),
+    itemNum: textoComoSql(line, 'ITEMNUM'),
+    orderQty: num(line, 'ORDERQTY'),
+    orderUnit: textoComoSql(line, 'ORDERUNIT'),
+  };
+}
+
+/**
+ * O2 (2026-11-17): mapea un registro crudo de AB_COTIZACIONES (raíz RFQ,
+ * cualquier forma) al DTO interno.
+ *  - El historial RFQSTATUS cuelga de la cabecera y llega completo; se ordena
+ *    como los demás (CHANGEDATE, desempate RFQSTATUSSEQ) y lleva el MEMO,
+ *    como PRSTATUS.
+ *  - Cerrada y cancelada = el ÚLTIMO CLOSE y el último CANCEL con fecha del
+ *    historial (una RQ puede reabrirse y volver a cerrarse).
+ *  - Las OC de la RQ = el PONUM de sus líneas (RFQLINE).
+ *  - Los usuarios (ENTERBY, REQUESTEDBY, CHANGEBY) se recortan, como el
+ *    comprador de RFQSTATUS de AB_COMPRAS (`rfqBuyerOf`).
+ */
+export function toRfq(raw: unknown): MaximoRfqDto {
+  const r = toCanonical(raw);
+  const rfqnum = str(r, 'RFQNUM');
+  if (!rfqnum) throw new MaximoMappingError('RFQNUM ausente', 'RFQNUM');
+
+  // misma forma que PRSTATUS: estatus, fecha, usuario y MEMO
+  const history: MaximoRfqStatusChangeDto[] = mapPrStatusHistory(
+    children(r, 'RFQSTATUS'),
+  );
+  const ultimo = (estado: 'cerrada' | 'cancelada') =>
+    history.findLast(
+      (h) => estadoDeRfq(h.status) === estado && h.changeDate !== null,
+    ) ?? null;
+  const closed = ultimo('cerrada');
+  const cancelled = ultimo('cancelada');
+  const lines = sortLinesByNum(children(r, 'RFQLINE').map(mapRfqLine));
+  const poNums = [
+    ...new Set(
+      lines.map((l) => l.ponum).filter((p): p is string => p !== null),
+    ),
+  ].sort();
+
+  return {
+    erp: MAXIMO_ERP,
+    rfqnum,
+    siteId: str(r, 'SITEID'),
+    description: str(r, 'DESCRIPTION'),
+    status: str(r, 'STATUS'),
+    statusDate: str(r, 'STATUSDATE'),
+    enterDate: str(r, 'ENTERDATE'),
+    enterBy: textoComoSql(r, 'ENTERBY'),
+    requestedBy: textoComoSql(r, 'REQUESTEDBY'),
+    requiredDate: str(r, 'REQUIREDDATE'),
+    changeBy: textoComoSql(r, 'CHANGEBY'),
+    changeDate: str(r, 'CHANGEDATE'),
+    statusHistory: history,
+    closedDate: closed?.changeDate ?? null,
+    closedBy: closed?.changedBy ?? null,
+    cancelledDate: cancelled?.changeDate ?? null,
+    cancelledBy: cancelled?.changedBy ?? null,
+    lines,
+    poNums,
+    rowstamp: str(r, 'ROWSTAMP'),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Sobres (envelopes)
 // ---------------------------------------------------------------------------
 
@@ -845,7 +932,7 @@ function intOrNull(value: unknown): number | null {
 }
 
 /**
- * Extrae los registros raíz (PO / PR / PURCHVIEW) y los contadores del sobre
+ * Extrae los registros raíz (PO / PR / PURCHVIEW / RFQ) y los contadores del sobre
  * legacy `{ Query<OS>Response: { rsStart, rsCount, rsTotal, <OS>Set: { … } } }`.
  * Un conjunto vacío llega como `<OS>Set: {}` → `records: []`.
  */
@@ -914,6 +1001,7 @@ export const MaximoMapper = {
   toPurchaseOrder,
   toContract,
   toContracts,
+  toRfq,
   parseLegacyEnvelope,
   parseOslcEnvelope,
 } as const;
