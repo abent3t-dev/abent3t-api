@@ -54,3 +54,7 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Almacén (0026): el paquete de un corte (.json.gz o .json) lleva costos del cliente y el Excel;
+# se sube a A por SFTP y no va en git
+scripts/data/almacen-*.json*

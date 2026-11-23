@@ -1139,6 +1139,7 @@ enum user_module {
   compras
   contabilidad
   fpa
+  almacen
 }
 
 enum user_role {
@@ -1164,6 +1165,7 @@ enum user_role {
   fpa_area
   fpa_planeacion
   fpa_cfo
+  almacen_consulta
 }
 
 enum verification_status {
@@ -2316,4 +2318,77 @@ model fpa_line_comments {
   profiles         profiles         @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([line_id, created_at], map: "idx_fpa_line_comments_line")
+}
+
+/// Almacén (0026): un corte del reporte de inventario, ya calculado y aceptado
+/// por Contabilidad (documentation/ALMACEN.md e INVENTARIO_HENRY.md), con sus
+/// totales, sus notas y el Excel tal cual (archivo). Lo carga
+/// `npm run almacen:cargar`, con la huella del paquete como llave
+/// (paquete_sha256); si piden cambios se carga la versión siguiente de la misma
+/// fecha y esta queda 'reemplazado'. Un solo corte publicado por
+/// almacén y fecha (índice parcial en SQL). Las fechas son hora de México, sin
+/// zona: Prisma las lee como UTC y la pantalla las muestra tal cual.
+model almacen_cortes {
+  id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  almacen              String                @db.VarChar(30)
+  fecha_corte          DateTime              @db.Timestamp(0)
+  version              Int                   @db.SmallInt
+  estado               String                @default("publicado") @db.VarChar(12)
+  titulo               String                @db.VarChar(160)
+  fuente               String
+  articulos            Int
+  unidades             Decimal               @db.Decimal(18, 4)
+  total_pesos          Decimal               @db.Decimal(20, 6)
+  total_pesos_oc       Decimal               @db.Decimal(20, 6)
+  sin_valuar_articulos Int
+  sin_valuar_unidades  Decimal               @db.Decimal(18, 4)
+  notas                Json
+  archivo_nombre       String                @db.VarChar(160)
+  archivo              Bytes
+  archivo_sha256       String                @db.Char(64)
+  paquete_sha256       String                @unique(map: "uq_almacen_cortes_paquete") @db.Char(64)
+  cargado_por          String                @db.VarChar(120)
+  cargado_en           DateTime              @default(now()) @db.Timestamptz(6)
+  reemplazado_en       DateTime?             @db.Timestamptz(6)
+  almacen_existencias  almacen_existencias[]
+
+  @@unique([almacen, fecha_corte, version], map: "uq_almacen_cortes_version")
+}
+
+/// Almacén (0026): lo que queda de cada entrada en el almacén al corte, una
+/// fila por fila de la hoja "Existencias al corte". Sin costo = "Sin entrada
+/// con costo" (CHECK en SQL). Solo inserción.
+model almacen_existencias {
+  id                   String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  corte_id             String         @db.Uuid
+  orden                Int
+  parte                String         @db.VarChar(30)
+  descripcion          String
+  almacen              String         @db.VarChar(30)
+  almacen_fisico       String?        @db.VarChar(60)
+  clasificacion        String?        @db.VarChar(200)
+  costo                Decimal?       @db.Decimal(20, 6)
+  moneda               String?        @db.VarChar(3)
+  cantidad             Decimal        @db.Decimal(18, 4)
+  unidad               String?        @db.VarChar(20)
+  fecha_entrada        DateTime?      @db.Timestamp(0)
+  fecha_captura        DateTime?      @db.Timestamp(0)
+  tipo_cambio          Decimal?       @db.Decimal(14, 6)
+  importe_pesos        Decimal?       @db.Decimal(20, 6)
+  tipo_cambio_oc       Decimal?       @db.Decimal(14, 6)
+  importe_pesos_oc     Decimal?       @db.Decimal(20, 6)
+  origen               String         @db.VarChar(40)
+  oc                   String?        @db.VarChar(40)
+  fuente_tc            String?        @db.VarChar(160)
+  fuente_tc_oc         String?        @db.VarChar(160)
+  saldo_articulo       Decimal        @db.Decimal(18, 4)
+  regresaron_recientes Decimal?       @db.Decimal(18, 4)
+  herramienta          Boolean
+  en_su_inventario     Boolean
+  unidad_entrada       String?        @db.VarChar(20)
+  nota                 String?
+  almacen_cortes       almacen_cortes @relation(fields: [corte_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([corte_id, orden], map: "uq_almacen_existencias_orden")
+  @@index([corte_id, parte], map: "ix_almacen_existencias_corte_parte")
 }

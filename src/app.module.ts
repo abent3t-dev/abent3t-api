@@ -68,6 +68,8 @@ import { ErpAliasesModule } from './erp-aliases/erp-aliases.module';
 import { ErpVendorsModule } from './erp-vendors/erp-vendors.module';
 // FP&A (0021, A3): presupuesto por área, captura y consolidado
 import { FpaModule } from './fpa/fpa.module';
+// Almacén (0026): el reporte de inventario al corte, de consulta
+import { AlmacenModule } from './almacen/almacen.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import {
@@ -163,6 +165,7 @@ import {
     ErpAliasesModule,
     ErpVendorsModule,
     FpaModule,
+    AlmacenModule,
   ],
   controllers: [AppController],
   providers: [

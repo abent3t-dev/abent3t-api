@@ -33,6 +33,7 @@
     "fpa:areas": "ts-node -T scripts/fpa-areas.ts",
     "fpa:b27-leer": "ts-node -T scripts/fpa-b27-leer.ts",
     "fpa:b27": "ts-node -T scripts/fpa-b27.ts",
+    "almacen:cargar": "ts-node -T scripts/almacen-cargar.ts",
     "sap:smoke": "node scripts/smoke-sap-b1.mjs"
   },
   "dependencies": {

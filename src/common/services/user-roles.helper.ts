@@ -18,7 +18,8 @@ export type UserModule =
   | 'capacitacion'
   | 'compras'
   | 'contabilidad'
-  | 'fpa';
+  | 'fpa'
+  | 'almacen';
 
 /**
  * Mapeo de rol → módulo. Refleja la categorización aplicada en la migración
@@ -58,6 +59,9 @@ export const ROLE_TO_MODULE: Record<string, UserModule> = {
   fpa_area: 'fpa',
   fpa_planeacion: 'fpa',
   fpa_cfo: 'fpa',
+
+  // Almacén (0026, decisión de Alex del 2026-11-23): un solo rol, de consulta
+  almacen_consulta: 'almacen',
 };
 
 /** Devuelve el módulo correspondiente a un rol, o null si es desconocido. */
@@ -102,6 +106,8 @@ export const ROLE_PRIORITY: string[] = [
   'fpa_planeacion',
   'fpa_cfo',
   'fpa_area',
+  // Almacén al final, por lo mismo que FP&A. Mismo orden en abent3t-next.
+  'almacen_consulta',
 ];
 
 /**
