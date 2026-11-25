@@ -61,7 +61,7 @@ ALTER TABLE almacen_existencias
   ADD CONSTRAINT ck_almacen_existencias_motivo CHECK (motivo IS NULL OR (origen = 'Sin entrada con costo' AND btrim(motivo) <> ''));
 
 COMMENT ON COLUMN almacen_existencias.motivo IS
-  'Solo en lo que va sin costo: Sin compras en Maximo, Sus compras no alcanzan o Devolución en 0 (puede ir más de uno, con " y ").';
+  'Solo en lo que va sin costo: Sin compras en Maximo, Solo compras de salida directa, Sus compras no alcanzan o Devolución en 0 (puede ir más de uno, con " y ").';
 COMMENT ON COLUMN almacen_existencias.en_su_inventario IS
   'Si está en su INVENTARIO AL CORTE, que solo trae CENTRAL: fuera de CENTRAL va vacío (no aplica).';
 
