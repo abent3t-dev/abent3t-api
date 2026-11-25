@@ -2,11 +2,13 @@ import {
   mesesEntre,
   nivelesClasificacion,
   resumir,
+  resumirDevoluciones,
   SIN_CLASIFICACION,
   SIN_COSTO,
   tramoAntiguedad,
   TRAMOS_ANTIGUEDAD,
   type FilaExistencia,
+  type LineaDevolucion,
 } from './almacen-resumen';
 
 const CORTE = '2026-11-09T08:00:00';
@@ -14,6 +16,7 @@ const CORTE = '2026-11-09T08:00:00';
 const fila = (o: Partial<FilaExistencia> = {}): FilaExistencia => ({
   parte: '2004375',
   descripcion: 'INTERRUPTOR',
+  almacen: 'CENTRAL',
   clasificacion: 'PARTES \\ ELE \\ INTERR',
   moneda: 'USD',
   cantidad: 4,
@@ -158,5 +161,120 @@ describe('Almacén — resumen del corte', () => {
     const r = resumir(filas, CORTE, 2);
     expect(r.mayores.map((a) => a.parte)).toEqual(['A', 'B']);
     expect(r.mayoresOc.map((a) => a.parte)).toEqual(['C', 'B']);
+  });
+
+  it('agrupa por almacén y cuenta en cada grupo lo que va sin costo', () => {
+    const sinCosto = {
+      moneda: null,
+      fechaEntrada: null,
+      importePesos: null,
+      importePesosOc: null,
+      origen: SIN_COSTO,
+    };
+    const r = resumir(
+      [
+        fila(),
+        fila({ almacen: 'CONT-1', cantidad: 2 }),
+        fila({
+          almacen: 'CONT-1',
+          parte: '2009999',
+          cantidad: 30,
+          ...sinCosto,
+        }),
+        fila({ almacen: 'MAAB1', parte: '2701700', cantidad: 1, ...sinCosto }),
+      ],
+      CORTE,
+    );
+    expect(
+      r.ubicacion.map((g) => [
+        g.clave,
+        g.unidades,
+        g.unidadesSinCosto,
+        g.articulos,
+      ]),
+    ).toEqual([
+      ['CENTRAL', 4, 0, 1],
+      ['CONT-1', 32, 30, 2],
+      ['MAAB1', 1, 1, 1],
+    ]);
+    expect(r.clasificacion[0]).toMatchObject({
+      clave: 'PARTES',
+      unidades: 37,
+      unidadesSinCosto: 31,
+    });
+  });
+});
+
+describe('Almacén — resumen de las devoluciones sin OT', () => {
+  const linea = (o: Partial<LineaDevolucion> = {}): LineaDevolucion => ({
+    fecha: '2026-10-23T10:00:00',
+    documento: '17527',
+    documentoDescripcion: 'Devolución de la limpieza',
+    almacen: 'CENTRAL',
+    parte: '2000016',
+    cantidad: 6,
+    costoMaximoUsd: 0,
+    importePesos: 1000,
+    importePesosOc: 950,
+    marcas: ['Costo 0 en Maximo'],
+    ...o,
+  });
+
+  it('suma líneas, unidades, documentos, CENTRAL, costo 0 y valor, y agrupa por día, documento y marca', () => {
+    const r = resumirDevoluciones(
+      [
+        linea(),
+        linea({
+          parte: '2000017',
+          cantidad: 2,
+          costoMaximoUsd: 10,
+          marcas: ['Nunca había salido del almacén'],
+        }),
+        linea({
+          fecha: '2026-11-07T09:00:00',
+          documento: '17653',
+          almacen: 'CONT-ROJO',
+          parte: '2000016',
+          cantidad: 1,
+          importePesos: null,
+          importePesosOc: null,
+        }),
+      ],
+      [
+        { mes: '2026-11', lineas: 60, unidades: 551 },
+        { mes: '2026-10', lineas: 124, unidades: 1037 },
+      ],
+    );
+    expect(r.totales).toEqual({
+      lineas: 3,
+      unidades: 9,
+      articulos: 2,
+      documentos: 2,
+      centralLineas: 2,
+      centralUnidades: 8,
+      costoCero: 2,
+      sinValuar: 1,
+      pesos: 2000,
+      pesosOc: 1900,
+      pesosCostoCero: 1000,
+      usdMaximo: 20,
+    });
+    expect(r.porDia).toEqual([
+      { dia: '2026-10-23', lineas: 2, unidades: 8, documentos: 1 },
+      { dia: '2026-11-07', lineas: 1, unidades: 1, documentos: 1 },
+    ]);
+    expect(r.porDocumento[0]).toEqual({
+      documento: '17527',
+      descripcion: 'Devolución de la limpieza',
+      fecha: '2026-10-23T10:00:00',
+      lineas: 2,
+      unidades: 8,
+      almacenes: ['CENTRAL'],
+    });
+    expect(r.porMes.map((m) => m.mes)).toEqual(['2026-10', '2026-11']);
+    expect(r.porMarca).toEqual([
+      { marca: 'Costo 0 en Maximo', articulos: 1, lineas: 2 },
+      { marca: 'Nunca había salido del almacén', articulos: 1, lineas: 1 },
+    ]);
   });
 });

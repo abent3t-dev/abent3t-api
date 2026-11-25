@@ -51,10 +51,11 @@ function collectRoutes(): RouteInfo[] {
 describe('Almacén — modelo de acceso del controller', () => {
   const routes = collectRoutes();
 
-  it('encuentra las cuatro rutas de consulta, todas GET', () => {
+  it('encuentra las cinco rutas de consulta, todas GET', () => {
     expect(routes.map((r) => `${r.method} ${r.route}`).sort()).toEqual([
       'GET /almacen/cortes',
       'GET /almacen/cortes/:id',
+      'GET /almacen/cortes/:id/devoluciones',
       'GET /almacen/cortes/:id/excel',
       'GET /almacen/cortes/:id/existencias',
     ]);

@@ -2325,9 +2325,12 @@ model fpa_line_comments {
 /// totales, sus notas y el Excel tal cual (archivo). Lo carga
 /// `npm run almacen:cargar`, con la huella del paquete como llave
 /// (paquete_sha256); si piden cambios se carga la versión siguiente de la misma
-/// fecha y esta queda 'reemplazado'. Un solo corte publicado por
-/// almacén y fecha (índice parcial en SQL). Las fechas son hora de México, sin
-/// zona: Prisma las lee como UTC y la pantalla las muestra tal cual.
+/// fecha y esta queda 'reemplazado'. Un solo corte publicado por fecha de corte
+/// (índice parcial en SQL; 0027). Las fechas son hora de México, sin zona:
+/// Prisma las lee como UTC y la pantalla las muestra tal cual.
+/// 0027 (versión 2): almacen es el alcance (CENTRAL o TODOS), version_reporte la
+/// del Excel, revision 'en_revision' o 'aceptado', y las ubicaciones y la serie
+/// por mes de las devoluciones sin OT.
 model almacen_cortes {
   id                   String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   almacen              String                @db.VarChar(30)
@@ -2350,9 +2353,15 @@ model almacen_cortes {
   cargado_por          String                @db.VarChar(120)
   cargado_en           DateTime              @default(now()) @db.Timestamptz(6)
   reemplazado_en       DateTime?             @db.Timestamptz(6)
+  version_reporte      Int                   @default(1) @db.SmallInt
+  revision             String                @default("en_revision") @db.VarChar(12)
+  aceptado_en          DateTime?             @db.Timestamptz(6)
+  ubicaciones          Json                  @default("[]")
+  devoluciones_por_mes Json                  @default("[]")
   almacen_existencias  almacen_existencias[]
+  almacen_devoluciones almacen_devoluciones[]
 
-  @@unique([almacen, fecha_corte, version], map: "uq_almacen_cortes_version")
+  @@unique([fecha_corte, version], map: "uq_almacen_cortes_version")
 }
 
 /// Almacén (0026): lo que queda de cada entrada en el almacén al corte, una
@@ -2384,11 +2393,53 @@ model almacen_existencias {
   saldo_articulo       Decimal        @db.Decimal(18, 4)
   regresaron_recientes Decimal?       @db.Decimal(18, 4)
   herramienta          Boolean
-  en_su_inventario     Boolean
+  en_su_inventario     Boolean?
   unidad_entrada       String?        @db.VarChar(20)
   nota                 String?
+  motivo               String?        @db.VarChar(60)
+  como_llego           String?
   almacen_cortes       almacen_cortes @relation(fields: [corte_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([corte_id, orden], map: "uq_almacen_existencias_orden")
   @@index([corte_id, parte], map: "ix_almacen_existencias_corte_parte")
+}
+
+/// Almacén (0027): las devoluciones al almacén sin orden de trabajo ni salida
+/// ligada del 1-oct-2026 al corte, una por línea de la hoja "Devoluciones sin
+/// OT", con el análisis por artículo (se repite en sus líneas). Solo inserción.
+model almacen_devoluciones {
+  id                    String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  corte_id              String         @db.Uuid
+  orden                 Int
+  fecha                 DateTime       @db.Timestamp(0)
+  fecha_captura         DateTime?      @db.Timestamp(0)
+  documento             String?        @db.VarChar(20)
+  documento_descripcion String?
+  almacen               String         @db.VarChar(30)
+  anaquel               String?        @db.VarChar(30)
+  parte                 String         @db.VarChar(30)
+  descripcion           String
+  cantidad              Decimal        @db.Decimal(18, 4)
+  unidad                String?        @db.VarChar(20)
+  costo_maximo_usd      Decimal        @db.Decimal(20, 6)
+  costo                 Decimal?       @db.Decimal(20, 6)
+  moneda                String?        @db.VarChar(3)
+  tipo_cambio           Decimal?       @db.Decimal(14, 6)
+  importe_pesos         Decimal?       @db.Decimal(20, 6)
+  tipo_cambio_oc        Decimal?       @db.Decimal(14, 6)
+  importe_pesos_oc      Decimal?       @db.Decimal(20, 6)
+  valuacion             String?        @db.VarChar(80)
+  oc                    String?        @db.VarChar(40)
+  observacion           String?
+  marcas                String[]       @default([])
+  salio_antes           Decimal?       @db.Decimal(18, 4)
+  salio_12m             Decimal?       @db.Decimal(18, 4)
+  ultima_salida         DateTime?      @db.Timestamp(0)
+  ot_ultima_salida      String?        @db.VarChar(30)
+  saldo_almacen         Decimal?       @db.Decimal(18, 4)
+  saldo_otras           Decimal?       @db.Decimal(18, 4)
+  almacen_cortes        almacen_cortes @relation(fields: [corte_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([corte_id, orden], map: "uq_almacen_devoluciones_orden")
+  @@index([corte_id, parte], map: "ix_almacen_devoluciones_corte_parte")
 }

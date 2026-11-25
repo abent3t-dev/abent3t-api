@@ -2,14 +2,16 @@
  * Almacén — el resumen de un corte para las gráficas de la página: importe en
  * pesos (con el tipo de cambio del día de la entrada y con el de la OC),
  * unidades, filas y artículos, por clasificación, antigüedad de la entrada,
- * moneda y origen, más los artículos de mayor importe. Funciones puras: las
- * prueba almacen-resumen.spec.ts.
+ * moneda, origen y almacén, más los artículos de mayor importe; y el resumen
+ * de las devoluciones sin OT (0027). Funciones puras: las prueba
+ * almacen-resumen.spec.ts.
  */
 
 /** Una fila de existencias, ya con números (lo que lee el service). */
 export interface FilaExistencia {
   parte: string;
   descripcion: string;
+  almacen: string;
   clasificacion: string | null;
   moneda: string | null;
   cantidad: number;
@@ -26,6 +28,8 @@ export interface Grupo {
   importe: number;
   importeOc: number;
   unidades: number;
+  /** De esas unidades, las que van sin costo. */
+  unidadesSinCosto: number;
   filas: number;
   articulos: number;
 }
@@ -45,6 +49,8 @@ export interface Resumen {
   antiguedad: Grupo[];
   moneda: Grupo[];
   origen: Grupo[];
+  /** Por almacén (clave de la ubicación). */
+  ubicacion: Grupo[];
   /** Los de mayor importe con el tipo de cambio del día de la entrada… */
   mayores: ArticuloMayor[];
   /** …y con el de la OC (la lista puede cambiar: la página tiene los dos). */
@@ -119,6 +125,7 @@ function agrupar(
         importe: 0,
         importeOc: 0,
         unidades: 0,
+        unidadesSinCosto: 0,
         filas: 0,
         articulos: 0,
         partes: new Set(),
@@ -128,6 +135,7 @@ function agrupar(
     x.importe += f.importePesos ?? 0;
     x.importeOc += f.importePesosOc ?? 0;
     x.unidades += f.cantidad;
+    if (f.origen === SIN_COSTO) x.unidadesSinCosto += f.cantidad;
     x.filas += 1;
     x.partes.add(f.parte);
   }
@@ -136,6 +144,7 @@ function agrupar(
     importe: redondea(x.importe),
     importeOc: redondea(x.importeOc),
     unidades: Math.round(x.unidades * 10000) / 10000,
+    unidadesSinCosto: Math.round(x.unidadesSinCosto * 10000) / 10000,
     articulos: partes.size,
   }));
   if (orden) {
@@ -190,6 +199,7 @@ export function resumir(
     ),
     moneda: agrupar(filas, (f) => f.moneda ?? SIN_COSTO),
     origen: agrupar(filas, (f) => f.origen),
+    ubicacion: agrupar(filas, (f) => f.almacen),
     mayores: [...articulos]
       .sort((a, b) => b.importe - a.importe || a.parte.localeCompare(b.parte))
       .slice(0, mayores),
@@ -198,5 +208,134 @@ export function resumir(
         (a, b) => b.importeOc - a.importeOc || a.parte.localeCompare(b.parte),
       )
       .slice(0, mayores),
+  };
+}
+
+/** Una línea de las devoluciones sin OT, ya con números (lo que lee el service). */
+export interface LineaDevolucion {
+  /** Hora de México, sin zona. */
+  fecha: string;
+  documento: string | null;
+  documentoDescripcion: string | null;
+  almacen: string;
+  parte: string;
+  cantidad: number;
+  costoMaximoUsd: number;
+  importePesos: number | null;
+  importePesosOc: number | null;
+  marcas: string[];
+}
+
+export interface ResumenDevoluciones {
+  totales: {
+    lineas: number;
+    unidades: number;
+    articulos: number;
+    documentos: number;
+    centralLineas: number;
+    centralUnidades: number;
+    /** Líneas que Maximo tiene en 0. */
+    costoCero: number;
+    /** Líneas sin costo de compra (el artículo no tiene recepciones y Maximo la tiene en 0). */
+    sinValuar: number;
+    pesos: number;
+    pesosOc: number;
+    /** De ese valor, lo de las líneas que Maximo tiene en 0 (valuadas con una recepción del artículo). */
+    pesosCostoCero: number;
+    usdMaximo: number;
+  };
+  porDia: {
+    dia: string;
+    lineas: number;
+    unidades: number;
+    documentos: number;
+  }[];
+  porDocumento: {
+    documento: string;
+    descripcion: string | null;
+    fecha: string;
+    lineas: number;
+    unidades: number;
+    almacenes: string[];
+  }[];
+  porMes: { mes: string; lineas: number; unidades: number }[];
+  /** Artículos y líneas con cada marca. */
+  porMarca: { marca: string; articulos: number; lineas: number }[];
+}
+
+const r4d = (x: number) => Math.round(x * 10000) / 10000;
+
+export function resumirDevoluciones(
+  lineas: LineaDevolucion[],
+  porMes: { mes: string; lineas: number; unidades: number }[],
+  central = 'CENTRAL',
+): ResumenDevoluciones {
+  const suma = (l: LineaDevolucion[], f: (x: LineaDevolucion) => number) =>
+    l.reduce((s, x) => s + f(x), 0);
+  const dias = new Map<string, LineaDevolucion[]>();
+  const docs = new Map<string, LineaDevolucion[]>();
+  for (const l of lineas) {
+    const d = l.fecha.slice(0, 10);
+    dias.set(d, [...(dias.get(d) ?? []), l]);
+    const k = l.documento ?? '';
+    docs.set(k, [...(docs.get(k) ?? []), l]);
+  }
+  const enCentral = lineas.filter((l) => l.almacen === central);
+  const marcas = new Map<string, { partes: Set<string>; lineas: number }>();
+  for (const l of lineas)
+    for (const m of l.marcas) {
+      const x = marcas.get(m) ?? { partes: new Set<string>(), lineas: 0 };
+      x.partes.add(l.parte);
+      x.lineas += 1;
+      marcas.set(m, x);
+    }
+  return {
+    totales: {
+      lineas: lineas.length,
+      unidades: r4d(suma(lineas, (l) => l.cantidad)),
+      articulos: new Set(lineas.map((l) => l.parte)).size,
+      documentos: new Set(lineas.map((l) => l.documento ?? '')).size,
+      centralLineas: enCentral.length,
+      centralUnidades: r4d(suma(enCentral, (l) => l.cantidad)),
+      costoCero: lineas.filter((l) => !(l.costoMaximoUsd > 0)).length,
+      sinValuar: lineas.filter((l) => l.importePesos === null).length,
+      pesos: redondea(suma(lineas, (l) => l.importePesos ?? 0)),
+      pesosOc: redondea(suma(lineas, (l) => l.importePesosOc ?? 0)),
+      pesosCostoCero: redondea(
+        suma(
+          lineas.filter((l) => !(l.costoMaximoUsd > 0)),
+          (l) => l.importePesos ?? 0,
+        ),
+      ),
+      usdMaximo: redondea(suma(lineas, (l) => l.costoMaximoUsd * l.cantidad)),
+    },
+    porDia: [...dias]
+      .map(([dia, l]) => ({
+        dia,
+        lineas: l.length,
+        unidades: r4d(suma(l, (x) => x.cantidad)),
+        documentos: new Set(l.map((x) => x.documento ?? '')).size,
+      }))
+      .sort((a, b) => a.dia.localeCompare(b.dia)),
+    porDocumento: [...docs]
+      .map(([documento, l]) => ({
+        documento,
+        descripcion: l[0].documentoDescripcion,
+        fecha: l.map((x) => x.fecha).sort()[0],
+        lineas: l.length,
+        unidades: r4d(suma(l, (x) => x.cantidad)),
+        almacenes: [...new Set(l.map((x) => x.almacen))].sort(),
+      }))
+      .sort((a, b) => b.lineas - a.lineas || a.fecha.localeCompare(b.fecha)),
+    porMes: [...porMes].sort((a, b) => a.mes.localeCompare(b.mes)),
+    porMarca: [...marcas]
+      .map(([marca, x]) => ({
+        marca,
+        articulos: x.partes.size,
+        lineas: x.lineas,
+      }))
+      .sort(
+        (a, b) => b.articulos - a.articulos || a.marca.localeCompare(b.marca),
+      ),
   };
 }
